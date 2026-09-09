@@ -1,0 +1,109 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: phraseforge-api
+  namespace: app
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: phraseforge-api
+  template:
+    metadata:
+      labels:
+        app: phraseforge-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: phraseforge-api
+          image: k8s-lab-registry:5000/phraseforge-api:dev
+          ports:
+            - containerPort: 8080
+          env:
+            # Database host and port: not sensitive, hardcoded
+            - name: PGHOST
+              value: postgres.data.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            # Database name, user, password from Secret (FR-DB-003)
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_DB
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            # Server bind address
+            - name: BIND_ADDR
+              value: 0.0.0.0:8080
+            # Logging
+            - name: RUST_LOG
+              value: info
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          # FR-API-006: /healthz is static 200 (DB down does not restart the pod)
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # FR-API-006: /readyz performs SELECT 1; fails with 503 if Postgres is unreachable
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: phraseforge-api
+  namespace: app
+spec:
+  selector:
+    app: phraseforge-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+# FR-API-007: ingress host phraseforge-api.localhost, Traefik on host port 8080 (SPECS §9.1, HITL-1)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: phraseforge-api
+  namespace: app
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: phraseforge-api.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: phraseforge-api
+                port:
+                  number: 8080

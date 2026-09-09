@@ -1,0 +1,134 @@
+{{define "title"}}{{call .T "admin.title"}} · PhraseForge{{end}}
+{{define "content"}}
+  <h1>{{call .T "admin.title"}}</h1>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "admin.grant_heading"}}</h2>
+    <form method="post" action="/admin/grants">
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="user_id">{{call .T "admin.user"}}</label>
+          <select name="user_id" id="user_id" required>
+            {{range .Users}}<option value="{{.ID}}">{{.Username}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="role">{{call .T "admin.role"}}</label>
+          <select name="role" id="role" required onchange="document.getElementById('grant-language').disabled = (this.value === 'admin')">
+            <option value="admin">{{call .T "profile.role_admin"}}</option>
+            <option value="teacher">{{call .T "role.teacher"}}</option>
+            <option value="student">{{call .T "role.student"}}</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="grant-language">{{call .T "admin.language_scoped"}}</label>
+          <select name="language" id="grant-language">
+            {{range .Languages}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+        </div>
+      </div>
+      <button class="btn" type="submit">{{call .T "admin.grant"}}</button>
+    </form>
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "admin.grants_heading"}}</h2>
+    <div style="overflow-x:auto;">
+      <table class="admin-table">
+        <thead><tr><th>{{call .T "admin.user"}}</th><th>{{call .T "admin.role"}}</th><th>{{call .T "texts.field_language"}}</th><th></th></tr></thead>
+        <tbody>
+          {{range .Grants}}
+          <tr>
+            <td>{{.Username}}</td>
+            <td>{{call $.T (print "role." .Role)}}</td>
+            <td>{{if .Language}}{{.LanguageName}} ({{.Language}}){{else}}<em>{{call $.T "admin.site_wide"}}</em>{{end}}</td>
+            <td>
+              <form method="post" action="/admin/grants/{{.ID}}/revoke" onsubmit="return confirm('{{call $.T "admin.revoke_confirm"}}');">
+                <button class="link-btn" type="submit">{{call $.T "admin.revoke"}}</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="4"><em>{{call .T "admin.no_grants"}}</em></td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "admin.ime_heading"}}</h2>
+    <form method="post" action="/admin/ime">
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="ime-language">{{call .T "texts.field_language"}}</label>
+          <select name="language" id="ime-language" required>
+            {{range .Languages}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="ime-script">{{call .T "texts.field_script"}}</label>
+          <select name="script" id="ime-script" required>
+            {{range .Scripts}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="source_ime">{{call .T "admin.ime_source"}}</label>
+          <select name="source_ime" id="source_ime">
+            <option value="">{{call .T "admin.ime_none"}}</option>
+            {{range .ImePresets}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="transcription_ime">{{call .T "admin.ime_transcription"}}</label>
+          <select name="transcription_ime" id="transcription_ime">
+            <option value="">{{call .T "admin.ime_none"}}</option>
+            {{range .ImePresets}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+        </div>
+      </div>
+      <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
+        <input type="checkbox" name="needs_transcription" id="needs_transcription" style="width:auto; margin:0;">
+        {{call .T "admin.ime_needs_transcription"}}
+      </label>
+      <button class="btn" type="submit">{{call .T "admin.ime_save"}}</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">{{call .T "admin.ime_configs_heading"}}</h2>
+    <div style="overflow-x:auto;">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>{{call .T "texts.field_language"}}</th><th>{{call .T "texts.field_script"}}</th>
+            <th>{{call .T "admin.ime_source"}}</th><th>{{call .T "admin.ime_transcription"}}</th>
+            <th>{{call .T "admin.ime_needs_transcription"}}</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .ImeConfigs}}
+          <tr>
+            <td>{{.Language}}</td>
+            <td>{{.Script}}</td>
+            <td>{{if .SourceIME}}{{.SourceIME}}{{else}}<em>{{call $.T "admin.ime_none"}}</em>{{end}}</td>
+            <td>{{if .TranscriptionIME}}{{.TranscriptionIME}}{{else}}<em>{{call $.T "admin.ime_none"}}</em>{{end}}</td>
+            <td>{{if .NeedsTranscription}}✓{{else}}—{{end}}</td>
+            <td>
+              <form method="post" action="/admin/ime/delete" onsubmit="return confirm('{{call $.T "admin.ime_remove_confirm"}}');">
+                <input type="hidden" name="language" value="{{.Language}}">
+                <input type="hidden" name="script" value="{{.Script}}">
+                <button class="link-btn" type="submit">{{call $.T "admin.ime_remove"}}</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="6"><em>{{call .T "admin.ime_no_configs"}}</em></td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{{end}}

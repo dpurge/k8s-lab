@@ -1,0 +1,32 @@
+{{define "title"}}{{call .T "texts.title"}} · PhraseForge{{end}}
+{{define "content"}}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+    <h1 style="margin-bottom:0;">{{call .T "texts.title"}}</h1>
+    {{if .NavFlags.CanCreateAny}}<a class="btn" href="/texts/new">{{call .T "texts.new"}}</a>{{end}}
+  </div>
+  {{if .TagFilter}}
+    <p class="meta" style="margin-top:0.75rem;">
+      {{call .T "texts.tag_filter"}} <span class="badge">{{.TagFilter}}</span>
+      <a href="/">{{call .T "texts.tag_filter_clear"}}</a>
+    </p>
+  {{end}}
+  {{if .Texts}}
+    <div class="card-grid" style="margin-top:1.5rem;">
+      {{range .Texts}}
+        <div class="card">
+          <h2><a href="/texts/{{.ID}}">{{.Title}}</a></h2>
+          <div class="meta">
+            <span class="badge">{{.Language}} / {{.Script}}</span>
+            {{range index $.TagsByID .ID}}<a class="badge tag-link" href="/?tag={{.}}">{{.}}</a>{{end}}
+          </div>
+          <div class="meta" style="margin-top:0.4rem;">{{.CreatedAt.Format "Jan 2, 2006 · 15:04"}}</div>
+        </div>
+      {{end}}
+    </div>
+  {{else}}
+    <p class="empty-state" style="margin-top:1.5rem;">
+      {{call .T "texts.empty"}}
+      {{if not .NavFlags.CanCreateAny}}{{call .T "texts.no_access"}}{{end}}
+    </p>
+  {{end}}
+{{end}}

@@ -1,0 +1,45 @@
+{{define "title"}}{{call .T "profile.title"}} · PhraseForge{{end}}
+{{define "content"}}
+  <h1>{{call .T "profile.title"}}</h1>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <p class="meta" style="margin-bottom:1rem;">{{call .T "profile.signed_in_as"}} <strong>{{.User.Username}}</strong></p>
+    <h2 style="margin-top:0;">{{call .T "profile.roles_heading"}}</h2>
+    {{if .Grants}}
+      <ul style="margin:0; padding-left:1.25rem;">
+        {{range .Grants}}
+          <li>
+            {{if eq .Role "admin"}}{{call $.T "profile.role_admin"}}
+            {{else}}{{call $.T (print "role." .Role)}} — {{.LanguageName}} ({{.Language}})
+            {{end}}
+          </li>
+        {{end}}
+      </ul>
+    {{else}}
+      <p class="empty-state">{{call .T "profile.role_none"}}</p>
+    {{end}}
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "profile.language_heading"}}</h2>
+    <form method="post" action="/profile/locale" style="display:flex; gap:1rem; align-items:flex-end;">
+      <div style="flex:1;">
+        <select name="locale" style="margin-bottom:0;">
+          {{$cur := .User.Locale}}
+          {{range .Locales}}<option value="{{.Code}}"{{if eq .Code $cur}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      <button class="btn" type="submit">{{call .T "profile.language_save"}}</button>
+    </form>
+  </div>
+
+  <div class="form-card">
+    <h2 style="margin-top:0;">{{call .T "profile.password_heading"}}</h2>
+    <form method="post" action="/profile/password">
+      <input type="password" name="current_password" placeholder="{{call .T "profile.current_password"}}" required>
+      <input type="password" name="new_password" placeholder="{{call .T "profile.new_password"}}" required minlength="8">
+      <input type="password" name="confirm_password" placeholder="{{call .T "profile.confirm_password"}}" required minlength="8">
+      <button class="btn" type="submit">{{call .T "profile.change_password"}}</button>
+    </form>
+  </div>
+{{end}}

@@ -1,0 +1,7 @@
+.hebr {
+    direction: rtl;
+    unicode-bidi: embed;
+    font-size: 1.6rem;
+    font-family: "Ezra SIL", sans-serif;
+    text-align: right;
+}

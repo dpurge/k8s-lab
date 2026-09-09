@@ -1,0 +1,340 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="{{.Locale}}">
+<head>
+  <meta charset="utf-8">
+  <title>{{block "title" .}}PhraseForge{{end}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    // Applied before first paint (head, not body) to avoid a flash of the
+    // wrong theme. Explicit choice (localStorage) wins; otherwise follow the
+    // OS preference.
+    (function () {
+      var stored = localStorage.getItem('phraseforge-theme');
+      var theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+      if (localStorage.getItem('phraseforge-sidebar') === 'collapsed') {
+        document.documentElement.setAttribute('data-sidebar', 'collapsed');
+      }
+      // Remembered language filter (same mechanism as theme above): landing
+      // on a resource list (texts "/", dialogs "/dialogs", vocabulary
+      // "/vocabulary", models "/models") with no explicit ?language= in the
+      // URL re-applies the last chosen one, before the unfiltered list gets
+      // a chance to render. An explicit "All languages" choice stores ""
+      // and is never redirected back from — that IS the remembered state.
+      var storedLang = localStorage.getItem('phraseforge-language');
+      var listPath = window.location.pathname;
+      if (storedLang && (listPath === '/' || listPath === '/dialogs' || listPath === '/vocabulary' || listPath === '/models') && !/[?&]language=/.test(window.location.search)) {
+        window.location.replace(listPath + '?language=' + encodeURIComponent(storedLang));
+      }
+    })();
+  </script>
+  <style>
+    /* Blue/gray palette. Light is the default; dark overrides via
+       :root[data-theme="dark"] so the toggle only ever has to flip one
+       attribute on <html>. */
+    :root {
+      --bg: #f3f4f6;
+      --surface: #ffffff;
+      --surface-alt: #e9ebee;
+      --border: #d7dae0;
+      --text: #1f2430;
+      --muted: #6b7280;
+      --link: #3b5bab;
+      --link-hover: #2f4a8c;
+      --btn-bg: #3b5bab;
+      --btn-bg-hover: #2f4a8c;
+      --danger: #b3453f;
+      --danger-hover: #9c3b36;
+      --success: #3f8a5c;
+    }
+    :root[data-theme="dark"] {
+      /* softer dark slate, not near-black — easier on the eyes for reading text */
+      --bg: #1c1f26;
+      --surface: #242830;
+      --surface-alt: #2b303a;
+      --border: #3a3f4a;
+      --text: #dfe3e8;
+      --muted: #8b93a1;
+      --link: #7b9bd1;
+      --link-hover: #9db7de;
+      --btn-bg: #4a6fa5;
+      --btn-bg-hover: #5c85bd;
+      --danger: #c17b74;
+      --danger-hover: #cf8f89;
+      --success: #7fb894;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; color: var(--text); background: var(--bg);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 17px;
+    }
+
+    /* sticky top bar */
+    header.topnav {
+      position: sticky; top: 0; z-index: 10;
+      height: 3.5rem; background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 1.5rem; padding: 0 1.5rem;
+    }
+    header.topnav .brand { font-weight: 700; font-size: 1.15rem; color: var(--text); text-decoration: none; }
+    header.topnav .user { margin-left: auto; display: flex; align-items: center; gap: 1rem; font-size: 0.95rem; color: var(--muted); }
+    header.topnav .user a { color: var(--muted); text-decoration: none; }
+    header.topnav .user a:hover { color: var(--link); }
+    .theme-toggle {
+      margin-left: auto; background: none; border: 1px solid var(--border); border-radius: 0.4rem;
+      width: 2.25rem; height: 2.25rem; font-size: 1.1rem; line-height: 1; cursor: pointer; color: var(--text);
+    }
+    .theme-toggle:hover { border-color: var(--link); }
+    /* logged-in pages put .user after the toggle, so the toggle shouldn't also claim margin-left:auto twice */
+    .user + .theme-toggle, .theme-toggle + .user { margin-left: 0; }
+
+    /* sidebar + content grid */
+    .layout {
+      display: grid; grid-template-columns: 15rem 1fr; min-height: calc(100vh - 3.5rem);
+      transition: grid-template-columns 0.15s ease;
+    }
+    [data-sidebar="collapsed"] .layout { grid-template-columns: 0 1fr; }
+    aside.sidebar {
+      background: var(--surface-alt); border-right: 1px solid var(--border);
+      padding: 1.5rem 1rem; overflow: hidden; white-space: nowrap;
+      transition: opacity 0.1s ease, padding 0.15s ease;
+    }
+    [data-sidebar="collapsed"] aside.sidebar { padding: 1.5rem 0; opacity: 0; pointer-events: none; }
+    aside.sidebar select#language-filter { margin-bottom: 1rem; }
+    .sidebar-toggle {
+      background: none; border: 1px solid var(--border); border-radius: 0.4rem;
+      width: 2.25rem; height: 2.25rem; font-size: 1.1rem; line-height: 1; cursor: pointer; color: var(--text);
+    }
+    .sidebar-toggle:hover { border-color: var(--link); }
+    aside.sidebar nav a {
+      display: block; padding: 0.6rem 0.75rem; margin-bottom: 0.25rem;
+      border-radius: 0.4rem; color: var(--text); text-decoration: none; font-weight: 500;
+      border-left: 3px solid transparent;
+    }
+    aside.sidebar nav a:hover { background: rgba(128,128,128,0.12); }
+    aside.sidebar nav a.active { background: var(--surface); border-left-color: var(--link); color: var(--link); font-weight: 700; }
+
+    main.content { padding: 2rem 3rem; }
+    main.content h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
+
+    /* centered login/signup page (no sidebar, no user session yet) */
+    main.auth-page {
+      min-height: calc(100vh - 3.5rem);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 2rem;
+      text-align: center;
+    }
+    main.auth-page h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
+    main.auth-page .form-card { width: 100%; max-width: 24rem; text-align: left; }
+    main.auth-page .switch-link { margin-top: 1rem; color: var(--muted); font-size: 0.95rem; }
+    main.auth-page .switch-link a { color: var(--link); text-decoration: none; }
+    main.auth-page .switch-link a:hover { text-decoration: underline; }
+
+    /* card grid for the text list */
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 1.25rem; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 0.6rem;
+      padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .card h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+    .card h2 a { color: var(--text); text-decoration: none; }
+    .card h2 a:hover { color: var(--link); }
+    .card .meta { color: var(--muted); font-size: 0.9rem; }
+    .empty-state { color: var(--muted); font-size: 1.1rem; }
+    .empty-state a { color: var(--link); }
+
+    /* forms */
+    .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.6rem; padding: 2rem; max-width: 40rem; }
+    textarea, input[type=text], input[type=password], select {
+      width: 100%; padding: 0.65rem 0.75rem; margin-bottom: 1rem; border: 1px solid var(--border);
+      border-radius: 0.4rem; font-size: 1.05rem; font-family: inherit; background: var(--surface); color: var(--text);
+    }
+    .field-row { display: flex; gap: 1rem; }
+    .field-row > * { flex: 1; }
+    label.field-label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
+    table.admin-table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
+    table.admin-table th, table.admin-table td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+    table.admin-table th { color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+    .badge { display: inline-block; background: var(--surface-alt); border-radius: 0.3rem; padding: 0.15rem 0.5rem; font-size: 0.85rem; }
+    a.tag-link { color: var(--muted); text-decoration: none; margin-left: 0.35rem; }
+    a.tag-link:hover { color: var(--link); background: var(--border); }
+    .link-btn { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 0.9rem; padding: 0; text-decoration: underline; }
+    textarea { height: 20rem; font-family: ui-monospace, "SF Mono", monospace; font-size: 0.95rem; }
+    .btn {
+      display: inline-block; background: var(--btn-bg); color: #fff; border: none;
+      padding: 0.65rem 1.4rem; border-radius: 0.4rem; font-size: 1rem; font-weight: 600; cursor: pointer;
+      text-decoration: none;
+    }
+    .btn:hover { background: var(--btn-bg-hover); }
+    .btn-danger { background: var(--danger); }
+    .btn-danger:hover { background: var(--danger-hover); }
+    .back-link { display: inline-block; margin-bottom: 1rem; color: var(--muted); text-decoration: none; }
+
+    /* bottom status bar: every form's success/error feedback lands here,
+       instead of each page picking its own inline spot for it. */
+    .status-bar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+      display: flex; align-items: center; justify-content: center; gap: 1rem;
+      padding: 0.85rem 1.5rem; font-size: 0.95rem; color: #fff;
+      animation: status-bar-in 0.15s ease;
+    }
+    .status-bar.success { background: var(--success); }
+    .status-bar.error { background: var(--danger); }
+    .status-bar button.status-close {
+      background: none; border: none; color: #fff; opacity: 0.8; cursor: pointer;
+      font-size: 1.1rem; line-height: 1; padding: 0;
+    }
+    .status-bar button.status-close:hover { opacity: 1; }
+    @keyframes status-bar-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .back-link:hover { color: var(--link); }
+
+    /* reading view: big, comfortable, fills the column (no artificial narrow cap) */
+    article.prose { font-size: 1.15rem; line-height: 1.7; }
+    .prose-enlarged { font-size: 1.4rem; line-height: 1.9; } /* CJK/Arabic/Hebrew/Syriac read poorly at Latin body size; not scoped to article so it also works on table cells (vocabulary view) */
+    article.prose[dir="rtl"] .vocabulary-item { flex-direction: row-reverse; text-align: right; }
+    article.prose h1 { font-size: 1.8em; }
+    article.prose h2 { font-size: 1.5em; margin-top: 1.5em; }
+    article.prose p { margin: 1em 0; }
+    article.prose .vocabulary, article.prose .dialog { margin: 2rem 0; font-size: 1rem; }
+    /* cli-tools always emits a content-type letter badge (T/V/D/...) right
+       before each block. Rather than hide it, style it as a small round
+       icon so it reads as a deliberate label instead of a raw letter. */
+    article.prose .block-marker { display: inline-block; margin: 0 0 0.35rem; }
+    article.prose .block-marker .ct-badge {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 1.5rem; height: 1.5rem; border-radius: 50%;
+        background: var(--btn-bg); color: #fff;
+        font-size: 0.75rem; font-weight: 600; line-height: 1;
+    }
+    article.prose .vocabulary-item { display: flex; gap: 1rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
+    article.prose .vocabulary-phrase { font-weight: 700; min-width: 12rem; }
+    article.prose .dialog-item {
+      display: flex; gap: 0.6rem; align-items: baseline;
+      margin-bottom: 1rem; padding: 0.75rem 1rem; background: var(--surface-alt); border-radius: 0.5rem;
+    }
+    article.prose .dialog-header { font-weight: 700; color: var(--muted); flex-shrink: 0; }
+    article.prose .dialog-content { flex: 1; min-width: 0; }
+    article.prose .dialog-content p { margin: 0; } /* header+content sit on one line, not stacked as two blocks */
+    /* No explicit row-reverse for RTL: .dialog-item already inherits
+       direction:rtl from its dir="rtl" ancestor, which alone reverses the
+       default flex-direction:row visually (dash ends up on the right, at
+       the start of the RTL line). Adding row-reverse on top double-reverses
+       it back to LTR-looking order — that was the earlier bug. */
+
+    @media (max-width: 760px) {
+      .layout { grid-template-columns: 1fr; }
+      aside.sidebar { display: none; }
+      main.content { padding: 1.5rem; }
+    }
+
+    /* Source/Transcription/Translation editor tabs (new.html/edit.html) and
+       their read-only counterpart (view.html). */
+    .editor-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+    .editor-tab-btn {
+      background: none; border: none; border-bottom: 2px solid transparent; padding: 0.5rem 0.9rem;
+      font-size: 0.95rem; color: var(--muted); cursor: pointer;
+    }
+    .editor-tab-btn.active { color: var(--link); border-bottom-color: var(--link); font-weight: 600; }
+    .editor-tab-pane textarea { height: 18rem; }
+    .editor-tab-pane textarea.editor-enlarged { font-size: 1.4rem; } /* CJK/Arabic/Hebrew/Syriac need a bigger base size to read while typing */
+  </style>
+  {{block "extra_head" .}}{{end}}
+</head>
+<body>
+  <header class="topnav">
+    {{if .User}}
+    <button class="sidebar-toggle" type="button" onclick="phraseforgeToggleSidebar()" aria-label="{{call .T "sidebar.toggle"}}" title="{{call .T "sidebar.toggle"}}">☰</button>
+    {{end}}
+    <a class="brand" href="/">PhraseForge</a>
+    {{if .User}}
+    <div class="user">
+      <a href="/profile">{{.User.Username}}</a>
+      <a href="/logout">{{call .T "nav.logout"}}</a>
+    </div>
+    {{end}}
+    <button class="theme-toggle" type="button" onclick="phraseforgeToggleTheme()" aria-label="{{call .T "theme.toggle"}}" title="{{call .T "theme.toggle"}}">
+      <span id="theme-icon"></span>
+    </button>
+  </header>
+  {{if .User}}
+  <div class="layout">
+    <aside class="sidebar">
+      {{if .NavFlags.ViewableLanguages}}
+      <select id="language-filter" onchange="phraseforgeSetLanguageFilter(this.value)">
+        <option value="">{{call .T "nav.all_languages"}}</option>
+        {{$cur := .LanguageFilter}}
+        {{range .NavFlags.ViewableLanguages}}<option value="{{.Code}}"{{if eq .Code $cur}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      {{end}}
+      <nav>
+        <a href="/"{{if eq .Nav "texts"}} class="active"{{end}}>{{call .T "nav.texts"}}</a>
+        <a href="/dialogs"{{if eq .Nav "dialogs"}} class="active"{{end}}>{{call .T "nav.dialogs"}}</a>
+        <a href="/vocabulary"{{if eq .Nav "vocabulary"}} class="active"{{end}}>{{call .T "nav.vocabulary"}}</a>
+        <a href="/models"{{if eq .Nav "models"}} class="active"{{end}}>{{call .T "nav.models"}}</a>
+        {{if .NavFlags.IsAdmin}}<a href="/admin"{{if eq .Nav "admin"}} class="active"{{end}}>{{call .T "nav.admin"}}</a>{{end}}
+      </nav>
+    </aside>
+    <main class="content">
+      {{block "content" .}}{{end}}
+    </main>
+  </div>
+  {{else}}
+  <main class="auth-page">
+    {{block "content" .}}{{end}}
+  </main>
+  {{end}}
+  {{if .Message}}
+  <div class="status-bar {{.MessageType}}" id="status-bar" role="status">
+    <span>{{.Message}}</span>
+    <button type="button" class="status-close" onclick="document.getElementById('status-bar').remove()" aria-label="Dismiss">×</button>
+  </div>
+  {{end}}
+  <script>
+    function phraseforgeSetIcon() {
+      var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      document.getElementById('theme-icon').textContent = isDark ? '☀' : '☽'; // sun / crescent moon
+    }
+    function phraseforgeToggleTheme() {
+      var html = document.documentElement;
+      var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('phraseforge-theme', next);
+      phraseforgeSetIcon();
+    }
+    function phraseforgeToggleSidebar() {
+      var html = document.documentElement;
+      var next = html.getAttribute('data-sidebar') === 'collapsed' ? 'expanded' : 'collapsed';
+      html.setAttribute('data-sidebar', next);
+      localStorage.setItem('phraseforge-sidebar', next);
+    }
+    function phraseforgeSetLanguageFilter(value) {
+      localStorage.setItem('phraseforge-language', value);
+      // Stay on whichever resource list is current (texts/dialogs/vocabulary/
+      // models); from any other page (view/edit/profile/admin), land on the
+      // texts list.
+      var here = window.location.pathname;
+      var listPath = (here === '/dialogs' || here === '/vocabulary' || here === '/models') ? here : '/';
+      window.location.href = value ? listPath + '?language=' + encodeURIComponent(value) : listPath;
+    }
+    (function () {
+      // Keep the select in sync with the remembered choice on every page,
+      // not just the list page (which already sets it server-side to match
+      // ?language=) — otherwise it would silently reset to "All languages"
+      // while browsing a text, even though the filter is still remembered.
+      var select = document.getElementById('language-filter');
+      var stored = localStorage.getItem('phraseforge-language');
+      if (select && stored && select.querySelector('option[value="' + CSS.escape(stored) + '"]')) {
+        select.value = stored;
+      }
+    })();
+    phraseforgeSetIcon();
+    (function () {
+      var bar = document.getElementById('status-bar');
+      if (bar) { setTimeout(function () { bar.remove(); }, 5000); }
+    })();
+  </script>
+</body>
+</html>
+{{end}}

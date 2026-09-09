@@ -1,0 +1,60 @@
+{{define "title"}}{{call .T "texts.edit_title"}}: {{.Text.Title}} · PhraseForge{{end}}
+{{define "extra_head"}}
+  <link rel="stylesheet" href="/static/css/latn.css">
+  <link rel="stylesheet" href="/static/css/cyrl.css">
+  <link rel="stylesheet" href="/static/css/arab.css">
+  <link rel="stylesheet" href="/static/css/hebr.css">
+  <link rel="stylesheet" href="/static/css/hans.css">
+  <link rel="stylesheet" href="/static/css/hant.css">
+  <link rel="stylesheet" href="/static/css/kore.css">
+  <link rel="stylesheet" href="/static/css/deva.css">
+  <link rel="stylesheet" href="/static/css/grek.css">
+  <link rel="stylesheet" href="/static/css/geor.css">
+  <script src="/static/js/ime.js"></script>
+  <script src="/static/js/editor.js"></script>
+{{end}}
+{{define "content"}}
+  <a class="back-link" href="/texts/{{.Text.ID}}">{{call .T "texts.back"}}</a>
+  <h1>{{call .T "texts.edit_title"}}</h1>
+  <div class="form-card" style="max-width: none;">
+    <form method="post" action="/texts/{{.Text.ID}}/edit">
+      <input type="text" name="title" value="{{.Text.Title}}" autofocus required>
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="language">{{call .T "texts.field_language"}}</label>
+          <select name="language" id="language" required>
+            {{$cur := .Text.Language}}
+            {{range .Languages}}<option value="{{.Code}}"{{if eq .Code $cur}} selected{{end}}>{{.Name}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="script">{{call .T "texts.field_script"}}</label>
+          <select name="script" id="script" required>
+            {{$curs := .Text.Script}}
+            {{range .Scripts}}<option value="{{.Code}}"{{if eq .Code $curs}} selected{{end}}>{{.Name}}</option>{{end}}
+          </select>
+        </div>
+      </div>
+      <label class="field-label" for="tags">{{call .T "texts.field_tags"}}</label>
+      <input type="text" name="tags" id="tags" list="tag-options" value="{{.Tags}}" placeholder="{{call .T "texts.field_tags_hint"}}">
+      <datalist id="tag-options">{{range .AllTags}}<option value="{{.}}">{{end}}</datalist>
+
+      <div class="editor-tabs">
+        <button type="button" class="editor-tab-btn active" data-tab="source">{{call .T "texts.tab_source"}}</button>
+        <button type="button" class="editor-tab-btn" id="tab-btn-transcription" data-tab="transcription">{{call .T "texts.tab_transcription"}}</button>
+        <button type="button" class="editor-tab-btn" data-tab="translation">{{call .T "texts.tab_translation"}}</button>
+      </div>
+      <div class="editor-tab-pane" id="tab-source">
+        <textarea name="body" id="field-source" required>{{.Text.Body}}</textarea>
+      </div>
+      <div class="editor-tab-pane" id="tab-transcription" style="display:none;">
+        <textarea name="transcription" id="field-transcription" placeholder="{{call .T "texts.field_transcription_hint"}}">{{.Text.Transcription}}</textarea>
+      </div>
+      <div class="editor-tab-pane" id="tab-translation" style="display:none;">
+        <textarea name="translation" id="field-translation" placeholder="{{call .T "texts.field_translation_hint"}}">{{.Translation}}</textarea>
+      </div>
+
+      <button class="btn" type="submit">{{call .T "texts.save_changes"}}</button>
+    </form>
+  </div>
+{{end}}

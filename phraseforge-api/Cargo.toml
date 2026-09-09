@@ -1,0 +1,54 @@
+[package]
+name = "phraseforge-api"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.0"   # sqlx 0.9 MSRV
+
+[lib]
+name = "phraseforge_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phraseforge-api"
+path = "src/main.rs"
+
+[[bin]]
+name = "phraseforge-migrate"
+path = "src/bin/migrate.rs"
+
+[dependencies]
+# HTTP — axum 0.8 + hyper/tower; typed extractors enforce NFR-EXT-003 structurally
+axum            = { version = "0.8.9" }
+# Async runtime — required by axum; minimal feature set
+tokio           = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+# Postgres — async, no ORM; runtime-checked queries (not query_as! macro) per SPECS §3
+# No TLS feature: scratch image has no TLS certs and no outbound TLS is required (NFR-IMG-001)
+sqlx            = { version = "0.9.0", default-features = false, features = [
+    "runtime-tokio", "postgres", "migrate", "uuid", "chrono", "macros"
+] }
+# Serialization — serde_json used only as axum's codec; no Value anywhere (NFR-EXT-003)
+serde           = { version = "1.0.229", features = ["derive"] }
+serde_json      = "1.0"
+# Typed errors → IntoResponse
+thiserror       = "2.0.20"
+# UUIDs for surrogate keys (FR-API-008/009)
+uuid            = { version = "1.24.1", features = ["v4", "serde"] }
+# Timestamps (created_at columns, HITL-6)
+chrono          = { version = "0.4", features = ["serde"] }
+# Structured logging
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3.23", features = ["env-filter"] }
+# tower-http 0.7 shares http ^1.0 / tower ^0.5 with axum 0.8.9 — verified compatible (SPECS §3)
+tower-http      = { version = "0.7.0", features = ["trace"] }
+
+[dev-dependencies]
+# tower::ServiceExt::oneshot for driving the axum Router in integration tests
+# Version must be compatible with axum 0.8.9 which requires tower ^0.5
+tower           = { version = "0.5", features = ["util"] }
+
+[profile.release]
+# Static musl binary target; strip + LTO + single codegen unit for minimum compressed size (NFR-IMG-001)
+strip           = "symbols"
+lto             = "fat"
+codegen-units   = 1
+panic           = "abort"

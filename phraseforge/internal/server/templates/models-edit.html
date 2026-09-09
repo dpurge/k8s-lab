@@ -1,0 +1,102 @@
+{{define "title"}}{{call .T "models.edit_title"}}: {{.List.Title}} · PhraseForge{{end}}
+{{define "extra_head"}}
+  <link rel="stylesheet" href="/static/css/latn.css">
+  <link rel="stylesheet" href="/static/css/cyrl.css">
+  <link rel="stylesheet" href="/static/css/arab.css">
+  <link rel="stylesheet" href="/static/css/hebr.css">
+  <link rel="stylesheet" href="/static/css/hans.css">
+  <link rel="stylesheet" href="/static/css/hant.css">
+  <link rel="stylesheet" href="/static/css/kore.css">
+  <link rel="stylesheet" href="/static/css/deva.css">
+  <link rel="stylesheet" href="/static/css/grek.css">
+  <link rel="stylesheet" href="/static/css/geor.css">
+  <script src="/static/js/ime.js"></script>
+  <script src="/static/js/editor.js"></script>
+{{end}}
+{{define "content"}}
+  <a class="back-link" href="/models/{{.List.ID}}">{{call .T "texts.back"}}</a>
+  <h1>{{call .T "models.edit_title"}}</h1>
+
+  <div class="form-card">
+    <form method="post" action="/models/{{.List.ID}}/edit">
+      <input type="text" name="title" value="{{.List.Title}}" required>
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="language">{{call .T "texts.field_language"}}</label>
+          <select name="language" id="language" required>
+            {{$cur := .List.Language}}
+            {{range .Languages}}<option value="{{.Code}}"{{if eq .Code $cur}} selected{{end}}>{{.Name}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="script">{{call .T "texts.field_script"}}</label>
+          <select name="script" id="script" required>
+            {{$curs := .List.Script}}
+            {{range .Scripts}}<option value="{{.Code}}"{{if eq .Code $curs}} selected{{end}}>{{.Name}}</option>{{end}}
+          </select>
+        </div>
+      </div>
+      <label class="field-label" for="tags">{{call .T "texts.field_tags"}}</label>
+      <input type="text" name="tags" id="tags" list="tag-options" value="{{.Tags}}" placeholder="{{call .T "texts.field_tags_hint"}}">
+      <datalist id="tag-options">{{range .AllTags}}<option value="{{.}}">{{end}}</datalist>
+      <button class="btn" type="submit">{{call .T "texts.save_changes"}}</button>
+    </form>
+  </div>
+
+  <h2 style="margin-top:2rem;">
+    {{if ge .EditPosition 0}}{{call .T "models.edit_item"}}{{else}}{{call .T "models.add_item"}}{{end}}
+  </h2>
+  <div class="form-card" style="max-width: none;">
+    <form method="post" action="{{if ge .EditPosition 0}}/models/{{$.List.ID}}/items/{{.EditPosition}}{{else}}/models/{{$.List.ID}}/items{{end}}">
+      <label class="field-label" for="field-source">{{call .T "models.col_phrase"}}</label>
+      <input type="text" name="phrase" id="field-source" value="{{.EntryPhrase}}" autofocus required>
+
+      <div id="transcription-group">
+        <label class="field-label" for="field-transcription">{{call .T "models.col_transcription"}}</label>
+        <input type="text" name="transcription" id="field-transcription" value="{{.EntryTranscription}}">
+      </div>
+
+      <label class="field-label" for="translation">{{call .T "models.col_translation"}}</label>
+      <input type="text" name="translation" id="translation" value="{{.EntryTranslation}}">
+
+      <button class="btn" type="submit">
+        {{if ge .EditPosition 0}}{{call .T "models.save_item"}}{{else}}{{call .T "models.add_item"}}{{end}}
+      </button>
+      {{if ge .EditPosition 0}}<a class="back-link" href="/models/{{.List.ID}}/edit">{{call .T "models.cancel_edit"}}</a>{{end}}
+    </form>
+  </div>
+
+  {{if .Rows}}
+  <div style="overflow-x:auto; margin-top:1.5rem;">
+  <table class="vocab-table" style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "models.col_phrase"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "models.col_transcription"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "models.col_translation"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "models.col_actions"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{$script := .Script}}
+      {{$listID := .List.ID}}
+      {{range .Rows}}
+      <tr>
+        <td class="{{if $script.Enlarged}}prose-enlarged{{end}}" dir="{{$script.Direction}}" style="border-bottom:1px solid var(--border); padding:0.5rem;">{{.Phrase}}</td>
+        <td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">{{.Transcription}}</td>
+        <td style="border-bottom:1px solid var(--border); padding:0.5rem;">{{if .Translation}}{{.Translation}}{{else}}—{{end}}</td>
+        <td style="border-bottom:1px solid var(--border); padding:0.5rem; white-space:nowrap;">
+          <a href="/models/{{$listID}}/edit?edit={{.Position}}">{{call $.T "texts.edit"}}</a>
+          <form method="post" action="/models/{{$listID}}/items/{{.Position}}/delete" style="display:inline;" onsubmit="return confirm('{{call $.T "models.delete_item_confirm"}}');">
+            <button class="link-btn" type="submit" style="margin-left:0.5rem;">{{call $.T "texts.delete"}}</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}
+    <p class="empty-state" style="margin-top:1.5rem;">{{call .T "models.empty"}}</p>
+  {{end}}
+{{end}}

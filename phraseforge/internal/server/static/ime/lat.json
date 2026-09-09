@@ -1,0 +1,10 @@
+{
+    "name": "Latin",
+    "script": "latn",
+    "type": null,
+    "lang": {
+        "iso": "lat",
+        "html": "la"
+    },
+    "data": null
+}

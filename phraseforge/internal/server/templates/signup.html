@@ -1,0 +1,13 @@
+{{define "title"}}{{call .T "signup.title"}} · PhraseForge{{end}}
+{{define "content"}}
+  <h1>{{call .T "signup.title"}}</h1>
+  <div class="form-card">
+    <form method="post" action="/signup">
+      <input type="text" name="username" placeholder="{{call .T "signup.username"}}" value="{{.Username}}" autofocus required>
+      <input type="password" name="password" placeholder="{{call .T "signup.password"}}" required minlength="8">
+      <input type="password" name="confirm_password" placeholder="{{call .T "signup.confirm"}}" required minlength="8">
+      <button class="btn" type="submit" style="width: 100%;">{{call .T "signup.submit"}}</button>
+    </form>
+  </div>
+  <p class="switch-link">{{call .T "signup.has_account"}} <a href="/login">{{call .T "signup.login_link"}}</a></p>
+{{end}}

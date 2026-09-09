@@ -1,0 +1,49 @@
+{{define "title"}}{{.List.Title}} · PhraseForge{{end}}
+{{define "content"}}
+  <a class="back-link" href="/vocabulary">{{call .T "texts.back"}}</a>
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+    <div>
+      <h1 style="margin-bottom:0.25rem;">{{.List.Title}}</h1>
+      <span class="badge">{{.List.Language}} / {{.List.Script}}</span>
+      {{range .Tags}}<a class="badge tag-link" href="/vocabulary?tag={{.}}">{{.}}</a>{{end}}
+    </div>
+    {{if .CanEdit}}
+    <div style="display:flex; gap:0.5rem; flex-shrink:0;">
+      <a class="btn" href="/vocabulary/{{.List.ID}}/edit">{{call .T "texts.edit"}}</a>
+      <form method="post" action="/vocabulary/{{.List.ID}}/delete" onsubmit="return confirm('{{call .T "vocabulary.delete_confirm"}}');">
+        <button class="btn btn-danger" type="submit">{{call .T "texts.delete"}}</button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+
+  {{if .Rows}}
+  <div style="overflow-x:auto; margin-top:1.5rem;">
+  <table class="vocab-table" style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "vocabulary.col_phrase"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "vocabulary.col_grammar"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "vocabulary.col_transcription"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "vocabulary.col_translation"}}</th>
+        <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">{{call .T "vocabulary.col_notes"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{$script := .Script}}
+      {{range .Rows}}
+      <tr>
+        <td class="{{if $script.Enlarged}}prose-enlarged{{end}}" dir="{{$script.Direction}}" style="border-bottom:1px solid var(--border); padding:0.5rem;">{{.Phrase}}</td>
+        <td style="border-bottom:1px solid var(--border); padding:0.5rem; color:var(--muted);">{{.Grammar}}</td>
+        <td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">{{.Transcription}}</td>
+        <td style="border-bottom:1px solid var(--border); padding:0.5rem;">{{if .Translation}}{{.Translation}}{{else}}—{{end}}</td>
+        <td style="border-bottom:1px solid var(--border); padding:0.5rem; color:var(--muted);">{{.Notes}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}
+    <p class="empty-state" style="margin-top:1.5rem;">{{call .T "vocabulary.empty"}}</p>
+  {{end}}
+{{end}}

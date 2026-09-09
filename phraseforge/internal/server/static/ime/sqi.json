@@ -1,0 +1,15 @@
+{
+    "name": "Albanian",
+    "script": "latn",
+    "type": "suffix",
+    "lang": {
+        "iso": "sqi",
+        "html": "sq"
+    },
+    "data": [
+        ["C`", "Ç"],
+        ["c`", "ç"],
+        ["E`", "Ë"],
+        ["e`", "ë"]
+    ]
+}
