@@ -1,6 +1,5 @@
 # k8s-lab: local k3d-based Kubernetes dev cluster
 #
-# Ported from the former `justfile` for Task's cross-platform recipe syntax.
 # Developed and tested on Linux/macOS. Task's embedded shell interpreter
 # (mvdan.cc/sh) parses the shell syntax itself on every OS, but external
 # commands still need to be real binaries on PATH — on Windows that means
@@ -247,8 +246,8 @@ tasks:
             mkdir -p .k3d
             echo "Generating Postgres credentials into ${env_file}..."
             {
-                echo "POSTGRES_USER=phraseforge"
-                echo "POSTGRES_DB=phraseforge"
+                echo "POSTGRES_USER=postgres"
+                echo "POSTGRES_DB=postgres"
                 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             } > "$env_file"
             echo "Credentials written (gitignored). Do not rotate after first Postgres start."
@@ -311,9 +310,9 @@ tasks:
         echo "Waiting for rollout..."
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/postgres -n data --timeout=120s
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/qdrant   -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/adminer  -n data --timeout=120s
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/garage   -n data --timeout=120s
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/nats     -n data --timeout=120s
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/adminer  -n data --timeout=120s
         echo "Shared infrastructure ready:"
         echo "  adminer:        http://adminer.localhost:{{.INGRESS_PORT}}"
         echo "  garage (S3):    http://garage.localhost:{{.INGRESS_PORT}}"
@@ -328,7 +327,8 @@ tasks:
     desc: Build and deploy the dictionary service to the running cluster.
     cmds:
       - task: _build-image
-        vars: { APP: dictionary }
+        vars:
+          APP: dictionary
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
@@ -343,7 +343,9 @@ tasks:
     desc: Run the dictionary database migration Job against the running cluster.
     cmds:
       - task: _migrate-db
-        vars: { APP: dictionary, JOB_NAME: dictionary-migrate }
+        vars:
+          APP: dictionary
+          JOB_NAME: dictionary-migrate
 
   # ── phraseforge ──────────────────────────────────────────────────────────────
 
@@ -351,7 +353,8 @@ tasks:
     desc: Build and deploy the phraseforge app to the running cluster.
     cmds:
       - task: _build-image
-        vars: { APP: phraseforge }
+        vars:
+          APP: phraseforge
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
@@ -366,7 +369,9 @@ tasks:
     desc: Run the phraseforge database migration Job against the running cluster.
     cmds:
       - task: _migrate-db
-        vars: { APP: phraseforge, JOB_NAME: phraseforge-app-migrate }
+        vars:
+          APP: phraseforge
+          JOB_NAME: phraseforge-migrate
 
   # Deletes any prior completed/failed Job first (Jobs are immutable once
   # created); each app's schema.sql/migrate step is itself idempotent, so a
