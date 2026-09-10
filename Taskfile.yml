@@ -239,7 +239,11 @@ tasks:
       - |
         set -euo pipefail
         env_file=".k3d/postgres.env"
-        if [ ! -f "$env_file" ]; then
+        # Regenerate when the file is missing OR the password is empty —
+        # on Windows a previous failed run can leave an empty placeholder file.
+        if [ -f "$env_file" ] && grep -q '^POSTGRES_PASSWORD=..*' "$env_file"; then
+            echo "Using existing credentials from ${env_file}."
+        else
             mkdir -p .k3d
             echo "Generating Postgres credentials into ${env_file}..."
             {
@@ -248,8 +252,6 @@ tasks:
                 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             } > "$env_file"
             echo "Credentials written (gitignored). Do not rotate after first Postgres start."
-        else
-            echo "Using existing credentials from ${env_file}."
         fi
         for ns in data app; do
             echo "Projecting postgres-credentials Secret into namespace ${ns}..."
@@ -269,7 +271,14 @@ tasks:
       - |
         set -euo pipefail
         cfg_file=".k3d/garage.toml"
-        if [ ! -f "$cfg_file" ]; then
+        # Regenerate when the file is missing OR secrets are empty placeholders —
+        # on Windows a previous failed run can leave empty placeholder values.
+        if [ -f "$cfg_file" ] \
+            && grep -Eq '^rpc_secret = "[0-9a-fA-F]{64}"$' "$cfg_file" \
+            && grep -Eq '^admin_token = ".+"$' "$cfg_file" \
+            && grep -Eq '^metrics_token = ".+"$' "$cfg_file"; then
+            echo "Using existing config from ${cfg_file}."
+        else
             mkdir -p .k3d
             echo "Generating Garage config into ${cfg_file}..."
             sed \
@@ -278,8 +287,6 @@ tasks:
                 -e "s|__METRICS_TOKEN__|$(openssl rand -base64 32)|" \
                 k8s/garage/garage.toml.tmpl > "$cfg_file"
             echo "Config written (gitignored). Do not rotate after first Garage start."
-        else
-            echo "Using existing config from ${cfg_file}."
         fi
         echo "Projecting garage-config Secret into namespace data..."
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl create secret generic garage-config \
