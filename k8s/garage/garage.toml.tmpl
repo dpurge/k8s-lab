@@ -1,0 +1,33 @@
+# Garage (S3-compatible object storage) config template.
+#
+# Not deployed directly — `task deploy` (via _ensure-garage-config) renders this
+# into .k3d/garage.toml (gitignored) with real secrets substituted for the
+# __PLACEHOLDER__ tokens below, the same way postgres-credentials is generated
+# from .k3d/postgres.env. The rendered file becomes the "garage-config" Secret,
+# mounted read-only at /etc/garage.toml by k8s/25-garage.yaml.
+#
+# Single-node dev config: replication_factor = 1, sqlite metadata backend
+# (no tuning needed), one PVC holding both metadata_dir and data_dir.
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "__RPC_SECRET__"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[s3_web]
+bind_addr = "[::]:3902"
+root_domain = ".web.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token = "__ADMIN_TOKEN__"
+metrics_token = "__METRICS_TOKEN__"

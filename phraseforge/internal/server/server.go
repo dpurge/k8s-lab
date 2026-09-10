@@ -87,13 +87,11 @@ func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialog
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 
-	// FR-API-006-style probes, matching phraseforge-api's contract:
-	// /healthz is a static 200 (never restarts the pod on DB hiccups);
-	// /readyz performs SELECT 1 and returns 503 if Postgres is unreachable.
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	// Static 200 — DB down should not restart the pod, only fail readiness.
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.Ping(r.Context()); err != nil {
 			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
 			return

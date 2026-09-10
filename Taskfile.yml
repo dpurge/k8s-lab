@@ -1,12 +1,11 @@
 # k8s-lab: local k3d-based Kubernetes dev cluster
-# Recipes trace to docs/REQUIREMENTS/*.md (FR-CLU, FR-REG, FR-ING, FR-EXE, FR-TOOL, NFR-ISO)
 #
-# Ported from the former `justfile` for true cross-platform support: Task embeds its own
-# POSIX-compatible shell interpreter (mvdan.cc/sh) rather than shelling out to the OS's sh/
-# bash/PowerShell, so the same recipe runs unmodified on Linux, macOS, and Windows without
-# requiring Git for Windows/WSL. The `lsof` port-check is the one place that still needs a
-# per-OS command (no Windows equivalent of lsof); the `bc` float math was replaced with plain
-# shell arithmetic (no external dependency needed either way).
+# Ported from the former `justfile` for Task's cross-platform recipe syntax.
+# Developed and tested on Linux/macOS. Task's embedded shell interpreter
+# (mvdan.cc/sh) parses the shell syntax itself on every OS, but external
+# commands still need to be real binaries on PATH — on Windows that means
+# `sed`, `awk`, `grep`, and `openssl` (all used below) require Git for Windows
+# or WSL; they don't ship with Windows.
 
 version: "3"
 
@@ -16,45 +15,34 @@ vars:
   REGISTRY_PORT: "5000"
   INGRESS_PORT: "8080"
   KUBECONFIG_PATH: .k3d/kubeconfig
-  # Home Depot corporate CA bundle (Netskope-intercepted TLS) — needed inside node
-  # containers for external image pulls (FR-REG-004) on the corporate network.
-  # Mounted over the node's trust store if present; skipped gracefully otherwise.
-  CORP_CA_BUNDLE: /usr/local/munki/thd_certs.pem
+  # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
+  CORP_CA_BUNDLE: /usr/local/munki/certs.pem
 
 tasks:
 
-  # Create the cluster (if absent) or resume it (if stopped). [FR-CLU-001/002/003]
   start-k8s:
     desc: Create or resume the k3d cluster, registry, and ingress.
     cmds:
       - |
         set -euo pipefail
+        # Defined once, used at all three check sites below.
+        {{if eq OS "windows"}}
+        port_listening() { powershell -NoProfile -NonInteractive -Command "if (Get-NetTCPConnection -LocalPort {{.INGRESS_PORT}} -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; }
+        {{else}}
+        port_listening() { lsof -nP -iTCP:{{.INGRESS_PORT}} -sTCP:LISTEN >/dev/null 2>&1; }
+        {{end}}
+
         info="$(k3d cluster list {{.CLUSTER_NAME}} -o json 2>/dev/null || echo '[]')"
         running="0"
         if [ "$(echo "$info" | jq 'length')" != "0" ]; then
             running="$(echo "$info" | jq '.[0].serversRunning')"
         fi
-        if [ "$running" = "0" ]; then
-            # Pre-flight port check [FR-ING-003]: Docker/k3d on this host does not
-            # reliably surface a bind conflict on its own (observed silent failure
-            # via Rancher Desktop's Lima port forwarder), so check explicitly.
-            {{if eq OS "windows"}}
-            if powershell -NoProfile -NonInteractive -Command "if (Get-NetTCPConnection -LocalPort {{.INGRESS_PORT}} -State Listen -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"; then
-                :
-            else
-                echo "Error: host port {{.INGRESS_PORT}} is already in use by another process." >&2
-                powershell -NoProfile -NonInteractive -Command "Get-NetTCPConnection -LocalPort {{.INGRESS_PORT}} -State Listen | Format-Table -AutoSize" >&2
-                echo "Free port {{.INGRESS_PORT}} and re-run 'task start-k8s'." >&2
-                exit 1
-            fi
-            {{else}}
-            if lsof -nP -iTCP:{{.INGRESS_PORT}} -sTCP:LISTEN >/dev/null 2>&1; then
-                echo "Error: host port {{.INGRESS_PORT}} is already in use by another process:" >&2
-                lsof -nP -iTCP:{{.INGRESS_PORT}} -sTCP:LISTEN >&2
-                echo "Free port {{.INGRESS_PORT}} and re-run 'task start-k8s'." >&2
-                exit 1
-            fi
-            {{end}}
+        # Docker/k3d doesn't reliably surface a port-bind conflict on its own
+        # (observed silent failure via Rancher Desktop's Lima forwarder).
+        if [ "$running" = "0" ] && port_listening; then
+            echo "Error: host port {{.INGRESS_PORT}} is already in use by another process." >&2
+            echo "Free port {{.INGRESS_PORT}} and re-run 'task start-k8s'." >&2
+            exit 1
         fi
         if [ "$(echo "$info" | jq 'length')" = "0" ]; then
             echo "Creating cluster '{{.CLUSTER_NAME}}'..."
@@ -82,32 +70,18 @@ tasks:
         mkdir -p .k3d
         k3d kubeconfig get {{.CLUSTER_NAME}} > {{.KUBECONFIG_PATH}}
         echo "Waiting for ingress port {{.INGRESS_PORT}} to come up..."
-        for i in $(seq 1 30); do
-            {{if eq OS "windows"}}
-            if powershell -NoProfile -NonInteractive -Command "if (Get-NetTCPConnection -LocalPort {{.INGRESS_PORT}} -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; then
-                break
-            fi
-            {{else}}
-            if lsof -nP -iTCP:{{.INGRESS_PORT}} -sTCP:LISTEN >/dev/null 2>&1; then
-                break
-            fi
-            {{end}}
+        i=0
+        while [ "$i" -lt 30 ] && ! port_listening; do
             sleep 1
+            i=$((i + 1))
         done
-        {{if eq OS "windows"}}
-        if ! powershell -NoProfile -NonInteractive -Command "if (Get-NetTCPConnection -LocalPort {{.INGRESS_PORT}} -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; then
+        if ! port_listening; then
             echo "Warning: port {{.INGRESS_PORT}} did not come up within 30s. Ingress may not be reachable yet — check 'docker ps' and try again shortly." >&2
         fi
-        {{else}}
-        if ! lsof -nP -iTCP:{{.INGRESS_PORT}} -sTCP:LISTEN >/dev/null 2>&1; then
-            echo "Warning: port {{.INGRESS_PORT}} did not come up within 30s. Ingress may not be reachable yet — check 'docker ps' and try again shortly." >&2
-        fi
-        {{end}}
         echo "Ready. Registry (push, from host): localhost:{{.REGISTRY_PORT}}"
         echo "      Registry (pull, in pod specs): {{.REGISTRY_NAME}}:{{.REGISTRY_PORT}}"
         echo "      Ingress: http://localhost:{{.INGRESS_PORT}}"
 
-  # Pause the cluster; state, workloads, and registry contents are preserved. [FR-CLU-004/005]
   stop-k8s:
     desc: Pause the cluster (state and registry contents preserved).
     cmds:
@@ -125,7 +99,6 @@ tasks:
             k3d cluster stop {{.CLUSTER_NAME}}
         fi
 
-  # Full teardown: delete the cluster, its registry, and the dedicated kubeconfig file. [FR-CLU-006/007]
   delete-k8s:
     desc: Delete the cluster, registry, and local kubeconfig.
     cmds:
@@ -139,7 +112,6 @@ tasks:
         fi
         rm -f {{.KUBECONFIG_PATH}}
 
-  # Run kubectl against this project's cluster only. Usage: task run-k8s -- get pods [FR-EXE-001/002]
   run-k8s:
     desc: 'Run kubectl against this project''s cluster only. Usage: task run-k8s -- get pods'
     cmds:
@@ -151,108 +123,80 @@ tasks:
         fi
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl {{.CLI_ARGS}}
 
-  # ── phraseforge-api image and deployment recipes ──────────────────────────────
+  # ── Image builds ───────────────────────────────────────────────────────────
 
-  # Build and push the phraseforge-api image to the local registry. [NFR-IMG-001]
-  # Push to localhost:5000 (host address); pod specs reference k8s-lab-registry:5000 (in-cluster).
-  # The asymmetry is a property of k3d registry integration — see README "Working with images".
-  #
-  # Corporate network: copies /usr/local/munki/thd_certs.pem into the build context as
-  # phraseforge-api/_corp-ca.pem (gitignored) so the Dockerfile can trust it inside the
-  # Alpine build stage. An empty placeholder is used when the bundle is not present.
-  # Mirrors the CA trust approach used for cluster nodes in start-k8s.
-  build-image:
-    desc: Build and push the phraseforge-api and phraseforge images to the local registry.
+  # Corporate network: copies CORP_CA_BUNDLE into the build context (gitignored)
+  # so the Dockerfile can trust it inside the Alpine build stage. Empty
+  # placeholder when the bundle is absent — same approach as start-k8s.
+  _build-image:
+    internal: true
     cmds:
       - |
         set -euo pipefail
-        corp_ca="/usr/local/munki/thd_certs.pem"
-        corp_ca_dst="phraseforge-api/_corp-ca.pem"
-        if [ -f "$corp_ca" ]; then
-            echo "Copying corporate CA bundle into build context..."
-            cp "$corp_ca" "$corp_ca_dst"
-        else
-            # Empty placeholder — Dockerfile checks file size and skips cert install
-            touch "$corp_ca_dst"
-        fi
-        trap "rm -f $corp_ca_dst" EXIT
-        echo "Building phraseforge-api image..."
-        docker build -t localhost:{{.REGISTRY_PORT}}/phraseforge-api:dev phraseforge-api/
-        echo "Pushing to local registry (localhost:{{.REGISTRY_PORT}})..."
-        docker push localhost:{{.REGISTRY_PORT}}/phraseforge-api:dev
-        echo "Image ready: localhost:{{.REGISTRY_PORT}}/phraseforge-api:dev"
-      - |
-        set -euo pipefail
-        corp_ca="/usr/local/munki/thd_certs.pem"
-        corp_ca_dst="phraseforge/_corp-ca.pem"
-        if [ -f "$corp_ca" ]; then
-            echo "Copying corporate CA bundle into build context..."
-            cp "$corp_ca" "$corp_ca_dst"
+        corp_ca_dst="{{.APP}}/_corp-ca.pem"
+        if [ -f "{{.CORP_CA_BUNDLE}}" ]; then
+            cp "{{.CORP_CA_BUNDLE}}" "$corp_ca_dst"
         else
             touch "$corp_ca_dst"
         fi
         trap "rm -f $corp_ca_dst" EXIT
-        echo "Building phraseforge image..."
-        docker build -t localhost:{{.REGISTRY_PORT}}/phraseforge:dev phraseforge/
-        echo "Pushing to local registry (localhost:{{.REGISTRY_PORT}})..."
-        docker push localhost:{{.REGISTRY_PORT}}/phraseforge:dev
-        echo "Image ready: localhost:{{.REGISTRY_PORT}}/phraseforge:dev"
+        docker build -t localhost:{{.REGISTRY_PORT}}/{{.APP}}:dev {{.APP}}/
+        docker push localhost:{{.REGISTRY_PORT}}/{{.APP}}:dev
+        echo "Image ready: localhost:{{.REGISTRY_PORT}}/{{.APP}}:dev"
 
-  # Verify compressed image size against the 50 MB ceiling (NFR-IMG-001, SPECS §4.2).
-  # Queries the registry manifest API and sums config.size + all layer sizes (compressed bytes).
-  # Handles OCI index format (produced by modern Docker/Rancher Desktop): resolves the
-  # platform-specific manifest (arm64/linux) from the index before summing sizes.
-  # Threshold: 52428800 bytes (50 MiB). [NFR-IMG-001]
+  build-image:
+    desc: Build and push both dictionary and phraseforge images to the local registry.
+    cmds:
+      - task: _build-image
+        vars: { APP: dictionary }
+      - task: _build-image
+        vars: { APP: phraseforge }
+
+  # Queries the registry manifest API directly rather than a local `docker
+  # images` (the image was pushed, may not be present locally under this tag).
   check-image-size:
-    desc: Verify the compressed phraseforge-api image size is within the 50 MB ceiling.
+    desc: Verify the compressed dictionary image size is within the 50 MB ceiling.
     cmds:
       - |
         set -euo pipefail
         accept="application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json"
         index=$(curl -sf -H "Accept: $accept" \
-            "http://localhost:{{.REGISTRY_PORT}}/v2/phraseforge-api/manifests/dev")
+            "http://localhost:{{.REGISTRY_PORT}}/v2/dictionary/manifests/dev")
         media_type=$(echo "$index" | jq -r '.mediaType // ""')
-        # If the registry returned an OCI index or manifest list, resolve the platform manifest
+        # OCI index / manifest list (modern Docker/Rancher Desktop): resolve the
+        # platform-specific manifest before summing sizes.
         if echo "$media_type" | grep -q "index\|list"; then
-            # Pin to the running host architecture; fall back to first non-unknown manifest with a warning.
-            raw_arch=$(uname -m)
-            case "$raw_arch" in
-                x86_64)        host_arch="amd64" ;;
-                aarch64|arm64) host_arch="arm64" ;;
-                *)             host_arch="$raw_arch" ;;
-            esac
-            # Try the arch-specific manifest first (empty output when none matches).
-            digest=$(echo "$index" | jq -r --arg arch "$host_arch" '
+            digest=$(echo "$index" | jq -r --arg arch "{{ARCH}}" '
                 [.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown")]
                 | map(select(.platform.architecture == $arch)) | first | .digest // empty')
             if [ -z "$digest" ]; then
-                echo "Warning: no manifest found for architecture ${host_arch}; falling back to first non-unknown manifest." >&2
+                echo "Warning: no manifest found for architecture {{ARCH}}; falling back to first non-unknown manifest." >&2
                 digest=$(echo "$index" | jq -r '
                     [.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown")]
                     | first | .digest')
             fi
             manifest=$(curl -sf \
                 -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                "http://localhost:{{.REGISTRY_PORT}}/v2/phraseforge-api/manifests/${digest}")
+                "http://localhost:{{.REGISTRY_PORT}}/v2/dictionary/manifests/${digest}")
         else
             manifest="$index"
         fi
         size=$(echo "$manifest" | jq '(.config.size // 0) + ([.layers[].size] | add // 0)')
         threshold=52428800
-        # Integer-only MB display (2 decimal places) — avoids a `bc` dependency, which
-        # has no native Windows equivalent; plain shell arithmetic works everywhere.
+        # Integer-only MB display — avoids a `bc` dependency (no native Windows equivalent).
         size_mb_whole=$((size / 1048576))
         size_mb_frac=$(( (size * 100 / 1048576) % 100 ))
         printf "Compressed image size: %s bytes (%d.%02d MB)\n" "$size" "$size_mb_whole" "$size_mb_frac"
         if [ "$size" -gt "$threshold" ]; then
-            echo "FAIL: image exceeds NFR-IMG-001 threshold of ${threshold} bytes (50 MB)" >&2
+            echo "FAIL: image exceeds the 50 MB threshold (${threshold} bytes)" >&2
             exit 1
         fi
-        echo "PASS: image is within the 50 MB NFR-IMG-001 threshold."
+        echo "PASS: image is within the 50 MB threshold."
 
-  # Private: verify the cluster is running. Used by deploy and migrate-db. [FR-TOOL-003]
-  # .k3d/kubeconfig can exist while the cluster is stopped — file check alone is not enough.
-  # Verifies serversRunning > 0 via k3d (PLAN T-9.1 watch-for). [E-12]
+  # ── Shared internal steps ────────────────────────────────────────────────────
+
+  # .k3d/kubeconfig can exist while the cluster is stopped, so a file check
+  # alone isn't enough — confirm via k3d that a server is actually running.
   _require-cluster:
     internal: true
     cmds:
@@ -268,11 +212,16 @@ tasks:
             exit 1
         fi
 
-  # Private: generate .k3d/postgres.env once (if absent) and project the Secret into both
-  # the data and app namespaces. Idempotent — re-running does not rotate the password
-  # (rotating after Postgres has initialised its data directory would lock the service out).
-  # FR-DB-003 (amended): Secret projected into both namespaces; no credential in any manifest.
-  # HITL-2 resolved: app namespace workload cannot read a Secret in data — generated into both.
+  _apply-namespaces:
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/00-namespaces.yaml
+
+  # Generates .k3d/postgres.env once (if absent) and projects it as a Secret
+  # into both namespaces. Idempotent — never rotates the password after first
+  # use, since that would lock the already-initialized Postgres data dir out.
   _ensure-db-secret:
     internal: true
     cmds:
@@ -291,7 +240,6 @@ tasks:
         else
             echo "Using existing credentials from ${env_file}."
         fi
-        # Project the Secret into both namespaces (Secrets are namespace-scoped)
         for ns in data app; do
             echo "Projecting postgres-credentials Secret into namespace ${ns}..."
             KUBECONFIG={{.KUBECONFIG_PATH}} kubectl create secret generic postgres-credentials \
@@ -301,71 +249,181 @@ tasks:
             | KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f -
         done
 
-  # Build and deploy all platform services to the running cluster. [FR-TOOL-003]
-  # Order: build image → verify cluster → namespaces → credentials → manifests → rollout.
-  # The migration Job in k8s/jobs/ is deliberately excluded — run `task migrate-db` separately.
-  # [FR-NS-001, FR-NS-002, FR-DB-001, FR-VEC-001, FR-ADM-001, FR-API-006, FR-API-007]
-  deploy:
-    desc: Build image, verify cluster, apply all manifests, wait for rollout.
+  # Same pattern as _ensure-db-secret, for Garage's config file instead of a
+  # flat env file: substitutes fresh secrets into k8s/garage/garage.toml.tmpl
+  # once, then projects the rendered file as the garage-config Secret.
+  _ensure-garage-config:
+    internal: true
     cmds:
-      - task: build-image
-      - task: _require-cluster
       - |
         set -euo pipefail
-        echo "Applying namespaces..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/00-namespaces.yaml
+        cfg_file=".k3d/garage.toml"
+        if [ ! -f "$cfg_file" ]; then
+            mkdir -p .k3d
+            echo "Generating Garage config into ${cfg_file}..."
+            sed \
+                -e "s/__RPC_SECRET__/$(openssl rand -hex 32)/" \
+                -e "s|__ADMIN_TOKEN__|$(openssl rand -base64 32)|" \
+                -e "s|__METRICS_TOKEN__|$(openssl rand -base64 32)|" \
+                k8s/garage/garage.toml.tmpl > "$cfg_file"
+            echo "Config written (gitignored). Do not rotate after first Garage start."
+        else
+            echo "Using existing config from ${cfg_file}."
+        fi
+        echo "Projecting garage-config Secret into namespace data..."
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl create secret generic garage-config \
+            --from-file=garage.toml="$cfg_file" \
+            --namespace=data \
+            --dry-run=client -o yaml \
+        | KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f -
+
+  # ── Shared infrastructure ────────────────────────────────────────────────────
+
+  deploy:
+    desc: Deploy shared infrastructure (Postgres, Qdrant, Adminer, Garage, NATS) — not the apps.
+    cmds:
+      - task: _require-cluster
+      - task: _apply-namespaces
+      - task: _ensure-db-secret
+      - task: _ensure-garage-config
+      - |
+        set -euo pipefail
+        echo "Applying k8s manifests (k8s/*.yaml, non-recursive — excludes k8s/jobs/, k8s/garage/)..."
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/
+        echo "Waiting for rollout..."
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/postgres -n data --timeout=120s
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/qdrant   -n data --timeout=120s
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/adminer  -n data --timeout=120s
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/garage   -n data --timeout=120s
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/nats     -n data --timeout=120s
+        echo "Shared infrastructure ready:"
+        echo "  adminer:        http://adminer.localhost:{{.INGRESS_PORT}}"
+        echo "  garage (S3):    http://garage.localhost:{{.INGRESS_PORT}}"
+        echo "  garage (admin): http://garage-admin.localhost:{{.INGRESS_PORT}}"
+        echo "  nats (monitor): http://nats.localhost:{{.INGRESS_PORT}}"
+        echo "Run 'task init-garage' once to bootstrap Garage's layout, bucket, and access key."
+        echo "Deploy the apps separately: 'task deploy-dictionary', 'task deploy-phraseforge'."
+
+  # ── dictionary ───────────────────────────────────────────────────────────────
+
+  deploy-dictionary:
+    desc: Build and deploy the dictionary service to the running cluster.
+    cmds:
+      - task: _build-image
+        vars: { APP: dictionary }
+      - task: _require-cluster
+      - task: _apply-namespaces
       - task: _ensure-db-secret
       - |
         set -euo pipefail
-        echo "Applying k8s manifests (k8s/*.yaml, non-recursive — excludes k8s/jobs/)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/
-        echo "Waiting for rollout..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/postgres   -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/qdrant      -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/adminer     -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/phraseforge-api -n app --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/phraseforge     -n app --timeout=120s
-        echo "Deploy complete. Ingress:"
-        echo "  phraseforge-api: http://phraseforge-api.localhost:{{.INGRESS_PORT}}"
-        echo "  phraseforge:     http://phraseforge.localhost:{{.INGRESS_PORT}}"
-        echo "  adminer:         http://adminer.localhost:{{.INGRESS_PORT}}"
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f dictionary/k8s/
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/dictionary -n app --timeout=120s
+        echo "dictionary ready: http://dictionary.localhost:{{.INGRESS_PORT}}"
+        echo "Run 'task migrate-dictionary-db' once to apply its schema."
 
-  # Run the database migration Job in the cluster. [FR-MIG-001, FR-MIG-002]
-  # Deletes any prior completed/failed Job first (Jobs are immutable once created).
-  # Second run exits 0 having applied nothing — sqlx tracks applied migrations (E-11).
-  migrate-db:
-    desc: Run the database migration Job against the running cluster.
+  migrate-dictionary-db:
+    desc: Run the dictionary database migration Job against the running cluster.
     cmds:
+      - task: _migrate-db
+        vars: { APP: dictionary, JOB_NAME: dictionary-migrate }
+
+  # ── phraseforge ──────────────────────────────────────────────────────────────
+
+  deploy-phraseforge:
+    desc: Build and deploy the phraseforge app to the running cluster.
+    cmds:
+      - task: _build-image
+        vars: { APP: phraseforge }
       - task: _require-cluster
+      - task: _apply-namespaces
+      - task: _ensure-db-secret
       - |
         set -euo pipefail
-        echo "Deleting prior migration Job if present (Jobs are immutable once created)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl delete job phraseforge-migrate -n app --ignore-not-found
-        echo "Applying migration Job (k8s/jobs/migrate-job.yaml)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/jobs/migrate-job.yaml
-        echo "Waiting for Job to complete (timeout 120s)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl wait --for=condition=complete \
-            job/phraseforge-migrate -n app --timeout=120s
-        echo "Migration logs:"
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl logs -n app \
-            -l job-name=phraseforge-migrate --tail=100
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f phraseforge/k8s/
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/phraseforge -n app --timeout=120s
+        echo "phraseforge ready: http://phraseforge.localhost:{{.INGRESS_PORT}}"
+        echo "Run 'task migrate-phraseforge-db' once to apply its schema."
 
-  # Run the phraseforge (Go app) database migration Job — creates the phraseforge_app
-  # database on the shared Postgres server (if missing) and applies its schema.
-  # Separate Job from migrate-db (phraseforge-api's dictionary migration).
   migrate-phraseforge-db:
     desc: Run the phraseforge database migration Job against the running cluster.
     cmds:
+      - task: _migrate-db
+        vars: { APP: phraseforge, JOB_NAME: phraseforge-app-migrate }
+
+  # Deletes any prior completed/failed Job first (Jobs are immutable once
+  # created); each app's schema.sql/migrate step is itself idempotent, so a
+  # second run applies nothing new.
+  _migrate-db:
+    internal: true
+    cmds:
       - task: _require-cluster
       - |
         set -euo pipefail
-        echo "Deleting prior migration Job if present (Jobs are immutable once created)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl delete job phraseforge-app-migrate -n app --ignore-not-found
-        echo "Applying migration Job (k8s/jobs/phraseforge-migrate-job.yaml)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/jobs/phraseforge-migrate-job.yaml
-        echo "Waiting for Job to complete (timeout 120s)..."
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl delete job {{.JOB_NAME}} -n app --ignore-not-found
+        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f {{.APP}}/k8s/jobs/migrate-job.yaml
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl wait --for=condition=complete \
-            job/phraseforge-app-migrate -n app --timeout=120s
-        echo "Migration logs:"
+            job/{{.JOB_NAME}} -n app --timeout=120s
         KUBECONFIG={{.KUBECONFIG_PATH}} kubectl logs -n app \
-            -l job-name=phraseforge-app-migrate --tail=100
+            -l job-name={{.JOB_NAME}} --tail=100
+
+  # ── Garage ───────────────────────────────────────────────────────────────────
+
+  # Garage's S3 API refuses every request — even on a single node — until its
+  # cluster layout has been assigned, which nothing does automatically.
+  # Idempotent: skips the layout step if a role is already assigned, and skips
+  # key creation if "dev-app" already exists (Garage never lets you retrieve a
+  # secret key twice, so it's saved to .k3d/garage.env on first creation only).
+  init-garage:
+    desc: Bootstrap Garage's cluster layout, a dev bucket, and a dev access key.
+    cmds:
+      - task: _require-cluster
+      - |
+        set -euo pipefail
+        # /garage, not "garage": the image is shell-less with no $PATH lookup;
+        # the binary is the container's own ENTRYPOINT at this absolute path.
+        exec_garage() { KUBECONFIG={{.KUBECONFIG_PATH}} kubectl exec -n data deploy/garage -- /garage "$@"; }
+
+        status_output="$(exec_garage status)"
+        echo "$status_output"
+
+        if echo "$status_output" | grep -q "NO ROLE ASSIGNED"; then
+            node_id="$(echo "$status_output" | awk '/NO ROLE ASSIGNED/{print $1; exit}')"
+            echo "Assigning node ${node_id} to the layout (zone=dev, capacity=1G)..."
+            exec_garage layout assign -z dev -c 1G "$node_id"
+            exec_garage layout apply --version 1
+        else
+            echo "A node already has a layout role assigned; skipping."
+        fi
+
+        if exec_garage bucket list | grep -Eq '(^|[[:space:]])dev([[:space:]]|$)'; then
+            echo "Bucket 'dev' already exists."
+        else
+            exec_garage bucket create dev
+        fi
+
+        if exec_garage key list | grep -Eq '(^|[[:space:]])dev-app([[:space:]]|$)'; then
+            if [ -f .k3d/garage.env ]; then
+                echo "Key 'dev-app' already exists; credentials are in .k3d/garage.env."
+            else
+                echo "ERROR: key 'dev-app' exists in Garage but .k3d/garage.env is missing locally." >&2
+                echo "Garage never lets you retrieve a secret key after creation. Either restore" >&2
+                echo ".k3d/garage.env from backup, or delete the key and rerun this task:" >&2
+                echo "  task run-k8s -- exec -n data deploy/garage -- /garage key delete dev-app" >&2
+                exit 1
+            fi
+        else
+            key_output="$(exec_garage key create dev-app)"
+            echo "$key_output"
+            key_id="$(echo "$key_output" | awk '/^Key ID:/{print $NF}')"
+            secret_key="$(echo "$key_output" | awk '/^Secret key:/{print $NF}')"
+            exec_garage bucket allow --read --write dev --key dev-app
+            {
+                echo "GARAGE_KEY_ID=${key_id}"
+                echo "GARAGE_SECRET_KEY=${secret_key}"
+                echo "GARAGE_BUCKET=dev"
+                echo "GARAGE_S3_REGION=garage"
+                echo "GARAGE_S3_ENDPOINT=http://garage.localhost:{{.INGRESS_PORT}}"
+            } > .k3d/garage.env
+            echo "Credentials written to .k3d/garage.env (gitignored)."
+        fi
+        echo "Garage ready. Credentials and endpoint: .k3d/garage.env"

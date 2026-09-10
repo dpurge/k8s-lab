@@ -36,7 +36,6 @@ spec:
           ports:
             - containerPort: 5432
           env:
-            # All credentials from the postgres-credentials Secret (FR-DB-003)
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:

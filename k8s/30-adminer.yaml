@@ -20,7 +20,7 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            # FR-ADM-003: prefill the server field with the Postgres service DNS name
+            # Prefills the Adminer login form's server field
             - name: ADMINER_DEFAULT_SERVER
               value: postgres.data.svc.cluster.local
           readinessProbe:
@@ -43,7 +43,6 @@ spec:
       targetPort: 8080
   type: ClusterIP
 ---
-# FR-ADM-002: ingress host adminer.localhost, Traefik on host port 8080 (SPECS §9.1, HITL-1)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

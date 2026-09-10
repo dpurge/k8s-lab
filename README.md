@@ -2,11 +2,20 @@
 
 Local, k3d-based Kubernetes cluster for development. Managed entirely through `task` — no manual `kubectl`/`k3d` setup required, and your default `~/.kube/config` is never touched.
 
+This cluster runs two applications, each documented in its own README:
+
+- [`dictionary/README.md`](dictionary/README.md) — Go/Chi REST API for multilingual dictionary entries.
+- [`phraseforge/README.md`](phraseforge/README.md) — Go app for language-learning content.
+
+This file covers only what's shared: the Taskfile, the k3d cluster itself, and the shared
+infrastructure (Postgres, Qdrant, Adminer, Garage, NATS) both apps run against.
+
 ## Prerequisites
 
 - [k3d](https://k3d.io/) (tested with v5.8.3)
-- [Task](https://taskfile.dev/) (tested with 3.53.1) — cross-platform on Linux/macOS/Windows; runs recipes through its own embedded shell interpreter, so no separate bash/WSL/Git-for-Windows install is required
-- `jq`
+- [Task](https://taskfile.dev/) (tested with 3.53.1)
+- `jq`, `sed`, `awk`, `grep`, `openssl` — all standard on Linux/macOS. Developed and tested on
+  those platforms; Windows would additionally need Git for Windows or WSL for these.
 - Docker (this project was built/tested against Rancher Desktop's Docker engine on macOS)
 
 ## Quick start
@@ -88,80 +97,190 @@ TLS/HTTPS is out of scope for now — HTTP only.
 
 ## Corporate network note
 
-If you're on the Home Depot corporate network, `task start-k8s` automatically trusts the corporate CA bundle (`/usr/local/munki/thd_certs.pem`, standard on managed machines) inside the cluster node so external image pulls work despite Netskope TLS inspection. If that file isn't present, cluster creation still succeeds identically — you'll just see a note that external pulls may fail on networks with TLS inspection.
+If you're on a corporate network, `task start-k8s` automatically trusts the corporate CA bundle (`/usr/local/munki/certs.pem`, standard on managed machines) inside the cluster node so external image pulls work despite TLS inspection. If that file isn't present, cluster creation still succeeds identically — you'll just see a note that external pulls may fail on networks with TLS inspection.
 
-## phraseforge-api (dictionary service)
+## Deploying
 
-### Deploy and migrate
+`task deploy` sets up **shared infrastructure only** — Postgres, Qdrant, Adminer, Garage. It
+never touches the apps; each app has its own deploy task, documented in its own README, and its
+k8s manifests live in its own directory (`dictionary/k8s/`, `phraseforge/k8s/`), not here.
 
 ```sh
-task start-k8s          # cluster must be running first
-task deploy             # build image, push, apply all k8s manifests, wait for Ready
-task migrate-db         # run the database migration Job (safe to run twice — second run is a no-op)
+task start-k8s   # cluster must be running first
+task deploy      # shared infra only
+task deploy-dictionary    # see dictionary/README.md
+task deploy-phraseforge   # see phraseforge/README.md
 ```
 
 `task deploy` performs the following steps in order:
-1. Builds and pushes `phraseforge-api:dev` to the local registry.
-2. Applies `k8s/00-namespaces.yaml` (creates `data` and `app` namespaces).
-3. Generates `.k3d/postgres.env` with random credentials if absent, then creates the `postgres-credentials` Secret in both `data` and `app` namespaces. Re-running is idempotent — the password is never rotated after first use.
-4. Applies all `k8s/*.yaml` manifests (Postgres, Qdrant, Adminer, phraseforge-api, phraseforge). The `k8s/jobs/` subdirectory is **not** included — migrations stay manual.
-5. Waits for all five Deployments to roll out.
+1. Applies `k8s/00-namespaces.yaml` (creates `data` and `app` namespaces).
+2. Generates `.k3d/postgres.env` and `.k3d/garage.toml` with random credentials if absent, then creates the `postgres-credentials` Secret (in both `data` and `app`) and the `garage-config` Secret (in `data`). Re-running is idempotent — secrets are never rotated after first use.
+3. Applies all `k8s/*.yaml` manifests (Postgres, Qdrant, Adminer, Garage). The `k8s/jobs/` and `k8s/garage/` subdirectories are **not** included.
+4. Waits for all four Deployments to roll out. Garage's own readiness additionally needs a one-time bootstrap — see [Garage](#garage-s3-compatible-object-storage) below; expect its rollout wait to time out until you've run `task init-garage` once.
 
-The migration Job (`k8s/jobs/migrate-job.yaml`) is applied only by `task migrate-db`. Run it once after a fresh deploy; subsequent runs are no-ops.
-
-### Ingress hosts
-
-Both hosts use Traefik on host port 8080 (HTTP only):
-
-| Host | Service |
-|---|---|
-| `phraseforge-api.localhost:8080` | REST API — `GET /healthz`, `GET /readyz`, `POST /api/v1/dictionary/entries`, … |
-| `adminer.localhost:8080` | Adminer DB UI — server field pre-filled with Postgres DNS; supply user/password from `.k3d/postgres.env` |
+**Known gotcha:** rebuilding an image without changing any k8s manifest does **not** make the
+running pod pick it up — same mutable `:dev` tag, unchanged Deployment spec, so Kubernetes sees
+nothing to roll. Force it with, e.g.:
 
 ```sh
-curl -H "Host: phraseforge-api.localhost" http://localhost:8080/healthz
-curl -H "Host: phraseforge-api.localhost" http://localhost:8080/readyz
+task run-k8s -- rollout restart deployment/dictionary -n app
 ```
 
-### Additional recipes
+### Recipes
 
 | Command | What it does |
 |---|---|
-| `task build-image` | Builds the `phraseforge-api:dev` Docker image and pushes it to the local registry. |
-| `task check-image-size` | Queries the registry manifest API and prints the compressed image size; fails if > 50 MB (NFR-IMG-001). |
-| `task deploy` | Full deploy: build → namespaces → credentials → manifests → rollout wait. |
-| `task migrate-db` | Runs the database migration Job; prints logs; safe to run repeatedly. |
+| `task build-image` | Builds and pushes both `dictionary:dev` and `phraseforge:dev` images to the local registry (each app's own deploy task also does this on its own). |
+| `task deploy` | Shared infra only: namespaces → credentials → manifests → rollout wait. |
 
-## phraseforge (language-learning app)
+Each app's own deploy/migrate tasks and full API docs live in its own README (linked above).
 
-A Readeck-inspired Go app for language-learning content: login, per-language teacher/student roles, and four resource types —
+## Shared infrastructure
 
-- **Texts** — markdown articles, with an optional transcription and a translation (in the reader's own site language).
-- **Dialogs** — the same, using phraseforge's own turn-based markdown syntax (`--:`/`@Name:` turns).
-- **Vocabulary** and **Models** — structured lists (not markdown): edited one item at a time, with proper IME support on non-Latin scripts. A vocabulary item is phrase/grammar/transcription (common) plus translation/notes (per site locale, en/pl); a model item is the same minus grammar/notes — cli-tools' own `{start-models}` block, described as "vocabulary without a grammar tag or notes".
+Postgres, Qdrant, Adminer, Garage, and NATS run in the `data` namespace and are shared by both apps.
 
-Shares the `data` namespace's Postgres server with phraseforge-api, but its own database (`phraseforge_app`) and its own migration path — the two apps' schemas never mix.
+**Postgres** — one server, two independent databases: `dictionary` (used by the `dictionary`
+app) and `phraseforge_app` (used by `phraseforge`), each created and migrated by its own app's
+own migration task — the two schemas never mix. Credentials are generated once into
+`.k3d/postgres.env` (gitignored) — by whichever of `task deploy`, `task deploy-dictionary`, or
+`task deploy-phraseforge` you run first — and projected as the `postgres-credentials` Secret
+into both the `data` and `app` namespaces.
 
-### Deploy and migrate
+**Qdrant** (vector DB) is deployed alongside Postgres but isn't yet used by either app —
+provisioned ahead of need. It's ClusterIP-only, no ingress; reach it in-cluster only (e.g. via
+`task run-k8s -- exec`).
 
-```sh
-task start-k8s               # cluster must be running first
-task deploy                  # builds and deploys phraseforge alongside phraseforge-api (same task)
-task migrate-phraseforge-db  # run phraseforge's own database migration Job (safe to run twice)
-```
-
-`task deploy` builds and pushes both `phraseforge-api:dev` and `phraseforge:dev` in one `task build-image` step, then applies `k8s/60-phraseforge.yaml` along with every other manifest — there's no separate deploy task to run. `task migrate-phraseforge-db` is the phraseforge equivalent of `task migrate-db`: it creates the `phraseforge_app` database (if missing) and applies `internal/db/schema.sql`, which is idempotent — safe to rerun after every schema change, not just the first deploy.
-
-### Ingress host
+**Adminer** gives a DB UI for Postgres, server field pre-filled with its in-cluster DNS name:
 
 | Host | Service |
 |---|---|
-| `phraseforge.localhost:8080` | The app itself — log in as `admin`/`phraseforge` on first deploy (bootstrapped automatically; change the password from the profile page). |
+| `adminer.localhost:8080` | Adminer DB UI — supply user/password from `.k3d/postgres.env` |
 
 ```sh
-curl -H "Host: phraseforge.localhost" http://localhost:8080/healthz
+curl -H "Host: adminer.localhost" http://localhost:8080/
 ```
 
-## Requirements
+### Garage (S3-compatible object storage)
 
-Full traceable requirements for this project live in [`docs/REQUIREMENTS/`](docs/REQUIREMENTS/INDEX.md), including the environment-specific decisions above and why they were made.
+[Garage](https://garagehq.deuxfleurs.fr/) (`dxflrs/garage:v2.3.0`), for developing against
+S3-compatible object storage without a cloud account. Single-node, `replication_factor = 1` —
+a dev tool, not a durability story.
+
+Its config (`rpc_secret`, `admin_token`, `metrics_token`) is generated once into
+`.k3d/garage.toml` (gitignored, rendered from the checked-in `k8s/garage/garage.toml.tmpl`) and
+projected as the `garage-config` Secret — same pattern as Postgres, and for the same reason:
+real secrets never touch git.
+
+**One-time bootstrap** (after `task deploy`): Garage's S3 API refuses every request — even on
+a single node — until its cluster layout has been assigned, which nothing does automatically.
+`task init-garage` handles this, and is safe to rerun:
+
+```sh
+task init-garage
+```
+
+In order, it: assigns this node a layout role (zone `dev`, capacity `1G`) and applies it if
+none is assigned yet; creates a `dev` bucket if missing; and creates a `dev-app` access key
+with read/write on that bucket if missing. Garage never lets you retrieve a secret key after
+creation, so the key and its credentials are written **once**, on first creation, to
+`.k3d/garage.env` (gitignored):
+
+```sh
+GARAGE_KEY_ID=GK...
+GARAGE_SECRET_KEY=...
+GARAGE_BUCKET=dev
+GARAGE_S3_REGION=garage
+GARAGE_S3_ENDPOINT=http://garage.localhost:8080
+```
+
+If `dev-app` already exists in Garage but `.k3d/garage.env` is missing locally (e.g. deleted or
+never committed to a machine-specific backup), the task fails loudly with recovery instructions
+rather than silently leaving you without usable credentials.
+
+**Ingress hosts:**
+
+| Host | Service |
+|---|---|
+| `garage.localhost:8080` | S3 API — path-style requests only (see below); admin token not required |
+| `garage-admin.localhost:8080` | Admin API — cluster status/health, bucket/key management; `GET /health` needs no auth, everything else needs `Authorization: Bearer <admin_token>` from `.k3d/garage.toml` |
+
+```sh
+curl -H "Host: garage-admin.localhost" http://localhost:8080/health
+```
+
+**Developing against it with an S3 SDK (boto3, aws-cli, etc.):** don't point your client at the
+Traefik ingress. S3 clients bake the endpoint hostname directly into request signing — there's
+no way to separately override the `Host` header the way `curl -H` does — so they need
+`garage.localhost` to actually resolve via your language runtime's own DNS resolver. It reliably
+does in a plain browser or `curl` (which special-cases `*.localhost` itself, per RFC 6761), but
+verify before assuming your tooling does too: on this machine, Python's `socket.getaddrinfo`
+does **not** resolve it, even though `curl` does. The dependable option regardless of that is
+`kubectl port-forward` directly to the Service, bypassing hostname resolution entirely:
+
+```sh
+task run-k8s -- port-forward -n data svc/garage 3900:3900
+```
+
+Then, in another terminal, point your client at `http://localhost:3900` with path-style
+addressing and the credentials from `.k3d/garage.env`. Verified end-to-end with boto3:
+
+```python
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:3900",   # NOT garage.localhost — see above
+    aws_access_key_id="<GARAGE_KEY_ID>",
+    aws_secret_access_key="<GARAGE_SECRET_KEY>",
+    region_name="garage",
+)
+s3.put_object(Bucket="dev", Key="hello.txt", Body=b"hello from garage dev bucket")
+print(s3.get_object(Bucket="dev", Key="hello.txt")["Body"].read())
+```
+
+### NATS (message queue, JetStream)
+
+[NATS](https://docs.nats.io/) (`nats:2.14.6-alpine`) with [JetStream](https://docs.nats.io/nats-concepts/jetstream)
+enabled, for developing against a message queue/streaming backend without a hosted service.
+Single node, persistent storage on its own PVC — no bootstrap step needed (unlike Garage):
+JetStream accepts stream/consumer commands as soon as the pod is ready.
+
+No auth is configured — dev-only, matching Qdrant's posture in this cluster.
+
+**Ingress host** (monitoring API only — `/healthz`, `/varz`, `/jsz`, ...; no auth):
+
+| Host | Service |
+|---|---|
+| `nats.localhost:8080` | NATS monitoring HTTP API |
+
+```sh
+curl -H "Host: nats.localhost" http://localhost:8080/healthz
+```
+
+**Developing against it:** the client port (4222) speaks the NATS wire protocol, not HTTP, so
+it's never ingress-routable — there's no hostname trick that helps here, unlike Garage's S3
+API. Reach it with `kubectl port-forward` directly to the Service:
+
+```sh
+task run-k8s -- port-forward -n data svc/nats 4222:4222
+```
+
+Then, in another terminal, point your client at `nats://localhost:4222`. Verified end-to-end
+with `nats-py` — create a stream, publish, pull-consume, confirm persisted message count:
+
+```python
+import asyncio, nats
+
+async def main():
+    nc = await nats.connect("nats://localhost:4222")
+    js = nc.jetstream()
+    await js.add_stream(name="MYSTREAM", subjects=["my.>"])
+    await js.publish("my.subject", b"hello")
+    sub = await js.pull_subscribe("my.>", "my-consumer")
+    for msg in await sub.fetch(1, timeout=5):
+        print(msg.data)
+        await msg.ack()
+    await nc.close()
+
+asyncio.run(main())
+```

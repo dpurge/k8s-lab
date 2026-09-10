@@ -1,0 +1,101 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dictionary
+  namespace: app
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: dictionary
+  template:
+    metadata:
+      labels:
+        app: dictionary
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: dictionary
+          image: k8s-lab-registry:5000/dictionary:dev
+          # Always: the "dev" tag is mutable (rebuilt on every `task build-image`);
+          # without this, kubelet reuses whatever it already cached for that tag.
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8100
+          env:
+            - name: PGHOST
+              value: postgres.data.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: dictionary
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            - name: BIND_ADDR
+              value: 0.0.0.0:8100
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          # Static 200 — DB down should not restart the pod, only fail readiness.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8100
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dictionary
+  namespace: app
+spec:
+  selector:
+    app: dictionary
+  ports:
+    - port: 8100
+      targetPort: 8100
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dictionary
+  namespace: app
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: dictionary.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dictionary
+                port:
+                  number: 8100
