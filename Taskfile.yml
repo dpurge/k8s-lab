@@ -32,10 +32,15 @@ tasks:
         port_listening() { lsof -nP -iTCP:{{.INGRESS_PORT}} -sTCP:LISTEN >/dev/null 2>&1; }
         {{end}}
 
-        info="$(k3d cluster list {{.CLUSTER_NAME}} -o json 2>/dev/null || echo '[]')"
+        # Use the server container as the source of truth.  k3d's JSON list
+        # command can return "No nodes found" on Docker Desktop after a
+        # daemon/WSL restart even though stale cluster metadata remains.
+        server="k3d-{{.CLUSTER_NAME}}-server-0"
+        server_exists="$(docker ps -aq --filter "name=^/${server}$")"
+        server_running="$(docker ps -q --filter "name=^/${server}$")"
         running="0"
-        if [ "$(echo "$info" | jq 'length')" != "0" ]; then
-            running="$(echo "$info" | jq '.[0].serversRunning')"
+        if [ -n "$server_running" ]; then
+            running="1"
         fi
         # Docker/k3d doesn't reliably surface a port-bind conflict on its own
         # (observed silent failure via Rancher Desktop's Lima forwarder).
@@ -44,7 +49,11 @@ tasks:
             echo "Free port {{.INGRESS_PORT}} and re-run 'task start-k8s'." >&2
             exit 1
         fi
-        if [ "$(echo "$info" | jq 'length')" = "0" ]; then
+        if [ -z "$server_exists" ]; then
+            # Remove stale k3d metadata/resources before recreating.  The
+            # command is intentionally best-effort: k3d reports an error when
+            # metadata exists but its node containers are gone.
+            k3d cluster delete {{.CLUSTER_NAME}} >/dev/null 2>&1 || true
             echo "Creating cluster '{{.CLUSTER_NAME}}'..."
             mkdir -p .k3d
             k3d cluster create {{.CLUSTER_NAME}} \
@@ -68,7 +77,10 @@ tasks:
             echo "Cluster '{{.CLUSTER_NAME}}' is already running."
         fi
         mkdir -p .k3d
-        k3d kubeconfig get {{.CLUSTER_NAME}} > {{.KUBECONFIG_PATH}}
+        # Rewrite host.docker.internal to 127.0.0.1: the Windows firewall can
+        # block connections to the mapped API port via the host's LAN IP,
+        # while loopback always works (Docker publishes the port on 0.0.0.0).
+        k3d kubeconfig get {{.CLUSTER_NAME}} | sed 's/host\.docker\.internal/127.0.0.1/g' > {{.KUBECONFIG_PATH}}
         echo "Waiting for ingress port {{.INGRESS_PORT}} to come up..."
         i=0
         while [ "$i" -lt 30 ] && ! port_listening; do
@@ -104,12 +116,11 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-        info="$(k3d cluster list {{.CLUSTER_NAME}} -o json 2>/dev/null || echo '[]')"
-        if [ "$(echo "$info" | jq 'length')" = "0" ]; then
-            echo "Nothing to delete: no cluster named '{{.CLUSTER_NAME}}'."
-        else
-            k3d cluster delete {{.CLUSTER_NAME}}
-        fi
+        # Always make deletion idempotent.  On Docker Desktop, k3d can leave
+        # cluster metadata in a state where `cluster list -o json` fails with
+        # "No nodes found"; using that command as a precondition prevents the
+        # cleanup command from doing anything.
+        k3d cluster delete {{.CLUSTER_NAME}} || true
         rm -f {{.KUBECONFIG_PATH}}
 
   run-k8s:
