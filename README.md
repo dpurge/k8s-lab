@@ -8,14 +8,15 @@ This cluster runs two applications, each documented in its own README:
 - [`phraseforge/README.md`](phraseforge/README.md) — Go app for language-learning content.
 
 This file covers only what's shared: the Taskfile, the k3d cluster itself, and the shared
-infrastructure (Postgres, Qdrant, Adminer, Garage, NATS) both apps run against.
+infrastructure (Postgres, Qdrant, Adminer, Garage, NATS, Argo Workflows/Events) both apps run
+against. Argo Workflows' own workflow definitions live in [`workflows/README.md`](workflows/README.md).
 
 ## Prerequisites
 
 - [k3d](https://k3d.io/) (tested with v5.8.3)
 - [Task](https://taskfile.dev/) (tested with 3.53.1)
-- `jq`, `sed`, `awk`, `grep`, `openssl` — all standard on Linux/macOS. Developed and tested on
-  those platforms; Windows would additionally need Git for Windows or WSL for these.
+- `jq`, `sed`, `awk`, `grep`, `openssl`, `curl` — all standard on Linux/macOS. Developed and
+  tested on those platforms; Windows would additionally need Git for Windows or WSL for these.
 - Docker (this project was built/tested against Rancher Desktop's Docker engine on macOS)
 
 ## Quick start
@@ -101,22 +102,26 @@ If you're on a corporate network, `task start-k8s` automatically trusts the corp
 
 ## Deploying
 
-`task deploy` sets up **shared infrastructure only** — Postgres, Qdrant, Adminer, Garage. It
-never touches the apps; each app has its own deploy task, documented in its own README, and its
-k8s manifests live in its own directory (`dictionary/k8s/`, `phraseforge/k8s/`), not here.
+Shared infrastructure deploys **one piece at a time** — pick whatever you're currently working
+with rather than standing up everything at once. Each pair applies/deletes only its own
+manifest(s), so any combination is safe. The apps are separate again: each has its own
+deploy/delete task, documented in its own README, and its k8s manifests live in its own
+directory (`dictionary/k8s/`, `phraseforge/k8s/`), not here.
 
 ```sh
-task start-k8s   # cluster must be running first
-task deploy      # shared infra only
-task deploy-dictionary    # see dictionary/README.md
-task deploy-phraseforge   # see phraseforge/README.md
+task start-k8s          # cluster must be running first
+task deploy-postgres     # Postgres + Adminer
+task deploy-qdrant
+task deploy-nats
+task deploy-garage       # also bootstraps its layout, dev bucket, and access key
+task deploy-workflows    # Argo Workflows + Argo Events, plus workflows/*.yaml — see workflows/README.md
+task deploy-dictionary   # see dictionary/README.md
+task deploy-phraseforge  # see phraseforge/README.md
 ```
 
-`task deploy` performs the following steps in order:
-1. Applies `k8s/00-namespaces.yaml` (creates `data` and `app` namespaces).
-2. Generates `.k3d/postgres.env` and `.k3d/garage.toml` with random credentials if absent, then creates the `postgres-credentials` Secret (in both `data` and `app`) and the `garage-config` Secret (in `data`). Re-running is idempotent — secrets are never rotated after first use.
-3. Applies all `k8s/*.yaml` manifests (Postgres, Qdrant, Adminer, Garage). The `k8s/jobs/` and `k8s/garage/` subdirectories are **not** included.
-4. Waits for all four Deployments to roll out. Garage's own readiness additionally needs a one-time bootstrap — see [Garage](#garage-s3-compatible-object-storage) below; expect its rollout wait to time out until you've run `task init-garage` once.
+Every `deploy-*`/`delete-*` pair applies/deletes `k8s/00-namespaces.yaml` and, where relevant,
+generates and projects the shared credentials Secret first — idempotent, safe to rerun. The
+`k8s/jobs/` and `k8s/garage/` subdirectories are **not** included in any bulk `kubectl apply`.
 
 **Known gotcha:** rebuilding an image without changing any k8s manifest does **not** make the
 running pod pick it up — same mutable `:dev` tag, unchanged Deployment spec, so Kubernetes sees
@@ -130,10 +135,13 @@ task run-k8s -- rollout restart deployment/dictionary -n app
 
 | Command | What it does |
 |---|---|
-| `task build-image` | Builds and pushes both `dictionary:dev` and `phraseforge:dev` images to the local registry (each app's own deploy task also does this on its own). |
-| `task deploy` | Shared infra only: namespaces → credentials → manifests → rollout wait. |
+| `task deploy-postgres` / `task delete-postgres` | Postgres + Adminer: namespaces → credentials → manifests → rollout wait / teardown. |
+| `task deploy-qdrant` / `task delete-qdrant` | Qdrant only. |
+| `task deploy-nats` / `task delete-nats` | NATS only. |
+| `task deploy-garage` / `task delete-garage` | Garage, plus its one-time layout/bucket/key bootstrap — see [Garage](#garage-s3-compatible-object-storage) below. |
+| `task deploy-workflows` / `task delete-workflows` | Argo Workflows + Argo Events, plus `workflows/*.yaml` and the webhook trigger — see [Argo Workflows / Argo Events](#argo-workflows--argo-events) below. |
 
-Each app's own deploy/migrate tasks and full API docs live in its own README (linked above).
+Each app's own deploy/delete/migrate tasks and full API docs live in its own README (linked above).
 
 ## Shared infrastructure
 
@@ -142,8 +150,8 @@ Postgres, Qdrant, Adminer, Garage, and NATS run in the `data` namespace and are 
 **Postgres** — one server, two independent databases: `dictionary` (used by the `dictionary`
 app) and `phraseforge_app` (used by `phraseforge`), each created and migrated by its own app's
 own migration task — the two schemas never mix. Credentials are generated once into
-`.k3d/postgres.env` (gitignored) — by whichever of `task deploy`, `task deploy-dictionary`, or
-`task deploy-phraseforge` you run first — and projected as the `postgres-credentials` Secret
+`.k3d/postgres.env` (gitignored) — by whichever of `task deploy-postgres`, `task deploy-dictionary`,
+or `task deploy-phraseforge` you run first — and projected as the `postgres-credentials` Secret
 into both the `data` and `app` namespaces.
 
 **Qdrant** (vector DB) is deployed alongside Postgres but isn't yet used by either app —
@@ -171,13 +179,9 @@ Its config (`rpc_secret`, `admin_token`, `metrics_token`) is generated once into
 projected as the `garage-config` Secret — same pattern as Postgres, and for the same reason:
 real secrets never touch git.
 
-**One-time bootstrap** (after `task deploy`): Garage's S3 API refuses every request — even on
-a single node — until its cluster layout has been assigned, which nothing does automatically.
-`task init-garage` handles this, and is safe to rerun:
-
-```sh
-task init-garage
-```
+**One-time bootstrap:** Garage's S3 API refuses every request — even on a single node — until
+its cluster layout has been assigned, which nothing does automatically. `task deploy-garage`
+handles this itself (deploy, then bootstrap), and is safe to rerun.
 
 In order, it: assigns this node a layout role (zone `dev`, capacity `1G`) and applies it if
 none is assigned yet; creates a `dev` bucket if missing; and creates a `dev-app` access key
@@ -284,3 +288,35 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### Argo Workflows / Argo Events
+
+[Argo Workflows](https://argo-workflows.readthedocs.io/) (v4.1.3) for running workflows as
+Kubernetes pods, plus [Argo Events](https://argoproj.github.io/argo-events/) (v1.9.11) so a
+webhook can trigger one. Both run in their own `workflows` namespace (not `data`/`app`), and
+`task deploy-workflows` also applies the WorkflowTemplates in [`workflows/`](workflows/README.md)
+— that's where the actual workflow definitions and full authoring docs live; this section covers
+only the shared controllers and the webhook wiring.
+
+Argo Workflows' own namespaced install manifest (CRDs, RBAC, controller, server) is pinned by
+version in `Taskfile.yml` (`ARGO_WORKFLOWS_VERSION`) but, unlike the other infra above, isn't
+vendored into this repo — it's almost entirely CRD OpenAPI schema and weighs in at ~12 MB.
+`task deploy-workflows` downloads it once per pinned version into `.k3d/` (gitignored) and
+reuses it after that; bump the version and it re-downloads automatically. Argo Events' own
+install manifest is small enough to vendor normally — see `k8s/40-argo-events.yaml`.
+
+**Ingress hosts:**
+
+| Host | Service |
+|---|---|
+| `argo.localhost:8080` | Argo Workflows UI/API — no login needed, see [`workflows/README.md`](workflows/README.md#logging-into-the-ui) |
+| `argo-events.localhost:8080/example` | Webhook — POST JSON here to run the `hello` WorkflowTemplate, see [`workflows/README.md`](workflows/README.md#the-hello-sample) |
+
+```sh
+curl -H "Content-Type: application/json" -d '{"name": "David"}' http://argo-events.localhost:8080/example
+```
+
+**Known gotcha, same shape as the `:dev` image tag one above:** `kubectl apply -f workflows/`
+(what `task deploy-workflows` runs) is a plain client-side apply, so editing a WorkflowTemplate
+and rerunning `task deploy-workflows` picks up the change immediately — no restart needed,
+unlike the Deployments elsewhere in this repo.

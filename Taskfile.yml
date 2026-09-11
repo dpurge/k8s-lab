@@ -3,10 +3,15 @@
 # Developed and tested on Linux/macOS. Task's embedded shell interpreter
 # (mvdan.cc/sh) parses the shell syntax itself on every OS, but external
 # commands still need to be real binaries on PATH — on Windows that means
-# `sed`, `awk`, `grep`, and `openssl` (all used below) require Git for Windows
-# or WSL; they don't ship with Windows.
+# `sed`, `awk`, `grep`, `openssl`, and `curl` (all used below) require Git for
+# Windows or WSL; they don't ship with Windows.
 
 version: "3"
+
+# Applies `set -o errexit -o nounset -o pipefail` to every cmd's shell —
+# equivalent to the `set -euo pipefail` this file used to repeat at the top
+# of every script block.
+set: [errexit, nounset, pipefail]
 
 vars:
   CLUSTER_NAME: k8s-lab
@@ -14,8 +19,22 @@ vars:
   REGISTRY_PORT: "5000"
   INGRESS_PORT: "8080"
   KUBECONFIG_PATH: .k3d/kubeconfig
+  # Every kubectl call below goes through this instead of bare `kubectl`, so
+  # it always targets this project's cluster only — via kubectl's own
+  # --kubeconfig flag, not the KUBECONFIG env var. That matters: Task's env:
+  # merging lets an inherited shell env var of the same name silently win
+  # over a Taskfile-set one (see https://taskfile.dev/docs/experiments/env-precedence),
+  # so setting KUBECONFIG globally here would be a no-op for anyone whose
+  # shell already exports it — exactly the case this project most needs to
+  # guard, since that's their real kubeconfig. A CLI flag has no such
+  # ambiguity: it always wins, so this repo never touches ~/.kube/config.
+  KUBECTL: 'kubectl --kubeconfig={{.KUBECONFIG_PATH}}'
   # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
   CORP_CA_BUNDLE: /usr/local/munki/certs.pem
+  ARGO_WORKFLOWS_VERSION: v4.1.3
+  ARGO_EVENTS_VERSION: v1.9.11
+  # Depends on ARGO_WORKFLOWS_VERSION above — root vars may reference earlier ones.
+  ARGO_WORKFLOWS_MANIFEST: '.k3d/argo-workflows-namespace-install-{{.ARGO_WORKFLOWS_VERSION}}.yaml'
 
 tasks:
 
@@ -23,7 +42,6 @@ tasks:
     desc: Create or resume the k3d cluster, registry, and ingress.
     cmds:
       - |
-        set -euo pipefail
         # Defined once, used at all three check sites below.
         {{if eq OS "windows"}}
         port_listening() { powershell -NoProfile -NonInteractive -Command "if (Get-NetTCPConnection -LocalPort {{.INGRESS_PORT}} -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; }
@@ -97,7 +115,6 @@ tasks:
     desc: Pause the cluster (state and registry contents preserved).
     cmds:
       - |
-        set -euo pipefail
         info="$(k3d cluster list {{.CLUSTER_NAME}} -o json 2>/dev/null || echo '[]')"
         if [ "$(echo "$info" | jq 'length')" = "0" ]; then
             echo "No cluster named '{{.CLUSTER_NAME}}' exists."
@@ -114,7 +131,6 @@ tasks:
     desc: Delete the cluster, registry, and local kubeconfig.
     cmds:
       - |
-        set -euo pipefail
         # Always make deletion idempotent.  On Docker Desktop, k3d can leave
         # cluster metadata in a state where `cluster list -o json` fails with
         # "No nodes found"; using that command as a precondition prevents the
@@ -125,53 +141,41 @@ tasks:
   run-k8s:
     desc: 'Run kubectl against this project''s cluster only. Usage: task run-k8s -- get pods'
     cmds:
-      - |
-        set -euo pipefail
-        if [ ! -f {{.KUBECONFIG_PATH}} ]; then
-            echo "Cluster is not running. Run 'task start-k8s' first." >&2
-            exit 1
-        fi
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl {{.CLI_ARGS}}
+      - task: _require-cluster
+      - '{{.KUBECTL}} {{.CLI_ARGS}}'
 
   # ── Image builds ───────────────────────────────────────────────────────────
 
-  # Corporate network: copies CORP_CA_BUNDLE into the build context (gitignored)
-  # so the Dockerfile can trust it inside the Alpine build stage. Empty
-  # placeholder when the bundle is absent — same approach as start-k8s.
+  # Corporate network: copies CORP_CA_BUNDLE into .docker/corp-ca/ (gitignored)
+  # so the Dockerfile's bind mount can trust it inside the Alpine build stage.
+  # Nothing to do when the bundle is absent — the Dockerfile tolerates that
+  # directory being empty (see dictionary/Dockerfile and phraseforge/Dockerfile).
   _build-image:
     internal: true
+    requires:
+      vars: [APP]
     cmds:
       - |
-        set -euo pipefail
-        corp_ca_dst="{{.APP}}/_corp-ca.pem"
+        corp_ca_dst="{{.APP}}/.docker/corp-ca/_corp-ca.pem"
         if [ -f "{{.CORP_CA_BUNDLE}}" ]; then
             cp "{{.CORP_CA_BUNDLE}}" "$corp_ca_dst"
-        else
-            touch "$corp_ca_dst"
+            trap "rm -f $corp_ca_dst" EXIT
         fi
-        trap "rm -f $corp_ca_dst" EXIT
         docker build -t localhost:{{.REGISTRY_PORT}}/{{.APP}}:dev {{.APP}}/
         docker push localhost:{{.REGISTRY_PORT}}/{{.APP}}:dev
         echo "Image ready: localhost:{{.REGISTRY_PORT}}/{{.APP}}:dev"
 
-  build-image:
-    desc: Build and push both dictionary and phraseforge images to the local registry.
-    cmds:
-      - task: _build-image
-        vars: { APP: dictionary }
-      - task: _build-image
-        vars: { APP: phraseforge }
-
   # Queries the registry manifest API directly rather than a local `docker
   # images` (the image was pushed, may not be present locally under this tag).
-  check-image-size:
-    desc: Verify the compressed dictionary image size is within the 50 MB ceiling.
+  _check-image-size:
+    internal: true
+    requires:
+      vars: [APP]
     cmds:
       - |
-        set -euo pipefail
         accept="application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json"
         index=$(curl -sf -H "Accept: $accept" \
-            "http://localhost:{{.REGISTRY_PORT}}/v2/dictionary/manifests/dev")
+            "http://localhost:{{.REGISTRY_PORT}}/v2/{{.APP}}/manifests/dev")
         media_type=$(echo "$index" | jq -r '.mediaType // ""')
         # OCI index / manifest list (modern Docker/Rancher Desktop): resolve the
         # platform-specific manifest before summing sizes.
@@ -187,7 +191,7 @@ tasks:
             fi
             manifest=$(curl -sf \
                 -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                "http://localhost:{{.REGISTRY_PORT}}/v2/dictionary/manifests/${digest}")
+                "http://localhost:{{.REGISTRY_PORT}}/v2/{{.APP}}/manifests/${digest}")
         else
             manifest="$index"
         fi
@@ -196,12 +200,12 @@ tasks:
         # Integer-only MB display — avoids a `bc` dependency (no native Windows equivalent).
         size_mb_whole=$((size / 1048576))
         size_mb_frac=$(( (size * 100 / 1048576) % 100 ))
-        printf "Compressed image size: %s bytes (%d.%02d MB)\n" "$size" "$size_mb_whole" "$size_mb_frac"
+        printf "Compressed {{.APP}} image size: %s bytes (%d.%02d MB)\n" "$size" "$size_mb_whole" "$size_mb_frac"
         if [ "$size" -gt "$threshold" ]; then
-            echo "FAIL: image exceeds the 50 MB threshold (${threshold} bytes)" >&2
+            echo "FAIL: {{.APP}} image exceeds the 50 MB threshold (${threshold} bytes)" >&2
             exit 1
         fi
-        echo "PASS: image is within the 50 MB threshold."
+        echo "PASS: {{.APP}} image is within the 50 MB threshold."
 
   # ── Shared internal steps ────────────────────────────────────────────────────
 
@@ -209,117 +213,165 @@ tasks:
   # alone isn't enough — confirm via k3d that a server is actually running.
   _require-cluster:
     internal: true
-    cmds:
-      - |
-        set -euo pipefail
-        info="$(k3d cluster list {{.CLUSTER_NAME}} -o json 2>/dev/null || echo '[]')"
-        running="0"
-        if [ "$(echo "$info" | jq 'length')" != "0" ]; then
-            running="$(echo "$info" | jq '.[0].serversRunning')"
-        fi
-        if [ "$running" = "0" ]; then
-            echo "Cluster is not running. Run 'task start-k8s' first." >&2
-            exit 1
-        fi
+    preconditions:
+      - sh: |
+          running=$(k3d cluster list {{.CLUSTER_NAME}} -o json 2>/dev/null | jq 'if length == 0 then 0 else .[0].serversRunning end')
+          [ "$running" != "0" ]
+        msg: "Cluster is not running. Run 'task start-k8s' first."
 
   _apply-namespaces:
     internal: true
     cmds:
-      - |
-        set -euo pipefail
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/00-namespaces.yaml
+      - '{{.KUBECTL}} apply -f k8s/00-namespaces.yaml'
 
-  # Generates .k3d/postgres.env once (if absent) and projects it as a Secret
-  # into both namespaces. Idempotent — never rotates the password after first
+  # Generates .k3d/postgres.env once — the status check skips regeneration
+  # once a real (non-empty) password is present. Never rotates after first
   # use, since that would lock the already-initialized Postgres data dir out.
+  # On Windows a previous failed run can leave an empty placeholder file,
+  # which the status check also treats as "needs (re)generating".
+  _generate-postgres-env:
+    internal: true
+    vars:
+      ENV_FILE: .k3d/postgres.env
+    status:
+      - grep -q '^POSTGRES_PASSWORD=..*' {{.ENV_FILE}}
+    cmds:
+      - mkdir -p .k3d
+      - echo "Generating Postgres credentials into {{.ENV_FILE}}..."
+      - |
+        {
+            echo "POSTGRES_USER=postgres"
+            echo "POSTGRES_DB=postgres"
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+        } > {{.ENV_FILE}}
+      - echo "Credentials written (gitignored). Do not rotate after first Postgres start."
+
+  # Projects .k3d/postgres.env as a Secret into both namespaces — always runs
+  # (kubectl apply is itself idempotent), unlike the credential generation above.
   _ensure-db-secret:
     internal: true
     cmds:
-      - |
-        set -euo pipefail
-        env_file=".k3d/postgres.env"
-        # Regenerate when the file is missing OR the password is empty —
-        # on Windows a previous failed run can leave an empty placeholder file.
-        if [ -f "$env_file" ] && grep -q '^POSTGRES_PASSWORD=..*' "$env_file"; then
-            echo "Using existing credentials from ${env_file}."
-        else
-            mkdir -p .k3d
-            echo "Generating Postgres credentials into ${env_file}..."
-            {
-                echo "POSTGRES_USER=postgres"
-                echo "POSTGRES_DB=postgres"
-                echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
-            } > "$env_file"
-            echo "Credentials written (gitignored). Do not rotate after first Postgres start."
-        fi
-        for ns in data app; do
-            echo "Projecting postgres-credentials Secret into namespace ${ns}..."
-            KUBECONFIG={{.KUBECONFIG_PATH}} kubectl create secret generic postgres-credentials \
-                --from-env-file="$env_file" \
-                --namespace="$ns" \
-                --dry-run=client -o yaml \
-            | KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f -
-        done
+      - task: _generate-postgres-env
+      - for: [data, app]
+        cmd: |
+          echo "Projecting postgres-credentials Secret into namespace {{.ITEM}}..."
+          {{.KUBECTL}} create secret generic postgres-credentials \
+              --from-env-file=.k3d/postgres.env \
+              --namespace={{.ITEM}} \
+              --dry-run=client -o yaml \
+          | {{.KUBECTL}} apply -f -
 
-  # Same pattern as _ensure-db-secret, for Garage's config file instead of a
-  # flat env file: substitutes fresh secrets into k8s/garage/garage.toml.tmpl
-  # once, then projects the rendered file as the garage-config Secret.
+  # Same pattern as _generate-postgres-env, for Garage's config file instead of
+  # a flat env file: substitutes fresh secrets into k8s/garage/garage.toml.tmpl.
+  _generate-garage-toml:
+    internal: true
+    vars:
+      CFG_FILE: .k3d/garage.toml
+    status:
+      - grep -Eq '^rpc_secret = "[0-9a-fA-F]{64}"$' {{.CFG_FILE}}
+      - grep -Eq '^admin_token = ".+"$' {{.CFG_FILE}}
+      - grep -Eq '^metrics_token = ".+"$' {{.CFG_FILE}}
+    cmds:
+      - mkdir -p .k3d
+      - echo "Generating Garage config into {{.CFG_FILE}}..."
+      - |
+        sed \
+            -e "s/__RPC_SECRET__/$(openssl rand -hex 32)/" \
+            -e "s|__ADMIN_TOKEN__|$(openssl rand -base64 32)|" \
+            -e "s|__METRICS_TOKEN__|$(openssl rand -base64 32)|" \
+            k8s/garage/garage.toml.tmpl > {{.CFG_FILE}}
+      - echo "Config written (gitignored). Do not rotate after first Garage start."
+
+  # Projects .k3d/garage.toml as a Secret into namespace data — always runs,
+  # same reasoning as _ensure-db-secret above.
   _ensure-garage-config:
     internal: true
     cmds:
+      - task: _generate-garage-toml
+      - echo "Projecting garage-config Secret into namespace data..."
       - |
-        set -euo pipefail
-        cfg_file=".k3d/garage.toml"
-        # Regenerate when the file is missing OR secrets are empty placeholders —
-        # on Windows a previous failed run can leave empty placeholder values.
-        if [ -f "$cfg_file" ] \
-            && grep -Eq '^rpc_secret = "[0-9a-fA-F]{64}"$' "$cfg_file" \
-            && grep -Eq '^admin_token = ".+"$' "$cfg_file" \
-            && grep -Eq '^metrics_token = ".+"$' "$cfg_file"; then
-            echo "Using existing config from ${cfg_file}."
-        else
-            mkdir -p .k3d
-            echo "Generating Garage config into ${cfg_file}..."
-            sed \
-                -e "s/__RPC_SECRET__/$(openssl rand -hex 32)/" \
-                -e "s|__ADMIN_TOKEN__|$(openssl rand -base64 32)|" \
-                -e "s|__METRICS_TOKEN__|$(openssl rand -base64 32)|" \
-                k8s/garage/garage.toml.tmpl > "$cfg_file"
-            echo "Config written (gitignored). Do not rotate after first Garage start."
-        fi
-        echo "Projecting garage-config Secret into namespace data..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl create secret generic garage-config \
-            --from-file=garage.toml="$cfg_file" \
+        {{.KUBECTL}} create secret generic garage-config \
+            --from-file=garage.toml=.k3d/garage.toml \
             --namespace=data \
             --dry-run=client -o yaml \
-        | KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f -
+        | {{.KUBECTL}} apply -f -
 
   # ── Shared infrastructure ────────────────────────────────────────────────────
+  #
+  # Split so you can deploy only the pieces you're currently working with,
+  # rather than everything at once. Each pair applies/deletes its own
+  # manifest(s) only — safe to run in any combination.
 
-  deploy:
-    desc: Deploy shared infrastructure (Postgres, Qdrant, Adminer, Garage, NATS) — not the apps.
+  deploy-postgres:
+    desc: Deploy Postgres and Adminer to the running cluster.
     cmds:
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
+      - '{{.KUBECTL}} apply -f k8s/10-postgres.yaml -f k8s/30-adminer.yaml'
+      - '{{.KUBECTL}} rollout status deployment/postgres -n data --timeout=120s'
+      - '{{.KUBECTL}} rollout status deployment/adminer  -n data --timeout=120s'
+      - echo "postgres ready."
+      - 'echo "adminer ready: http://adminer.localhost:{{.INGRESS_PORT}}"'
+
+  delete-postgres:
+    desc: Delete Postgres and Adminer from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f k8s/30-adminer.yaml -f k8s/10-postgres.yaml --ignore-not-found'
+
+  deploy-qdrant:
+    desc: Deploy Qdrant to the running cluster.
+    cmds:
+      - task: _require-cluster
+      - task: _apply-namespaces
+      - '{{.KUBECTL}} apply -f k8s/20-qdrant.yaml'
+      - '{{.KUBECTL}} rollout status deployment/qdrant -n data --timeout=120s'
+      - echo "qdrant ready."
+
+  delete-qdrant:
+    desc: Delete Qdrant from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f k8s/20-qdrant.yaml --ignore-not-found'
+
+  deploy-nats:
+    desc: Deploy NATS to the running cluster.
+    cmds:
+      - task: _require-cluster
+      - task: _apply-namespaces
+      - '{{.KUBECTL}} apply -f k8s/35-nats.yaml'
+      - '{{.KUBECTL}} rollout status deployment/nats -n data --timeout=120s'
+      - 'echo "nats ready: http://nats.localhost:{{.INGRESS_PORT}}"'
+
+  delete-nats:
+    desc: Delete NATS from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f k8s/35-nats.yaml --ignore-not-found'
+
+  deploy-garage:
+    desc: Deploy Garage to the running cluster and bootstrap its layout, dev bucket, and access key.
+    cmds:
+      - task: _require-cluster
+      - task: _apply-namespaces
       - task: _ensure-garage-config
-      - |
-        set -euo pipefail
-        echo "Applying k8s manifests (k8s/*.yaml, non-recursive — excludes k8s/jobs/, k8s/garage/)..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f k8s/
-        echo "Waiting for rollout..."
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/postgres -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/qdrant   -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/garage   -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/nats     -n data --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/adminer  -n data --timeout=120s
-        echo "Shared infrastructure ready:"
-        echo "  adminer:        http://adminer.localhost:{{.INGRESS_PORT}}"
-        echo "  garage (S3):    http://garage.localhost:{{.INGRESS_PORT}}"
-        echo "  garage (admin): http://garage-admin.localhost:{{.INGRESS_PORT}}"
-        echo "  nats (monitor): http://nats.localhost:{{.INGRESS_PORT}}"
-        echo "Run 'task init-garage' once to bootstrap Garage's layout, bucket, and access key."
-        echo "Deploy the apps separately: 'task deploy-dictionary', 'task deploy-phraseforge'."
+      - '{{.KUBECTL}} apply -f k8s/25-garage.yaml'
+      # Not "rollout status" here: Garage's /health returns 503 — failing the
+      # readiness probe — until a cluster layout is assigned, which is what
+      # _init-garage below does. Wait for the container to be Running instead;
+      # `kubectl exec` works against a Running-but-not-Ready pod.
+      - '{{.KUBECTL}} wait --for=jsonpath=''{.status.phase}''=Running -n data -l app=garage pod --timeout=120s'
+      - task: _init-garage
+      - '{{.KUBECTL}} rollout status deployment/garage -n data --timeout=60s'
+      - 'echo "garage (S3):    http://garage.localhost:{{.INGRESS_PORT}}"'
+      - 'echo "garage (admin): http://garage-admin.localhost:{{.INGRESS_PORT}}"'
+
+  delete-garage:
+    desc: Delete Garage from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f k8s/25-garage.yaml --ignore-not-found'
 
   # ── dictionary ───────────────────────────────────────────────────────────────
 
@@ -329,15 +381,25 @@ tasks:
       - task: _build-image
         vars:
           APP: dictionary
+      - task: _check-image-size
+        vars:
+          APP: dictionary
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
-      - |
-        set -euo pipefail
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f dictionary/k8s/
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/dictionary -n app --timeout=120s
-        echo "dictionary ready: http://dictionary.localhost:{{.INGRESS_PORT}}"
-        echo "Run 'task migrate-dictionary-db' once to apply its schema."
+      - task: _migrate-db
+        vars:
+          APP: dictionary
+          JOB_NAME: dictionary-migrate
+      - '{{.KUBECTL}} apply -f dictionary/k8s/'
+      - '{{.KUBECTL}} rollout status deployment/dictionary -n app --timeout=120s'
+      - 'echo "dictionary ready: http://dictionary.localhost:{{.INGRESS_PORT}}"'
+
+  delete-dictionary:
+    desc: Delete the dictionary service from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f dictionary/k8s/ --ignore-not-found'
 
   migrate-dictionary-db:
     desc: Run the dictionary database migration Job against the running cluster.
@@ -355,15 +417,25 @@ tasks:
       - task: _build-image
         vars:
           APP: phraseforge
+      - task: _check-image-size
+        vars:
+          APP: phraseforge
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
-      - |
-        set -euo pipefail
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f phraseforge/k8s/
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl rollout status deployment/phraseforge -n app --timeout=120s
-        echo "phraseforge ready: http://phraseforge.localhost:{{.INGRESS_PORT}}"
-        echo "Run 'task migrate-phraseforge-db' once to apply its schema."
+      - task: _migrate-db
+        vars:
+          APP: phraseforge
+          JOB_NAME: phraseforge-migrate
+      - '{{.KUBECTL}} apply -f phraseforge/k8s/'
+      - '{{.KUBECTL}} rollout status deployment/phraseforge -n app --timeout=120s'
+      - 'echo "phraseforge ready: http://phraseforge.localhost:{{.INGRESS_PORT}}"'
+
+  delete-phraseforge:
+    desc: Delete the phraseforge app from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f phraseforge/k8s/ --ignore-not-found'
 
   migrate-phraseforge-db:
     desc: Run the phraseforge database migration Job against the running cluster.
@@ -378,16 +450,14 @@ tasks:
   # second run applies nothing new.
   _migrate-db:
     internal: true
+    requires:
+      vars: [APP, JOB_NAME]
     cmds:
       - task: _require-cluster
-      - |
-        set -euo pipefail
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl delete job {{.JOB_NAME}} -n app --ignore-not-found
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl apply -f {{.APP}}/k8s/jobs/migrate-job.yaml
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl wait --for=condition=complete \
-            job/{{.JOB_NAME}} -n app --timeout=120s
-        KUBECONFIG={{.KUBECONFIG_PATH}} kubectl logs -n app \
-            -l job-name={{.JOB_NAME}} --tail=100
+      - '{{.KUBECTL}} delete job {{.JOB_NAME}} -n app --ignore-not-found'
+      - '{{.KUBECTL}} apply -f {{.APP}}/k8s/jobs/migrate-job.yaml'
+      - '{{.KUBECTL}} wait --for=condition=complete job/{{.JOB_NAME}} -n app --timeout=120s'
+      - '{{.KUBECTL}} logs -n app -l job-name={{.JOB_NAME}} --tail=100'
 
   # ── Garage ───────────────────────────────────────────────────────────────────
 
@@ -396,15 +466,14 @@ tasks:
   # Idempotent: skips the layout step if a role is already assigned, and skips
   # key creation if "dev-app" already exists (Garage never lets you retrieve a
   # secret key twice, so it's saved to .k3d/garage.env on first creation only).
-  init-garage:
-    desc: Bootstrap Garage's cluster layout, a dev bucket, and a dev access key.
+  _init-garage:
+    internal: true
     cmds:
       - task: _require-cluster
       - |
-        set -euo pipefail
         # /garage, not "garage": the image is shell-less with no $PATH lookup;
         # the binary is the container's own ENTRYPOINT at this absolute path.
-        exec_garage() { KUBECONFIG={{.KUBECONFIG_PATH}} kubectl exec -n data deploy/garage -- /garage "$@"; }
+        exec_garage() { {{.KUBECTL}} exec -n data deploy/garage -- /garage "$@"; }
 
         status_output="$(exec_garage status)"
         echo "$status_output"
@@ -450,3 +519,74 @@ tasks:
             echo "Credentials written to .k3d/garage.env (gitignored)."
         fi
         echo "Garage ready. Credentials and endpoint: .k3d/garage.env"
+
+  # ── Argo Workflows + Argo Events ─────────────────────────────────────────────
+
+  # Argo Workflows' own namespaced install manifest (CRDs, RBAC, controller,
+  # server) is ~12 MB — almost entirely CRD OpenAPI schemas — so unlike the
+  # other shared infra above it isn't vendored into this repo. Downloaded once
+  # per pinned version into .k3d/ (gitignored); the status check skips
+  # re-downloading once it's already there — bump ARGO_WORKFLOWS_VERSION above
+  # and it re-downloads automatically, since the cache path is versioned.
+  _ensure-argo-workflows-manifest:
+    internal: true
+    status:
+      - test -s {{.ARGO_WORKFLOWS_MANIFEST}}
+    cmds:
+      - mkdir -p .k3d
+      - echo "Downloading Argo Workflows {{.ARGO_WORKFLOWS_VERSION}} manifest..."
+      - |
+        tmp={{.ARGO_WORKFLOWS_MANIFEST}}.tmp
+        url="https://github.com/argoproj/argo-workflows/releases/download/{{.ARGO_WORKFLOWS_VERSION}}/namespace-install.yaml"
+        if ! curl -fsSL "$url" -o "$tmp"; then
+            rm -f "$tmp"
+            echo "Error: failed to download $url" >&2
+            echo "Check network access (corporate TLS inspection can block this on some" >&2
+            echo "hosts) and retry, or place the file manually at {{.ARGO_WORKFLOWS_MANIFEST}}." >&2
+            exit 1
+        fi
+        mv "$tmp" {{.ARGO_WORKFLOWS_MANIFEST}}
+
+  deploy-workflows:
+    desc: Deploy Argo Workflows, Argo Events, and workflows/*.yaml to the running cluster, with a webhook wired to run the "hello" WorkflowTemplate.
+    cmds:
+      - task: _require-cluster
+      - task: _apply-namespaces
+      - task: _ensure-argo-workflows-manifest
+      # --server-side: several of these CRDs (Workflow, WorkflowTemplate, ...) embed a
+      # large enough OpenAPI schema that client-side apply's last-applied-configuration
+      # annotation exceeds Kubernetes' 262144-byte annotation limit.
+      - '{{.KUBECTL}} apply --server-side --force-conflicts -n workflows -f {{.ARGO_WORKFLOWS_MANIFEST}}'
+      - '{{.KUBECTL}} apply -f k8s/40-argo-events.yaml -f k8s/41-argo-workflows-setup.yaml'
+      - '{{.KUBECTL}} apply -f workflows/'
+      # argo-server's upstream defaults require per-user auth and serve HTTPS;
+      # replace both with a no-login, plain-HTTP setup (matching this cluster's
+      # no-auth-for-dev-tools posture) — a "replace", not "add", so it's safe
+      # to rerun even after argo-server's args already carry the patch.
+      - |
+        {{.KUBECTL}} patch deployment argo-server -n workflows --type=json -p='
+          [
+            {"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["server", "--namespaced", "--auth-mode=server", "--secure=false"]},
+            {"op": "replace", "path": "/spec/template/spec/containers/0/readinessProbe/httpGet/scheme", "value": "HTTP"}
+          ]'
+      - '{{.KUBECTL}} rollout status deployment/workflow-controller -n workflows --timeout=120s'
+      - '{{.KUBECTL}} rollout status deployment/argo-server -n workflows --timeout=120s'
+      - '{{.KUBECTL}} rollout status deployment/controller-manager -n workflows --timeout=120s'
+      - '{{.KUBECTL}} apply -f k8s/42-argo-workflows-webhook.yaml'
+      - 'echo "argo-workflows UI: http://argo.localhost:{{.INGRESS_PORT}}"'
+      - 'echo "webhook (runs the hello WorkflowTemplate): see workflows/README.md"'
+
+  delete-workflows:
+    desc: Delete Argo Workflows and Argo Events from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f k8s/42-argo-workflows-webhook.yaml -f k8s/41-argo-workflows-setup.yaml -f k8s/40-argo-events.yaml --ignore-not-found'
+      # Before the manifest below removes the WorkflowTemplate CRD itself.
+      - '{{.KUBECTL}} delete -f workflows/ --ignore-not-found'
+      - |
+        if [ -s {{.ARGO_WORKFLOWS_MANIFEST}} ]; then
+            {{.KUBECTL}} delete -n workflows -f {{.ARGO_WORKFLOWS_MANIFEST}} --ignore-not-found
+        else
+            echo "Warning: {{.ARGO_WORKFLOWS_MANIFEST}} not found locally; skipping deletion of the Argo Workflows controller/CRDs/RBAC." >&2
+            echo "Run 'task deploy-workflows' once to re-fetch it, then 'task delete-workflows' again — or delete the 'workflows' namespace's contents manually." >&2
+        fi

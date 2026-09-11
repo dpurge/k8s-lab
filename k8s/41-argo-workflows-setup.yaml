@@ -1,0 +1,59 @@
+# Ingress for the Argo Workflows UI/API (argo-server). The Service and Deployment
+# themselves come from the vendored controller manifest applied separately (see
+# deploy-workflows in Taskfile.yml) — this file only exposes it.
+#
+# argo-server's default flags require per-user auth; the deploy-workflows task
+# patches its Deployment to --auth-mode=server --secure=false (no login, plain
+# HTTP) to match this cluster's no-auth-for-dev-tools posture (Qdrant, NATS).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argo-server
+  namespace: workflows
+spec:
+  rules:
+  - host: argo.localhost
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argo-server
+            port:
+              number: 2746
+---
+# Every Workflow's step pods run as the `default` ServiceAccount of whatever
+# namespace they're in (nothing in this repo sets serviceAccountName), which
+# by default carries no RBAC at all. The emissary executor (default since
+# v3.4) needs permission to create/patch its own WorkflowTaskResult as each
+# step finishes — without this, every run fails at its last step with
+# "workflowtaskresults.argoproj.io is forbidden". Minimal grant, per
+# https://argo-workflows.readthedocs.io/en/latest/workflow-rbac/
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workflow-executor-role
+  namespace: workflows
+rules:
+- apiGroups:
+  - argoproj.io
+  resources:
+  - workflowtaskresults
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workflow-executor-role-binding
+  namespace: workflows
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workflow-executor-role
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: workflows

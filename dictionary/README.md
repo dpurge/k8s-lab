@@ -22,15 +22,17 @@ the global admin role — change or replace this before deploying anywhere but t
 ## Deploy and migrate
 
 ```sh
-task start-k8s             # cluster must be running first
-task deploy                 # shared infra: Postgres, Qdrant, Adminer, Garage (see root README)
-task deploy-dictionary       # build the dictionary image, apply dictionary/k8s/, wait for Ready
-task migrate-dictionary-db  # run its database migration Job (safe to run twice — second run is a no-op)
+task start-k8s            # cluster must be running first
+task deploy-postgres       # Postgres + Adminer (see root README)
+task deploy-dictionary      # build the image, check its size, migrate, apply dictionary/k8s/, wait for Ready
 ```
 
-`task deploy-dictionary` applies `dictionary/k8s/deployment.yaml` (Deployment/Service/Ingress).
-The migration Job (`dictionary/k8s/jobs/migrate-job.yaml`) is applied only by
-`task migrate-dictionary-db` — run it once after a fresh deploy; subsequent runs are no-ops.
+`task deploy-dictionary` builds and size-checks the image, runs the database migration Job
+(`dictionary/k8s/jobs/migrate-job.yaml` — safe to rerun, a no-op after the first run), then
+applies `dictionary/k8s/deployment.yaml` (Deployment/Service/Ingress). Run
+`task migrate-dictionary-db` on its own later if you need to re-apply the schema without a full
+redeploy (e.g. after adding a new migration). `task delete-dictionary` removes the
+Deployment/Service/Ingress only — it leaves the migration Job and the database alone.
 
 ## Ingress host
 
@@ -327,8 +329,8 @@ curl -sS -H "Host: dictionary.localhost" "http://localhost:8080/api/v1/languages
 
 | Command | What it does |
 |---|---|
-| `task check-image-size` | Queries the registry manifest API and prints the compressed `dictionary` image size; fails if > 50 MB (NFR-IMG-001). |
-| `task migrate-dictionary-db` | Runs the dictionary database migration Job; prints logs; safe to run repeatedly. |
+| `task migrate-dictionary-db` | Runs the dictionary database migration Job on its own (without a full redeploy); prints logs; safe to run repeatedly. |
 
-Building both images and the full cluster deploy are shared across apps — see the
-[root README](../README.md#deploying-applications).
+`task deploy-dictionary` already checks the compressed image size against the 50 MB ceiling
+(NFR-IMG-001) as part of its build step. The shared infrastructure tasks are documented in the
+[root README](../README.md#deploying).

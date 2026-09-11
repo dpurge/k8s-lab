@@ -14,16 +14,17 @@ Shares the `data` namespace's Postgres server with `dictionary`, but its own dat
 ## Deploy and migrate
 
 ```sh
-task start-k8s               # cluster must be running first
-task deploy                  # shared infra: Postgres, Qdrant, Adminer, Garage (see root README)
-task deploy-phraseforge       # build the phraseforge image, apply phraseforge/k8s/, wait for Ready
-task migrate-phraseforge-db  # run phraseforge's own database migration Job (safe to run twice)
+task start-k8s              # cluster must be running first
+task deploy-postgres          # Postgres + Adminer (see root README)
+task deploy-phraseforge        # build the image, check its size, migrate, apply phraseforge/k8s/, wait for Ready
 ```
 
-`task deploy-phraseforge` applies `phraseforge/k8s/deployment.yaml` (Deployment/Service/Ingress).
-`task migrate-phraseforge-db` creates the `phraseforge_app` database (if missing) and applies
-`internal/db/schema.sql`, which is idempotent — safe to rerun after every schema change, not
-just the first deploy.
+`task deploy-phraseforge` builds and size-checks the image, runs the database migration Job
+(creates the `phraseforge_app` database if missing and applies `internal/db/schema.sql`, which
+is idempotent), then applies `phraseforge/k8s/deployment.yaml` (Deployment/Service/Ingress). Run
+`task migrate-phraseforge-db` on its own later to re-apply the schema after a change without a
+full redeploy. `task delete-phraseforge` removes the Deployment/Service/Ingress only — it leaves
+the migration Job and the database alone.
 
 ## Ingress host
 

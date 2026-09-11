@@ -46,7 +46,7 @@ spec:
               mountPath: /etc/garage.toml
               subPath: garage.toml
               readOnly: true
-          # /health stays 503 until `task init-garage` assigns the layout.
+          # /health stays 503 until `task deploy-garage`'s bootstrap step assigns the layout.
           readinessProbe:
             httpGet:
               path: /health

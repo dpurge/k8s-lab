@@ -12,9 +12,11 @@ agents/TEMP/
 .k3d/garage.toml
 .k3d/garage.env
 
-# Corporate CA bundle copies used during Docker build — temp files, gitignored
-dictionary/_corp-ca.pem
-phraseforge/_corp-ca.pem
+# Corporate CA bundle copies used during Docker build — temp files, gitignored.
+# The .docker/corp-ca/ directories themselves ARE committed (empty, via
+# .gitkeep) so the Dockerfiles' bind mount always has something to mount.
+dictionary/.docker/corp-ca/_corp-ca.pem
+phraseforge/.docker/corp-ca/_corp-ca.pem
 
 # OS cruft
 .DS_Store

@@ -1,0 +1,149 @@
+# Wires a webhook to Argo Workflows via Argo Events: POSTing to the endpoint
+# below runs the `hello` WorkflowTemplate (../workflows/hello.yaml), passing
+# the request body's "name" field through as its "name" parameter — e.g.
+# `curl -d '{"name": "David"}' ...` prints "Hello David!" in the run's logs.
+#
+# EventBus: the message bus Argo Events' EventSource and Sensor pods use to
+# talk to each other. One is required per namespace before any EventSource or
+# Sensor will start. JetStream, not the upstream examples' "native" (NATS
+# streaming, deprecated upstream) — native hard-requires 3 replicas; jetstream
+# accepts 1, per the controller's own validation
+# (https://github.com/argoproj/argo-events/blob/v1.9.11/pkg/reconciler/eventbus/validate.go),
+# which is the right footprint for a single-node dev cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: default
+  namespace: workflows
+spec:
+  jetstream:
+    version: latest
+    replicas: 1
+    # The controller's own default streamConfig requests 3 stream replicas
+    # regardless of the eventbus's own `replicas` above — mismatched, NATS
+    # rejects it ("replicas > 1 not supported in non-clustered mode"). Pin it
+    # to match our single-node eventbus.
+    streamConfig: |
+      replicas: 1
+---
+# RBAC the Sensor's trigger pod uses to create Workflow objects, distinct from
+# both the Argo Events controller's own service account (argo-events-sa, scoped
+# to EventBus/EventSource/Sensor) and the Argo Workflows controller's (argo).
+# Matches the upstream example at
+# https://github.com/argoproj/argo-events/blob/v1.9.11/examples/sensors/webhook.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: operate-workflow-sa
+  namespace: workflows
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: operate-workflow-role
+  namespace: workflows
+rules:
+- apiGroups:
+  - argoproj.io
+  resources:
+  - workflows
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: operate-workflow-role-binding
+  namespace: workflows
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: operate-workflow-role
+subjects:
+- kind: ServiceAccount
+  name: operate-workflow-sa
+  namespace: workflows
+---
+# HTTP server Argo Events runs for us (own Deployment + Service, named
+# webhook-eventsource-svc, created automatically by the controller above).
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: webhook
+  namespace: workflows
+spec:
+  service:
+    ports:
+    - port: 12000
+      targetPort: 12000
+  webhook:
+    example:
+      port: "12000"
+      endpoint: /example
+      method: POST
+---
+# Watches the EventSource above and creates a Workflow per request, from the
+# `hello` WorkflowTemplate (../workflows/hello.yaml) — swap workflowTemplateRef
+# below to point at a different template of your own.
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: webhook
+  namespace: workflows
+spec:
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+  - name: webhook-dep
+    eventSourceName: webhook
+    eventName: example
+  triggers:
+  - template:
+      name: webhook-workflow-trigger
+      k8s:
+        operation: create
+        source:
+          resource:
+            apiVersion: argoproj.io/v1alpha1
+            kind: Workflow
+            metadata:
+              generateName: hello-
+              namespace: workflows
+            spec:
+              workflowTemplateRef:
+                name: hello
+              arguments:
+                parameters:
+                - name: name
+                  value: World
+        parameters:
+        # dataKey uses dot notation into the webhook's JSON body — see
+        # https://argoproj.github.io/argo-events/tutorials/02-parameterization/#event-data
+        - src:
+            dependencyName: webhook-dep
+            dataKey: body.name
+          dest: spec.arguments.parameters.0.value
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argo-events-webhook
+  namespace: workflows
+spec:
+  rules:
+  - host: argo-events.localhost
+    http:
+      paths:
+      - path: /example
+        pathType: Prefix
+        backend:
+          service:
+            name: webhook-eventsource-svc
+            port:
+              number: 12000

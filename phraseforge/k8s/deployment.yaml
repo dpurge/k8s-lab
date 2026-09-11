@@ -22,7 +22,7 @@ spec:
       containers:
         - name: phraseforge
           image: k8s-lab-registry:5000/phraseforge:dev
-          # Always: the "dev" tag is mutable (rebuilt on every `task build-image`);
+          # Always: the "dev" tag is mutable (rebuilt on every `task deploy-phraseforge`);
           # without this, kubelet reuses whatever it already cached for that tag.
           imagePullPolicy: Always
           ports:

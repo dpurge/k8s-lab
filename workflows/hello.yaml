@@ -1,0 +1,24 @@
+# Sample WorkflowTemplate — a reusable Workflow definition, submitted either
+# via `argo submit --from workflowtemplate/hello`, the UI's "Submit" button,
+# or (as wired up here) the webhook at http://argo-events.localhost:8080/example
+# — see k8s/42-argo-workflows-webhook.yaml and ../README.md.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: hello
+  namespace: workflows
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: name
+      value: World
+  templates:
+  - name: main
+    inputs:
+      parameters:
+      - name: name
+    container:
+      image: busybox
+      command: [echo]
+      args: ["Hello {{inputs.parameters.name}}!"]
