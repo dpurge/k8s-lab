@@ -22,9 +22,12 @@ RUN --mount=type=bind,source=.docker/corp-ca,target=/corp-ca \
         update-ca-certificates; \
     fi
 
-# Dependency cache layer: copy manifests and fetch modules before copying source.
+# Dependency cache layer: copy manifests and the local shared module before
+# downloading dependencies. Dependencies are resolved by Go, not vendored into
+# this repository.
 COPY go.mod go.sum ./
-RUN go mod download
+COPY --from=shared . ./shared/
+RUN go mod edit -replace k8s-lab/shared=./shared && go mod download
 
 COPY main.go ./
 COPY internal/ ./internal/

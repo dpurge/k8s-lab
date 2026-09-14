@@ -7,15 +7,17 @@
       <span class="badge">{{.List.Language}} / {{.List.Script}}</span>
       {{range .Tags}}<a class="badge tag-link" href="/vocabulary?tag={{.}}">{{.}}</a>{{end}}
     </div>
-    {{if .CanEdit}}
-    <div style="display:flex; gap:0.5rem; flex-shrink:0;">
+    <div class="resource-actions">
+      <button class="btn btn-secondary" type="button" onclick="phraseforgeCopyMarkdown('copy-vocabulary-markdown', this)">Copy</button>
+      {{if .CanEdit}}
       <a class="btn" href="/vocabulary/{{.List.ID}}/edit">{{call .T "texts.edit"}}</a>
       <form method="post" action="/vocabulary/{{.List.ID}}/delete" onsubmit="return confirm('{{call .T "vocabulary.delete_confirm"}}');">
         <button class="btn btn-danger" type="submit">{{call .T "texts.delete"}}</button>
       </form>
+      {{end}}
     </div>
-    {{end}}
   </div>
+  <textarea id="copy-vocabulary-markdown" class="copy-source" readonly>{{.Markdown}}</textarea>
 
   {{if .Rows}}
   <div style="overflow-x:auto; margin-top:1.5rem;">

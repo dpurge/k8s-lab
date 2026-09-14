@@ -185,19 +185,15 @@ func (s *Server) handleModelsView(w http.ResponseWriter, r *http.Request) {
 	// Pair each item with its translation (zero value — blank — if this
 	// locale hasn't translated that position yet) for the view template's
 	// one-row-per-item table.
-	type row struct {
-		models.Item
-		Translation string
-	}
-	rows := make([]row, len(items))
+	rows := make([]modelsViewRow, len(items))
 	for i, it := range items {
 		t := trans[it.Position]
-		rows[i] = row{Item: it, Translation: t.Translation}
+		rows[i] = modelsViewRow{Item: it, Translation: t.Translation}
 	}
 
 	render(w, u.Locale, "models-view.html", map[string]any{
 		"User": u, "NavFlags": nv, "List": l, "Rows": rows, "Script": scriptMeta,
-		"CanEdit": canEdit, "Tags": listTags,
+		"CanEdit": canEdit, "Tags": listTags, "Markdown": modelsMarkdown(l.Language, l.Script, rows),
 	})
 }
 
@@ -261,14 +257,10 @@ func (s *Server) handleModelsEditForm(w http.ResponseWriter, r *http.Request) {
 	// Pair each item with its translation (blank if this locale hasn't
 	// translated that position yet) for the item-list table below the entry
 	// form — same shape as the view page's table.
-	type row struct {
-		models.Item
-		Translation string
-	}
-	rows := make([]row, len(items))
+	rows := make([]modelsViewRow, len(items))
 	for i, it := range items {
 		t := trans[it.Position]
-		rows[i] = row{Item: it, Translation: t.Translation}
+		rows[i] = modelsViewRow{Item: it, Translation: t.Translation}
 	}
 
 	// The entry form either adds a new item (default) or edits an existing

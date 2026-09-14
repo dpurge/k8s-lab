@@ -1,0 +1,12 @@
+# Git metadata — not needed in the build context
+.git/
+
+# Kubernetes manifests and project docs — build-time irrelevant
+k8s/
+docs/
+
+# Markdown and misc project files
+*.md
+
+# k3d-generated credentials and config
+.k3d/

@@ -3,6 +3,19 @@
   <h1>{{call .T "admin.title"}}</h1>
 
   <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "admin.config_heading"}}</h2>
+    <p class="muted">{{call .T "admin.config_import_hint"}}</p>
+    <div class="form-actions" style="align-items:center; gap:0.75rem; flex-wrap:wrap;">
+      <a class="btn" href="/admin/config/export">{{call .T "admin.config_export"}}</a>
+      <form method="post" action="/admin/config/import" enctype="multipart/form-data" onsubmit="return confirm('{{call .T "admin.config_import_confirm"}}');" style="display:flex; align-items:center; gap:0.75rem; margin:0;">
+        <label class="field-label" for="admin-config-file" style="margin:0;">{{call .T "admin.config_import_file"}}</label>
+        <input type="file" id="admin-config-file" name="config_file" accept="application/json,.json" required style="margin:0; width:auto;">
+        <button class="btn" type="submit">{{call .T "admin.config_import"}}</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem;">
     <h2 style="margin-top:0;">{{call .T "admin.grant_heading"}}</h2>
     <form method="post" action="/admin/grants">
       <div class="field-row">
@@ -95,6 +108,86 @@
       </label>
       <button class="btn" type="submit">{{call .T "admin.ime_save"}}</button>
     </form>
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "admin.llm_heading"}}</h2>
+    <form method="post" action="/admin/llm-prompts">
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="llm-kind">{{call .T "admin.llm_kind"}}</label>
+          <select name="kind" id="llm-kind" required>
+            <option value="translation">{{call .T "admin.llm_kind_translation"}}</option>
+            <option value="transcription">{{call .T "admin.llm_kind_transcription"}}</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="llm-source-language">{{call .T "admin.llm_source_language"}}</label>
+          <select name="source_language" id="llm-source-language" required>
+            {{range .Languages}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+        </div>
+        <div id="llm-target-language-field">
+          <label class="field-label" for="llm-target-language">{{call .T "admin.llm_target_language"}}</label>
+          <select name="target_language" id="llm-target-language" required>
+            {{range .SiteLanguages}}<option value="{{.Code}}">{{.Name}}</option>{{end}}
+          </select>
+          <input type="hidden" name="target_language" id="llm-target-hidden" value="transcription" disabled>
+        </div>
+      </div>
+      <label class="field-label" for="llm-model">{{call .T "admin.llm_model"}}</label>
+      <input type="text" name="model" id="llm-model" placeholder="{{call .T "admin.llm_model_placeholder"}}">
+      <label class="field-label" for="llm-prompt">{{call .T "admin.llm_prompt"}}</label>
+      <textarea name="prompt" id="llm-prompt" required style="height:10rem;" placeholder="{{call .T "admin.llm_prompt_placeholder"}}"></textarea>
+      <button class="btn" type="submit">{{call .T "admin.llm_save"}}</button>
+    </form>
+    <script>
+      (() => {
+        const kind = document.getElementById('llm-kind');
+        const targetField = document.getElementById('llm-target-language-field');
+        const targetSelect = document.getElementById('llm-target-language');
+        const targetHidden = document.getElementById('llm-target-hidden');
+        function refreshLLMTarget() {
+          const isTranscription = kind.value === 'transcription';
+          targetField.style.display = isTranscription ? 'none' : '';
+          targetSelect.disabled = isTranscription;
+          targetSelect.required = !isTranscription;
+          targetHidden.disabled = !isTranscription;
+        }
+        kind.addEventListener('change', refreshLLMTarget);
+        refreshLLMTarget();
+      })();
+    </script>
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <h2 style="margin-top:0;">{{call .T "admin.llm_configs_heading"}}</h2>
+    <div style="overflow-x:auto;">
+      <table class="admin-table">
+        <thead><tr><th>{{call .T "admin.llm_kind"}}</th><th>{{call .T "admin.llm_source_language"}}</th><th>{{call .T "admin.llm_target_language"}}</th><th>{{call .T "admin.llm_model"}}</th><th>{{call .T "admin.llm_prompt"}}</th><th></th></tr></thead>
+        <tbody>
+          {{range .LLMPrompts}}
+          <tr>
+            <td>{{if eq .Kind "transcription"}}{{call $.T "admin.llm_kind_transcription"}}{{else}}{{call $.T "admin.llm_kind_translation"}}{{end}}</td>
+            <td>{{.SourceLanguage}}</td>
+            <td>{{if eq .Kind "transcription"}}<em>{{call $.T "admin.llm_target_not_applicable"}}</em>{{else}}{{.TargetLanguage}}{{end}}</td>
+            <td>{{if .Model}}{{.Model}}{{else}}<em>{{call $.T "admin.llm_model_default"}}</em>{{end}}</td>
+            <td style="white-space:pre-wrap;">{{.Prompt}}</td>
+            <td>
+              <form method="post" action="/admin/llm-prompts/delete" onsubmit="return confirm('{{call $.T "admin.llm_delete_confirm"}}');">
+                <input type="hidden" name="kind" value="{{.Kind}}">
+                <input type="hidden" name="source_language" value="{{.SourceLanguage}}">
+                <input type="hidden" name="target_language" value="{{.TargetLanguage}}">
+                <button class="link-btn" type="submit">{{call $.T "admin.llm_delete"}}</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="6"><em>{{call .T "admin.llm_no_configs"}}</em></td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card">

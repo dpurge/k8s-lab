@@ -153,6 +153,9 @@
     }
     .field-row { display: flex; gap: 1rem; }
     .field-row > * { flex: 1; }
+    .form-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+    .form-actions select { width: auto; min-width: 9rem; margin: 0; padding: 0.45rem 0.75rem; }
+    .transcribe-action { display: none; }
     label.field-label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
     table.admin-table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
     table.admin-table th, table.admin-table td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
@@ -168,6 +171,12 @@
       text-decoration: none;
     }
     .btn:hover { background: var(--btn-bg-hover); }
+    .btn-secondary { background: var(--surface-alt); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .resource-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; flex-shrink: 0; flex-wrap: nowrap; }
+    .resource-actions form { margin: 0; }
+    .resource-actions .btn { width: 5rem; padding: 0.45rem 0; text-align: center; white-space: nowrap; }
+    .copy-source { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
     .btn-danger { background: var(--danger); }
     .btn-danger:hover { background: var(--danger-hover); }
     .back-link { display: inline-block; margin-bottom: 1rem; color: var(--muted); text-decoration: none; }
@@ -308,6 +317,68 @@
       var next = html.getAttribute('data-sidebar') === 'collapsed' ? 'expanded' : 'collapsed';
       html.setAttribute('data-sidebar', next);
       localStorage.setItem('phraseforge-sidebar', next);
+    }
+    function phraseforgeCopyMarkdown(id, button) {
+      var source = document.getElementById(id);
+      if (!source) { return; }
+      var text = source.value || source.textContent || '';
+      var done = function () {
+        var original = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(function () { button.textContent = original; }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done);
+      } else {
+        source.removeAttribute('readonly');
+        source.select();
+        document.execCommand('copy');
+        source.setAttribute('readonly', 'readonly');
+        done();
+      }
+    }
+    function phraseforgeCopyActiveMarkdown(button) {
+      var active = document.querySelector('.editor-tab-btn.active');
+      var tab = active ? active.getAttribute('data-tab') : 'source';
+      phraseforgeCopyMarkdown('copy-' + tab + '-markdown', button);
+    }
+    function phraseforgeSetFieldValue(field, text) {
+      field.value = text;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      field.focus();
+    }
+    async function phraseforgeGenerate(kind, sourceID, targetID, contentType, button) {
+      var source = document.getElementById(sourceID);
+      var target = document.getElementById(targetID);
+      if (!source || !target) { return; }
+      var original = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Working...';
+      try {
+        if (!String(source.value || source.textContent || '').trim()) {
+          alert('Enter source text first.');
+          return;
+        }
+        var response = await fetch('/llm/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kind: kind,
+            source_language: document.getElementById('language').value,
+            target_language: kind === 'transcription' ? 'transcription' : (document.getElementById('translation-target')?.value || document.documentElement.lang),
+            content_type: contentType,
+            content: source.value || source.textContent || ''
+          })
+        });
+        if (!response.ok) { throw new Error((await response.text()).trim()); }
+        var data = await response.json();
+        phraseforgeSetFieldValue(target, data.text || '');
+      } catch (error) {
+        alert(error.message || String(error));
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
     }
     function phraseforgeSetLanguageFilter(value) {
       localStorage.setItem('phraseforge-language', value);

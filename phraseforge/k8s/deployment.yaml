@@ -51,6 +51,12 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD # reused as a signing key; dedicated secret can follow later
+            - name: LLM_PROVIDER
+              value: ollama
+            - name: LLM_BASE_URL
+              value: http://host.docker.internal:11434
+            - name: LLM_MODEL
+              value: gemma4:e4b
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

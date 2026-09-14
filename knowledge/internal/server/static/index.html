@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Knowledge</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        height: 100vh;
+      }
+
+      header {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        border-bottom: 1px solid #ddd;
+        padding: 0.5rem 1rem;
+      }
+
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        padding: 0.5rem 0.75rem;
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0.25rem 0 0.75rem;
+        padding: 0.5rem;
+      }
+
+      .tab {
+        display: none;
+      }
+
+      .tab.active {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        height: calc(100vh - 54px);
+      }
+
+      aside {
+        border-right: 1px solid #ddd;
+        padding: 1rem;
+        overflow: auto;
+      }
+
+      main {
+        padding: 1rem;
+        overflow: auto;
+      }
+
+      .item,
+      .chat {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 0.7rem;
+        margin: 0.5rem 0;
+        cursor: pointer;
+      }
+
+      .item:hover,
+      .chat:hover {
+        background: #f7f7f7;
+      }
+
+      .muted {
+        color: #666;
+        font-size: 0.85rem;
+      }
+
+      .tag {
+        display: inline-block;
+        background: #eee;
+        border-radius: 999px;
+        padding: 0.1rem 0.45rem;
+        margin: 0.15rem 0.15rem 0 0;
+        font-size: 0.8rem;
+      }
+
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      .danger,
+      .error {
+        color: #b00020;
+      }
+
+      #body {
+        min-height: 45vh;
+      }
+
+      #chatMessages {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 1rem;
+        min-height: 45vh;
+      }
+
+      .msg {
+        margin: 0.7rem 0;
+      }
+
+      .role {
+        font-weight: 700;
+      }
+
+      .sources {
+        font-size: 0.9rem;
+        background: #f8f8f8;
+        padding: 0.5rem;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <button onclick="showTab('knowledge')">Knowledge</button>
+      <button onclick="showTab('chat')">Chat</button>
+      <a href="http://qdrant.localhost:8080/dashboard" target="_blank" rel="noreferrer">Qdrant console ↗</a>
+    </header>
+
+    <section id="knowledgeTab" class="tab active">
+      <aside>
+        <h1>Knowledge</h1>
+        <input id="q" placeholder="Semantic search query" />
+        <input id="filterTags" placeholder="Filter tags: k8s, qdrant" />
+        <label class="muted">
+          Updated after
+          <input id="start" type="datetime-local" />
+        </label>
+        <label class="muted">
+          Updated before
+          <input id="end" type="datetime-local" />
+        </label>
+        <div class="actions">
+          <button onclick="run(loadList)">Search</button>
+          <button onclick="newItem()">New</button>
+        </div>
+        <div id="list"></div>
+      </aside>
+
+      <main>
+        <input id="id" type="hidden" />
+        <label>
+          Title
+          <input id="title" />
+        </label>
+        <label>
+          Tags
+          <input id="tags" placeholder="k8s, qdrant, rag" />
+        </label>
+        <label>
+          Summary
+          <textarea id="summary" style="min-height: 5rem"></textarea>
+        </label>
+        <label>
+          Body (Markdown)
+          <textarea id="body"></textarea>
+        </label>
+        <button onclick="run(save)">Save</button>
+        <button class="danger" onclick="run(removeItem)">Delete</button>
+        <pre id="msg"></pre>
+      </main>
+    </section>
+
+    <section id="chatTab" class="tab">
+      <aside>
+        <h1>Chats</h1>
+        <label>
+          New chat title
+          <input id="newChatTitle" />
+        </label>
+        <label>
+          Scope tags
+          <input id="newChatTags" placeholder="empty = all knowledge" />
+        </label>
+        <button onclick="run(createChat)">Create chat</button>
+        <div id="chats"></div>
+      </aside>
+
+      <main>
+        <h1 id="chatTitle">Select or create a chat</h1>
+        <div id="chatScope" class="muted"></div>
+        <div class="actions">
+          <button class="danger" onclick="run(deleteChat)">Delete chat</button>
+        </div>
+        <div id="chatMessages"></div>
+        <textarea
+          id="chatInput"
+          placeholder="Ask your knowledge... Enter sends, Shift+Enter inserts a new line."
+          style="min-height: 6rem"
+        ></textarea>
+        <div class="muted">Enter sends · Shift+Enter inserts a new line</div>
+        <button onclick="run(sendChat)">Send</button>
+        <pre id="chatMsg"></pre>
+      </main>
+    </section>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let currentChat = "";
+
+      function showTab(tab) {
+        $("knowledgeTab").classList.toggle("active", tab === "knowledge");
+        $("chatTab").classList.toggle("active", tab === "chat");
+        if (tab === "chat") run(loadChats);
+      }
+
+      function parseTags(value) {
+        return (value || "")
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean);
+      }
+
+      function toRFC(id) {
+        const value = $(id).value;
+        return value ? new Date(value).toISOString() : "";
+      }
+
+      function message(id, text, error = false) {
+        $(id).className = error ? "error" : "";
+        $(id).textContent = text || "";
+      }
+
+      async function run(fn) {
+        try {
+          message("msg", "");
+          message("chatMsg", "");
+          await fn();
+        } catch (error) {
+          message(document.activeElement.closest("#chatTab") ? "chatMsg" : "msg", error.message || String(error), true);
+        }
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch("/api/v1" + path, {
+          headers: { "Content-Type": "application/json" },
+          ...options,
+        });
+
+        if (!response.ok) {
+          let body = await response.text();
+          try {
+            const parsed = JSON.parse(body);
+            body = parsed.error?.message || body;
+          } catch {}
+          throw new Error(body);
+        }
+
+        return response.status === 204 ? null : response.json();
+      }
+
+      function esc(value) {
+        return (value || "").replace(/[&<>"']/g, (char) => {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          }[char];
+        });
+      }
+
+      async function loadList() {
+        const params = new URLSearchParams();
+
+        if ($("q").value) params.set("q", $("q").value);
+        for (const tag of parseTags($("filterTags").value)) params.append("tag", tag);
+        if (toRFC("start")) params.set("start", toRFC("start"));
+        if (toRFC("end")) params.set("end", toRFC("end"));
+
+        const data = await api("/knowledge?" + params);
+        const items = data.items || [];
+
+        $("list").innerHTML = items.length
+          ? items.map(renderItem).join("")
+          : '<p class="muted">No knowledge items found.</p>';
+      }
+
+      function renderItem(item) {
+        const score = item.score === undefined ? "" : "Score " + item.score.toFixed(3) + " · ";
+        const tags = (item.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
+
+        return `
+          <div class="item" onclick="run(() => openItem('${item.id}'))">
+            <b>${esc(item.title)}</b>
+            <div>${esc(item.summary)}</div>
+            <div>${tags}</div>
+            <div class="muted">${score}Updated ${new Date(item.updated_at).toLocaleString()}</div>
+          </div>
+        `;
+      }
+
+      async function openItem(id) {
+        showTab("knowledge");
+        const item = await api("/knowledge/" + id);
+        $("id").value = item.id;
+        $("title").value = item.title;
+        $("tags").value = (item.tags || []).join(", ");
+        $("summary").value = item.summary;
+        $("body").value = item.body;
+      }
+
+      function newItem() {
+        $("id").value = "";
+        $("title").value = "";
+        $("tags").value = "";
+        $("summary").value = "";
+        $("body").value = "";
+      }
+
+      async function save() {
+        const payload = JSON.stringify({
+          title: $("title").value,
+          summary: $("summary").value,
+          body: $("body").value,
+          tags: parseTags($("tags").value),
+        });
+        const id = $("id").value;
+        const item = await api(id ? "/knowledge/" + id : "/knowledge", {
+          method: id ? "PUT" : "POST",
+          body: payload,
+        });
+
+        $("id").value = item.id;
+        message("msg", "Saved " + new Date().toLocaleString());
+        await loadList();
+      }
+
+      async function removeItem() {
+        const id = $("id").value;
+        if (!id || !confirm("Delete this item?")) return;
+        await api("/knowledge/" + id, { method: "DELETE" });
+        newItem();
+        await loadList();
+      }
+
+      async function createChat() {
+        const chat = await api("/chats", {
+          method: "POST",
+          body: JSON.stringify({
+            title: $("newChatTitle").value,
+            tags: parseTags($("newChatTags").value),
+          }),
+        });
+
+        currentChat = chat.id;
+        await loadChats();
+        await openChat(chat.id);
+      }
+
+      async function loadChats() {
+        const data = await api("/chats");
+        $("chats").innerHTML = (data.chats || []).map(renderChat).join("");
+      }
+
+      function renderChat(chat) {
+        const tags = (chat.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
+        const scope = tags || '<span class="muted">all knowledge</span>';
+
+        return `
+          <div class="chat" onclick="run(() => openChat('${chat.id}'))">
+            <b>${esc(chat.title)}</b>
+            <div>${scope}</div>
+          </div>
+        `;
+      }
+
+      async function openChat(id) {
+        currentChat = id;
+        const chat = await api("/chats/" + id);
+        const tags = (chat.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
+
+        $("chatTitle").textContent = chat.title;
+        $("chatScope").innerHTML = "Scope: " + (tags || "all knowledge");
+        $("chatMessages").innerHTML = (chat.messages || []).map(renderMsg).join("");
+      }
+
+      function md(value) {
+        return esc(value)
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, title, url) => `<a href="${esc(url)}">${esc(title)}</a>`)
+          .replace(/\n/g, "<br>");
+      }
+
+      function renderMsg(message) {
+        const sources = message.sources?.length
+          ? `
+            <div class="sources">
+              <b>Retrieved knowledge items</b>
+              <ul>
+                ${message.sources.map(renderSource).join("")}
+              </ul>
+            </div>
+          `
+          : "";
+
+        return `
+          <div class="msg">
+            <div class="role">${esc(message.role)}</div>
+            <div>${md(message.content)}</div>
+            ${sources}
+          </div>
+        `;
+      }
+
+      function renderSource(source) {
+        return `
+          <li>
+            <a href="#" onclick="run(() => openItem('${source.id}')); return false">${esc(source.title)}</a>
+            <span class="muted">${source.score.toFixed(3)}</span><br />
+            ${esc(source.summary)}
+          </li>
+        `;
+      }
+
+      async function deleteChat() {
+        if (!currentChat) throw new Error("Select a chat first");
+        if (!confirm("Delete this chat and all of its messages?")) return;
+
+        await api("/chats/" + currentChat, { method: "DELETE" });
+        currentChat = "";
+        $("chatTitle").textContent = "Select or create a chat";
+        $("chatScope").textContent = "";
+        $("chatMessages").innerHTML = "";
+        $("chatInput").value = "";
+        await loadChats();
+      }
+
+      async function sendChat() {
+        if (!currentChat) throw new Error("Create or select a chat first");
+
+        const text = $("chatInput").value.trim();
+        if (!text) return;
+
+        $("chatInput").value = "";
+        message("chatMsg", "Thinking...");
+        await api("/chats/" + currentChat + "/messages", {
+          method: "POST",
+          body: JSON.stringify({ message: text }),
+        });
+        message("chatMsg", "");
+        await openChat(currentChat);
+      }
+
+      $("chatInput").addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          run(sendChat);
+        }
+      });
+
+      run(loadList);
+
+      const knowledgeID = new URLSearchParams(location.search).get("knowledge");
+      if (knowledgeID) run(() => openItem(knowledgeID));
+    </script>
+  </body>
+</html>

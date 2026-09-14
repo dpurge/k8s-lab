@@ -1,0 +1,111 @@
+name: release-knowledge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'knowledge/**'
+      - '.github/workflows/release-knowledge.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: release-knowledge
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+defaults:
+  run:
+    working-directory: knowledge
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        run: |
+          git fetch --tags --quiet
+
+          prefix="$(date -u +'%Y.%-m')"
+          last_micro="$(git tag -l "knowledge-v${prefix}.*" | sed -E "s/^knowledge-v${prefix}\.([0-9]+)$/\1/" | sort -n | tail -1)"
+          next_micro="${last_micro:-"-1"}"
+          next_micro=$((next_micro + 1))
+
+          tag="knowledge-v${prefix}.${next_micro}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+
+          {
+            echo "tag=${tag}"
+            echo "version=${prefix}.${next_micro}"
+            echo "commit=$(git rev-parse --short HEAD)"
+            echo "image=ghcr.io/${owner}/knowledge"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing ${tag}"
+
+      - name: Create and push tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: knowledge/go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o dist/knowledge     .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/knowledge.exe .
+          tar -czf "dist/knowledge_${VERSION}_linux_amd64.tar.gz" -C dist knowledge
+          (cd dist && zip -q "knowledge_${VERSION}_windows_amd64.zip" knowledge.exe)
+          rm dist/knowledge dist/knowledge.exe
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: knowledge ${{ steps.version.outputs.version }}
+          draft: true
+          working_directory: knowledge
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: knowledge
+          push: true
+          tags: |
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.image }}:latest

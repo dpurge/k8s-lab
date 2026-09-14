@@ -2,13 +2,14 @@
 
 Local, k3d-based Kubernetes cluster for development. Managed entirely through `task` — no manual `kubectl`/`k3d` setup required, and your default `~/.kube/config` is never touched.
 
-This cluster runs two applications, each documented in its own README:
+This cluster runs three applications, each documented in its own README:
 
 - [`dictionary/README.md`](dictionary/README.md) — Go/Chi REST API for multilingual dictionary entries.
 - [`phraseforge/README.md`](phraseforge/README.md) — Go app for language-learning content.
+- [`knowledge/README.md`](knowledge/README.md) — Go/Chi REST API + GUI for Markdown knowledge articles backed by Qdrant.
 
 This file covers only what's shared: the Taskfile, the k3d cluster itself, and the shared
-infrastructure (Postgres, Qdrant, Adminer, Garage, NATS, Argo Workflows/Events) both apps run
+infrastructure (Postgres, Qdrant, Adminer, Garage, NATS, Argo Workflows/Events, Headlamp) both apps run
 against. Argo Workflows' own workflow definitions live in [`workflows/README.md`](workflows/README.md).
 
 ## Prerequisites
@@ -106,7 +107,7 @@ Shared infrastructure deploys **one piece at a time** — pick whatever you're c
 with rather than standing up everything at once. Each pair applies/deletes only its own
 manifest(s), so any combination is safe. The apps are separate again: each has its own
 deploy/delete task, documented in its own README, and its k8s manifests live in its own
-directory (`dictionary/k8s/`, `phraseforge/k8s/`), not here.
+directory (`dictionary/k8s/`, `phraseforge/k8s/`, `knowledge/k8s/`), not here.
 
 ```sh
 task start-k8s          # cluster must be running first
@@ -115,8 +116,10 @@ task deploy-qdrant
 task deploy-nats
 task deploy-garage       # also bootstraps its layout, dev bucket, and access key
 task deploy-workflows    # Argo Workflows + Argo Events, plus workflows/*.yaml — see workflows/README.md
+task deploy-headlamp     # Headlamp Kubernetes dashboard at http://headlamp.localhost:8080
 task deploy-dictionary   # see dictionary/README.md
 task deploy-phraseforge  # see phraseforge/README.md
+task deploy-knowledge    # see knowledge/README.md
 ```
 
 Every `deploy-*`/`delete-*` pair applies/deletes `k8s/00-namespaces.yaml` and, where relevant,
@@ -140,6 +143,7 @@ task run-k8s -- rollout restart deployment/dictionary -n app
 | `task deploy-nats` / `task delete-nats` | NATS only. |
 | `task deploy-garage` / `task delete-garage` | Garage, plus its one-time layout/bucket/key bootstrap — see [Garage](#garage-s3-compatible-object-storage) below. |
 | `task deploy-workflows` / `task delete-workflows` | Argo Workflows + Argo Events, plus `workflows/*.yaml` and the webhook trigger — see [Argo Workflows / Argo Events](#argo-workflows--argo-events) below. |
+| `task deploy-headlamp` / `task delete-headlamp` | Headlamp Kubernetes dashboard — see [Headlamp](#headlamp-kubernetes-dashboard) below. |
 
 Each app's own deploy/delete/migrate tasks and full API docs live in its own README (linked above).
 
@@ -287,6 +291,36 @@ async def main():
     await nc.close()
 
 asyncio.run(main())
+```
+
+### Headlamp Kubernetes dashboard
+
+[Headlamp](https://github.com/kubernetes-sigs/headlamp) is deployed as a local development
+Kubernetes dashboard. It runs in `kube-system`, is exposed through Traefik, and uses a
+dev-only `headlamp-admin` ServiceAccount bound to `cluster-admin`.
+
+```sh
+task deploy-headlamp
+```
+
+Open:
+
+| Host | Service |
+|---|---|
+| `headlamp.localhost:8080` | Headlamp UI |
+
+To log in, choose token-based login and paste the decoded ID token. `task deploy-headlamp`
+prints it after a successful rollout. To print it again later:
+
+```sh
+task run-k8s -- get secret headlamp-admin -n kube-system -o jsonpath='{.data.token}' | base64 -d
+echo
+```
+
+Delete it with:
+
+```sh
+task delete-headlamp
 ```
 
 ### Argo Workflows / Argo Events

@@ -20,11 +20,11 @@ type Preset struct {
 // this pair's script is opaque enough to need a romanization at all — set
 // independently of whether a transcription IME has actually been chosen.
 type Config struct {
-	Language           string
-	Script             string
-	SourceIME          string
-	TranscriptionIME   string
-	NeedsTranscription bool
+	Language           string `json:"language"`
+	Script             string `json:"script"`
+	SourceIME          string `json:"source_ime"`
+	TranscriptionIME   string `json:"transcription_ime"`
+	NeedsTranscription bool   `json:"needs_transcription"`
 }
 
 func ListPresets(ctx context.Context, db *pgxpool.Pool) ([]Preset, error) {
@@ -104,6 +104,12 @@ func GetConfig(ctx context.Context, db *pgxpool.Pool, language, script string) (
 		return Config{}, false, err
 	}
 	return c, true, nil
+}
+
+func NeedsTranscriptionForLanguage(ctx context.Context, db *pgxpool.Pool, language string) (bool, error) {
+	var needs bool
+	err := db.QueryRow(ctx, `SELECT coalesce(bool_or(needs_transcription), false) FROM ime_config WHERE language = $1`, language).Scan(&needs)
+	return needs, err
 }
 
 // DeleteConfig removes one (language, script) pair's configuration entirely.

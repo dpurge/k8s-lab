@@ -14,6 +14,9 @@ import (
 	"net/http"
 	"os"
 
+	"k8s-lab/shared/llm"
+
+	"phraseforge/internal/ai"
 	"phraseforge/internal/auth"
 	"phraseforge/internal/config"
 	"phraseforge/internal/db"
@@ -71,8 +74,9 @@ func runServe(ctx context.Context, cfg config.Config) {
 	rolesSvc := roles.New(pool)
 	tagsSvc := tags.New(pool)
 	translationsSvc := translations.New(pool)
-	srv := server.New(pool, authSvc, textStore, dialogStore, vocabStore, modelsStore, rolesSvc, tagsSvc, translationsSvc)
+	aiSvc := ai.New(pool, llm.Config{Provider: cfg.LLMProvider, BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel})
+	srv := server.New(pool, authSvc, textStore, dialogStore, vocabStore, modelsStore, rolesSvc, tagsSvc, translationsSvc, aiSvc)
 
-	log.Printf("phraseforge listening on %s", cfg.BindAddr)
+	log.Printf("phraseforge listening on %s, llm=%s/%s", cfg.BindAddr, cfg.LLMProvider, cfg.LLMModel)
 	log.Fatal(http.ListenAndServe(cfg.BindAddr, srv.Router()))
 }

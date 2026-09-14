@@ -5,7 +5,9 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
+	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"phraseforge/internal/ai"
 	"phraseforge/internal/auth"
 	"phraseforge/internal/catalog"
 	"phraseforge/internal/dialogs"
@@ -78,14 +81,16 @@ type Server struct {
 	roles        *roles.Service
 	tags         *tags.Store
 	translations *translations.Store
+	ai           *ai.Service
 }
 
-func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store) *Server {
-	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc}
+func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store, aiSvc *ai.Service) *Server {
+	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc}
 }
 
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Use(recoverPanic)
 
 	// Static 200 — DB down should not restart the pod, only fail readiness.
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +157,7 @@ func (s *Server) Router() http.Handler {
 		r.Post("/models/{id}/items/{position}/delete", s.handleModelsItemDelete)
 
 		r.Get("/ime-config", s.handleIMEConfig)
+		r.Post("/llm/generate", s.handleLLMGenerate)
 		r.Get("/profile", s.handleProfileForm)
 		r.Post("/profile/password", s.handleChangePassword)
 		r.Post("/profile/locale", s.handleSetLocale)
@@ -163,6 +169,10 @@ func (s *Server) Router() http.Handler {
 			r.Post("/admin/grants/{id}/revoke", s.handleAdminRevoke)
 			r.Post("/admin/ime", s.handleAdminSetIME)
 			r.Post("/admin/ime/delete", s.handleAdminDeleteIME)
+			r.Post("/admin/llm-prompts", s.handleAdminLLMPrompt)
+			r.Post("/admin/llm-prompts/delete", s.handleAdminDeleteLLMPrompt)
+			r.Get("/admin/config/export", s.handleAdminExportConfig)
+			r.Post("/admin/config/import", s.handleAdminImportConfig)
 		})
 	})
 
@@ -172,6 +182,18 @@ func (s *Server) Router() http.Handler {
 type ctxKey int
 
 const userCtxKey ctxKey = 0
+
+func recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				log.Printf("panic serving %s %s: %v", r.Method, r.URL.Path, v)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -415,10 +437,19 @@ func filterByID[T any](list []T, keep []int64, idOf func(T) int64) []T {
 // nobody picked an IME yet would be a bug, not a missing feature.
 func (s *Server) handleIMEConfig(w http.ResponseWriter, r *http.Request) {
 	script := r.URL.Query().Get("script")
-	cfg, _, err := ime.GetConfig(r.Context(), s.db, r.URL.Query().Get("language"), script)
+	language := r.URL.Query().Get("language")
+	cfg, found, err := ime.GetConfig(r.Context(), s.db, language, script)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if !found {
+		needs, err := ime.NeedsTranscriptionForLanguage(r.Context(), s.db, language)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		cfg.NeedsTranscription = needs
 	}
 	scriptMeta, found, err := catalog.GetScriptIfExists(r.Context(), s.db, script)
 	if err != nil {
@@ -583,6 +614,9 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		"RenderedTranscription": renderedTranscription,
 		"HasTranslation":        hasTranslation,
 		"RenderedTranslation":   renderedTranslation,
+		"SourceMarkdown":        textBlockMarkdown(t.Body, "source", t.Language, t.Script),
+		"TranscriptionMarkdown": textBlockMarkdown(t.Transcription, "transcription", t.Language, "latn"),
+		"TranslationMarkdown":   textBlockMarkdown(translationBody, "translation", u.Locale, "latn"),
 	})
 }
 
@@ -841,11 +875,129 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	llmPrompts, err := s.ai.ListPrompts(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	render(w, u.Locale, "admin.html", map[string]any{
 		"User": u, "Nav": "admin", "NavFlags": nv,
 		"Users": users, "Grants": grants, "Languages": langs, "Scripts": scripts,
-		"ImePresets": imePresets, "ImeConfigs": imeConfigs,
+		"SiteLanguages": i18n.Locales,
+		"ImePresets":    imePresets, "ImeConfigs": imeConfigs, "LLMPrompts": llmPrompts,
 	})
+}
+
+type adminConfigExport struct {
+	Version    int          `json:"version"`
+	IMEConfigs []ime.Config `json:"ime_configs"`
+	LLMPrompts []ai.Prompt  `json:"llm_prompts"`
+}
+
+func (s *Server) handleAdminExportConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	imeConfigs, err := ime.ListConfigs(ctx, s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	llmPrompts, err := s.ai.ListPrompts(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="phraseforge-admin-config.json"`)
+	if err := json.NewEncoder(w).Encode(adminConfigExport{Version: 1, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts}); err != nil {
+		log.Printf("export admin config: %v", err)
+	}
+}
+
+func (s *Server) handleAdminImportConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var data []byte
+	file, _, err := r.FormFile("config_file")
+	if err == nil {
+		defer file.Close()
+		data, err = io.ReadAll(file)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		_ = r.ParseMultipartForm(10 << 20)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data = []byte(r.FormValue("config_json"))
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		http.Error(w, "configuration JSON is required", http.StatusBadRequest)
+		return
+	}
+	var cfg adminConfigExport
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		http.Error(w, "invalid configuration JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if cfg.Version != 1 {
+		http.Error(w, "unsupported configuration version", http.StatusBadRequest)
+		return
+	}
+	for _, c := range cfg.IMEConfigs {
+		if c.Language == "" || c.Script == "" {
+			http.Error(w, "each IME config requires language and script", http.StatusBadRequest)
+			return
+		}
+	}
+	for _, p := range cfg.LLMPrompts {
+		if p.Kind != "translation" && p.Kind != "transcription" {
+			http.Error(w, "each LLM prompt kind must be translation or transcription", http.StatusBadRequest)
+			return
+		}
+		if p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
+			http.Error(w, "each LLM prompt requires source_language, target_language, and prompt", http.StatusBadRequest)
+			return
+		}
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM ime_config`); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM llm_prompts`); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	toNull := func(s string) any {
+		if strings.TrimSpace(s) == "" {
+			return nil
+		}
+		return s
+	}
+	for _, c := range cfg.IMEConfigs {
+		if _, err := tx.Exec(ctx, `INSERT INTO ime_config(language, script, source_ime, transcription_ime, needs_transcription) VALUES($1,$2,$3,$4,$5)`, c.Language, c.Script, toNull(c.SourceIME), toNull(c.TranscriptionIME), c.NeedsTranscription); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	for _, p := range cfg.LLMPrompts {
+		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, model, prompt) VALUES($1,$2,$3,$4,$5)`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Model), p.Prompt); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
 func (s *Server) handleAdminSetIME(w http.ResponseWriter, r *http.Request) {
@@ -871,6 +1023,38 @@ func (s *Server) handleAdminDeleteIME(w http.ResponseWriter, r *http.Request) {
 	language := r.FormValue("language")
 	script := r.FormValue("script")
 	if err := ime.DeleteConfig(r.Context(), s.db, language, script); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+func (s *Server) handleAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
+	p := ai.Prompt{Kind: r.FormValue("kind"), SourceLanguage: r.FormValue("source_language"), TargetLanguage: r.FormValue("target_language"), Model: r.FormValue("model"), Prompt: r.FormValue("prompt")}
+	if p.Kind == "" || p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
+		http.Error(w, "kind, source language, target language, and prompt are required", http.StatusBadRequest)
+		return
+	}
+	if p.Kind != "translation" && p.Kind != "transcription" {
+		http.Error(w, "kind must be translation or transcription", http.StatusBadRequest)
+		return
+	}
+	if err := s.ai.SetPrompt(r.Context(), p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+func (s *Server) handleAdminDeleteLLMPrompt(w http.ResponseWriter, r *http.Request) {
+	kind := r.FormValue("kind")
+	sourceLanguage := r.FormValue("source_language")
+	targetLanguage := r.FormValue("target_language")
+	if kind == "" || sourceLanguage == "" || targetLanguage == "" {
+		http.Error(w, "kind, source language, and target language are required", http.StatusBadRequest)
+		return
+	}
+	if err := s.ai.DeletePrompt(r.Context(), kind, sourceLanguage, targetLanguage); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

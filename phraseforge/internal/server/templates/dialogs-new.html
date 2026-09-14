@@ -51,7 +51,15 @@
         <textarea name="translation" id="field-translation" placeholder="{{call .T "texts.field_translation_hint"}}"></textarea>
       </div>
 
-      <button class="btn" type="submit">{{call .T "texts.save"}}</button>
+      <div class="form-actions">
+        <button class="btn" type="submit">{{call .T "texts.save"}}</button>
+        <button class="btn btn-secondary transcribe-action" type="button" onclick="phraseforgeGenerate('transcription', 'field-source', 'field-transcription', 'dialog', this)">{{call .T "llm.transcribe"}}</button>
+        <button class="btn btn-secondary" type="button" onclick="phraseforgeGenerate('translation', 'field-source', 'field-translation', 'dialog', this)">{{call .T "llm.translate"}}</button>
+        <select id="translation-target" aria-label="Translation target language">
+          <option value="en">English</option>
+          <option value="pl">Polish</option>
+        </select>
+      </div>
     </form>
   </div>
 {{end}}

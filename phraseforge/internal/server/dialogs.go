@@ -201,6 +201,9 @@ func (s *Server) handleDialogView(w http.ResponseWriter, r *http.Request) {
 		"BodyError":             renderErrString(bodyErr),
 		"TranscriptionError":    renderErrString(transcriptionErr),
 		"TranslationError":      renderErrString(translationErr),
+		"SourceMarkdown":        wrapDialogBody(d.Body, d.Language, d.Script),
+		"TranscriptionMarkdown": wrapDialogBody(d.Transcription, d.Language, "latn"),
+		"TranslationMarkdown":   wrapDialogBody(translationBody, u.Locale, "latn"),
 	})
 }
 

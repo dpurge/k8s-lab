@@ -1,0 +1,47 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: knowledge-migrate
+  namespace: app
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: migrate
+          image: k8s-lab-registry:5000/knowledge:dev
+          imagePullPolicy: Always
+          command: ["/knowledge", "migrate"]
+          env:
+            - name: QDRANT_URL
+              value: http://qdrant.data.svc.cluster.local:6333
+            - name: EMBEDDINGS_PROVIDER
+              value: ollama
+            - name: EMBEDDINGS_BASE_URL
+              value: http://host.docker.internal:11434
+            - name: EMBEDDINGS_MODEL
+              value: nomic-embed-text
+            - name: EMBEDDINGS_DIMENSION
+              value: "768"
+            - name: PGHOST
+              value: postgres.data.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: knowledge
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD

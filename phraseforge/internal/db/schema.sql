@@ -430,3 +430,15 @@ CREATE TABLE IF NOT EXISTS models_item_translation (
 ALTER TABLE models_item_translation
     ALTER CONSTRAINT models_item_translation_list_id_position_fkey
     DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE IF NOT EXISTS llm_prompts (
+    kind text NOT NULL CHECK (kind IN ('translation', 'transcription')),
+    source_language text NOT NULL,
+    target_language text NOT NULL,
+    model text NOT NULL DEFAULT '',
+    prompt text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, source_language, target_language)
+);
+ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS model text NOT NULL DEFAULT '';

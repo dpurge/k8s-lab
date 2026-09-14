@@ -10,15 +10,19 @@
       <span class="badge">{{.Text.Language}} / {{.Text.Script}}</span>
       {{range .Tags}}<a class="badge tag-link" href="/?tag={{.}}">{{.}}</a>{{end}}
     </div>
-    {{if .CanEdit}}
-    <div style="display:flex; gap:0.5rem; flex-shrink:0;">
+    <div class="resource-actions">
+      <button class="btn btn-secondary" type="button" onclick="phraseforgeCopyActiveMarkdown(this)">Copy</button>
+      {{if .CanEdit}}
       <a class="btn" href="/texts/{{.Text.ID}}/edit">{{call .T "texts.edit"}}</a>
       <form method="post" action="/texts/{{.Text.ID}}/delete" onsubmit="return confirm('{{call .T "texts.delete_confirm"}}');">
         <button class="btn btn-danger" type="submit">{{call .T "texts.delete"}}</button>
       </form>
+      {{end}}
     </div>
-    {{end}}
   </div>
+  <textarea id="copy-source-markdown" class="copy-source" readonly>{{.SourceMarkdown}}</textarea>
+  {{if .Text.Transcription}}<textarea id="copy-transcription-markdown" class="copy-source" readonly>{{.TranscriptionMarkdown}}</textarea>{{end}}
+  {{if .HasTranslation}}<textarea id="copy-translation-markdown" class="copy-source" readonly>{{.TranslationMarkdown}}</textarea>{{end}}
 
   {{if or .Text.Transcription .HasTranslation}}
   <div class="editor-tabs">

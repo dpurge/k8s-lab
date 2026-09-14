@@ -59,9 +59,17 @@
       <label class="field-label" for="translation">{{call .T "models.col_translation"}}</label>
       <input type="text" name="translation" id="translation" value="{{.EntryTranslation}}">
 
-      <button class="btn" type="submit">
-        {{if ge .EditPosition 0}}{{call .T "models.save_item"}}{{else}}{{call .T "models.add_item"}}{{end}}
-      </button>
+      <div class="form-actions">
+        <button class="btn" type="submit">
+          {{if ge .EditPosition 0}}{{call .T "models.save_item"}}{{else}}{{call .T "models.add_item"}}{{end}}
+        </button>
+        <button class="btn btn-secondary transcribe-action" type="button" onclick="phraseforgeGenerate('transcription', 'field-source', 'field-transcription', 'model item', this)">{{call .T "llm.transcribe"}}</button>
+        <button class="btn btn-secondary" type="button" onclick="phraseforgeGenerate('translation', 'field-source', 'translation', 'model item', this)">{{call .T "llm.translate"}}</button>
+        <select id="translation-target" aria-label="Translation target language">
+          <option value="en">English</option>
+          <option value="pl">Polish</option>
+        </select>
+      </div>
       {{if ge .EditPosition 0}}<a class="back-link" href="/models/{{.List.ID}}/edit">{{call .T "models.cancel_edit"}}</a>{{end}}
     </form>
   </div>

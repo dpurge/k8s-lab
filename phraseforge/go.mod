@@ -7,7 +7,10 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.57.0
+	k8s-lab/shared v0.0.0
 )
+
+replace k8s-lab/shared => ../shared
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

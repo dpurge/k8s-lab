@@ -111,6 +111,9 @@ async function pfApplyImeConfig() {
   if (transcriptionGroup) {
     transcriptionGroup.style.display = cfg.needs_transcription ? '' : 'none';
   }
+  document.querySelectorAll('.transcribe-action').forEach((button) => {
+    button.style.display = cfg.needs_transcription ? '' : 'none';
+  });
 }
 
 function pfSwitchTab(name) {
