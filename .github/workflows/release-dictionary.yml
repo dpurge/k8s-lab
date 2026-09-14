@@ -125,6 +125,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: dictionary
+          build-contexts: shared=./shared
           push: true
           tags: |
             ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
