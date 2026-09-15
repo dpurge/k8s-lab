@@ -37,6 +37,10 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /phraseforge .
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM scratch
 
+# scratch has no system CA bundle. Copy the bundle assembled in the build
+# stage, including the corporate CA when .docker/corp-ca/_corp-ca.pem was
+# supplied, so outbound HTTPS (for example OpenRouter) can be verified.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /phraseforge /phraseforge
 
 # securityContext.runAsNonRoot: true + runAsUser: 65532 works on scratch (numeric UID).
