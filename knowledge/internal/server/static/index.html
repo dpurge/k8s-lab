@@ -1,32 +1,75 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script src="/theme.js"></script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Knowledge</title>
     <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --border: #ddd;
+        --muted: #666;
+        --hover-bg: #f7f7f7;
+        --tag-bg: #eee;
+        --danger: #b00020;
+        --sources-bg: #f8f8f8;
+      }
+
+      :root[data-theme="dark"] {
+        --bg: #181818;
+        --fg: #e6e6e6;
+        --border: #3a3a3a;
+        --muted: #a0a0a0;
+        --hover-bg: #262626;
+        --tag-bg: #333333;
+        --danger: #ff6b81;
+        --sources-bg: #222222;
+      }
+
       body {
         font-family: system-ui, sans-serif;
         margin: 0;
         height: 100vh;
+        background: var(--bg);
+        color: var(--fg);
       }
 
       header {
         display: flex;
         gap: 0.5rem;
         align-items: center;
-        border-bottom: 1px solid #ddd;
+        border-bottom: 1px solid var(--border);
         padding: 0.5rem 1rem;
+      }
+
+      header .spacer {
+        flex: 1;
+      }
+
+      header a {
+        color: var(--fg);
       }
 
       button,
       input,
       textarea {
         font: inherit;
+        background: var(--bg);
+        color: var(--fg);
       }
 
       button {
         padding: 0.5rem 0.75rem;
+        min-width: 6rem;
+        text-align: center;
+        cursor: pointer;
+      }
+
+      button.icon-btn {
+        min-width: 0;
+        padding: 0.5rem 0.6rem;
       }
 
       input,
@@ -35,6 +78,7 @@
         box-sizing: border-box;
         margin: 0.25rem 0 0.75rem;
         padding: 0.5rem;
+        border: 1px solid var(--border);
       }
 
       .tab {
@@ -48,7 +92,7 @@
       }
 
       aside {
-        border-right: 1px solid #ddd;
+        border-right: 1px solid var(--border);
         padding: 1rem;
         overflow: auto;
       }
@@ -60,7 +104,7 @@
 
       .item,
       .chat {
-        border: 1px solid #ddd;
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 0.7rem;
         margin: 0.5rem 0;
@@ -69,17 +113,17 @@
 
       .item:hover,
       .chat:hover {
-        background: #f7f7f7;
+        background: var(--hover-bg);
       }
 
       .muted {
-        color: #666;
+        color: var(--muted);
         font-size: 0.85rem;
       }
 
       .tag {
         display: inline-block;
-        background: #eee;
+        background: var(--tag-bg);
         border-radius: 999px;
         padding: 0.1rem 0.45rem;
         margin: 0.15rem 0.15rem 0 0;
@@ -90,11 +134,12 @@
         display: flex;
         gap: 0.5rem;
         flex-wrap: wrap;
+        margin: 0 0 0.75rem;
       }
 
       .danger,
       .error {
-        color: #b00020;
+        color: var(--danger);
       }
 
       #body {
@@ -102,7 +147,7 @@
       }
 
       #chatMessages {
-        border: 1px solid #ddd;
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 1rem;
         min-height: 45vh;
@@ -118,7 +163,7 @@
 
       .sources {
         font-size: 0.9rem;
-        background: #f8f8f8;
+        background: var(--sources-bg);
         padding: 0.5rem;
         border-radius: 6px;
       }
@@ -129,6 +174,10 @@
       <button onclick="showTab('knowledge')">Knowledge</button>
       <button onclick="showTab('chat')">Chat</button>
       <a href="http://qdrant.localhost:8080/dashboard" target="_blank" rel="noreferrer">Qdrant console ↗</a>
+      <div class="spacer"></div>
+      <span class="muted" id="userEmail"></span>
+      <button class="icon-btn" type="button" onclick="toggleTheme()" title="Toggle theme">🌓</button>
+      <button type="button" onclick="run(logout)">Log out</button>
     </header>
 
     <section id="knowledgeTab" class="tab active">
@@ -147,6 +196,12 @@
         <div class="actions">
           <button onclick="run(loadList)">Search</button>
           <button onclick="newItem()">New</button>
+        </div>
+        <input id="exportTags" placeholder="Export tags: k8s, qdrant (empty = all)" />
+        <div class="actions">
+          <button onclick="exportItems()">Export</button>
+          <button onclick="$('importFile').click()">Import</button>
+          <input id="importFile" type="file" accept="application/json" style="display: none" onchange="run(importFile)" />
         </div>
         <div id="list"></div>
       </aside>
@@ -169,8 +224,10 @@
           Body (Markdown)
           <textarea id="body"></textarea>
         </label>
-        <button onclick="run(save)">Save</button>
-        <button class="danger" onclick="run(removeItem)">Delete</button>
+        <div class="actions">
+          <button onclick="run(save)">Save</button>
+          <button class="danger" onclick="run(removeItem)">Delete</button>
+        </div>
         <pre id="msg"></pre>
       </main>
     </section>
@@ -186,7 +243,9 @@
           Scope tags
           <input id="newChatTags" placeholder="empty = all knowledge" />
         </label>
-        <button onclick="run(createChat)">Create chat</button>
+        <div class="actions">
+          <button onclick="run(createChat)">Create chat</button>
+        </div>
         <div id="chats"></div>
       </aside>
 
@@ -203,7 +262,9 @@
           style="min-height: 6rem"
         ></textarea>
         <div class="muted">Enter sends · Shift+Enter inserts a new line</div>
-        <button onclick="run(sendChat)">Send</button>
+        <div class="actions">
+          <button onclick="run(sendChat)">Send</button>
+        </div>
         <pre id="chatMsg"></pre>
       </main>
     </section>
@@ -341,6 +402,38 @@
         await loadList();
       }
 
+      function exportItems() {
+        const params = new URLSearchParams();
+        for (const tag of parseTags($("exportTags").value)) params.append("tag", tag);
+        location.href = "/api/v1/knowledge/export" + (params.toString() ? "?" + params : "");
+      }
+
+      async function importFile() {
+        const file = $("importFile").files[0];
+        if (!file) return;
+
+        let data;
+        try {
+          data = JSON.parse(await file.text());
+        } catch {
+          throw new Error("Selected file is not valid JSON");
+        }
+        const items = Array.isArray(data) ? data : data.items;
+        if (!Array.isArray(items) || items.length === 0) {
+          throw new Error("File must contain a non-empty items array");
+        }
+
+        const result = await api("/knowledge/import", { method: "POST", body: JSON.stringify({ items }) });
+        $("importFile").value = "";
+        message(
+          "msg",
+          `Imported ${result.imported} of ${items.length}` + (result.errors.length ? `; ${result.errors.length} failed — see browser console` : ""),
+          result.errors.length > 0,
+        );
+        if (result.errors.length) console.warn("Import errors:", result.errors);
+        await loadList();
+      }
+
       async function removeItem() {
         const id = $("id").value;
         if (!id || !confirm("Delete this item?")) return;
@@ -463,6 +556,15 @@
         }
       });
 
+      async function logout() {
+        await api("/auth/logout", { method: "POST" });
+        location.href = "/login.html";
+      }
+
+      run(async () => {
+        const me = await api("/auth/me");
+        $("userEmail").textContent = me.email;
+      });
       run(loadList);
 
       const knowledgeID = new URLSearchParams(location.search).get("knowledge");

@@ -32,7 +32,6 @@ vars:
   # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
   CORP_CA_BUNDLE: /usr/local/munki/certs.pem
   ARGO_WORKFLOWS_VERSION: v4.1.3
-  ARGO_EVENTS_VERSION: v1.9.11
   HEADLAMP_VERSION: v0.45.0
   HEADLAMP_IMAGE: 'ghcr.io/headlamp-k8s/headlamp:{{.HEADLAMP_VERSION}}'
   POSTGRES_IMAGE: postgres:18-alpine
@@ -40,22 +39,6 @@ vars:
   QDRANT_IMAGE: qdrant/qdrant:v1.19.0
   GARAGE_IMAGE: dxflrs/garage:v2.3.0
   NATS_IMAGE: nats:2.14.6-alpine
-  ARGO_EVENTS_IMAGE: 'quay.io/argoproj/argo-events:{{.ARGO_EVENTS_VERSION}}'
-  ARGO_WORKFLOWS_IMAGES: 'quay.io/argoproj/argocli:{{.ARGO_WORKFLOWS_VERSION}} quay.io/argoproj/workflow-controller:{{.ARGO_WORKFLOWS_VERSION}}'
-  # k3s v1.33.4+k3s1 (the current k3d default used by this project) asks
-  # containerd for this sandbox image before starting any pod. Import it from
-  # Docker so cluster nodes do not need to pull it through corporate TLS
-  # inspection. If k3d bumps k3s and this changes, `kubectl describe pod` will
-  # show the new sandbox image in FailedCreatePodSandBox events.
-  K3S_PAUSE_IMAGE: docker.io/rancher/mirrored-pause:3.6
-  K3S_SYSTEM_IMAGES: >-
-    docker.io/rancher/mirrored-coredns-coredns:1.14.3
-    docker.io/rancher/local-path-provisioner:v0.0.36
-    docker.io/rancher/mirrored-metrics-server:v0.8.1
-    docker.io/rancher/klipper-helm:v0.10.0-build20260513
-    docker.io/rancher/mirrored-library-traefik:3.6.13
-    docker.io/rancher/klipper-lb:v0.4.17
-    docker.io/rancher/mirrored-library-busybox:1.37.0
   # Depends on ARGO_WORKFLOWS_VERSION above — root vars may reference earlier ones.
   ARGO_WORKFLOWS_MANIFEST: '.k3d/argo-workflows-namespace-install-{{.ARGO_WORKFLOWS_VERSION}}.yaml'
 
@@ -247,68 +230,6 @@ tasks:
     cmds:
       - '{{.KUBECTL}} apply -f k8s/00-namespaces.yaml'
 
-  _ensure-k3d-images:
-    internal: true
-    requires:
-      vars: [IMAGES]
-    cmds:
-      - |
-        import_image_into_k3d() {
-            image="$1"
-            nodes="$(docker ps \
-                --filter "label=k3d.cluster={{.CLUSTER_NAME}}" \
-                --filter "label=k3d.role=server" \
-                --format '{{"{{"}}.Names{{"}}"}}')"
-            if [ -z "$nodes" ]; then
-                echo "Error: no running k3d server nodes found for cluster '{{.CLUSTER_NAME}}'." >&2
-                exit 1
-            fi
-
-            # Keep the archive under the project directory.  Do not use
-            # mktemp here: on Windows, the available mktemp implementations
-            # either reject relative templates or return POSIX paths that
-            # Docker Desktop cannot resolve.  This task runs sequentially, so
-            # a fixed, cleaned-up workspace file is sufficient.
-            mkdir -p .k3d
-            tmp=".k3d/k3d-image-import.tar"
-            rm -f "$tmp"
-            trap 'rm -f "$tmp"' EXIT
-            docker save "$image" -o "$tmp"
-            for node in $nodes; do
-                echo "Importing ${image} into ${node}..."
-                docker cp "$tmp" "${node}:/tmp/k3d-image-import.tar"
-                docker exec "$node" ctr -n k8s.io images import /tmp/k3d-image-import.tar >/dev/null
-                if echo "$image" | grep -q '^docker.io/'; then
-                    docker exec "$node" ctr -n k8s.io images tag "$image" "${image#docker.io/}" >/dev/null || true
-                fi
-                docker exec "$node" rm -f /tmp/k3d-image-import.tar
-            done
-            rm -f "$tmp"
-            trap - EXIT
-        }
-
-        echo "Pulling images into Docker..."
-        for image in {{.IMAGES}}; do
-            docker pull "$image"
-        done
-        echo "Importing images into the k3d cluster so kubelet does not need external pulls..."
-        for image in {{.IMAGES}}; do
-            import_image_into_k3d "$image"
-        done
-
-  # Recreate pods/jobs that may be permanently stuck in ImagePullBackOff from
-  # before _ensure-k3d-images imported the images into k3d's containerd.
-  _unstick-k3s-system:
-    internal: true
-    cmds:
-      - |
-        {{.KUBECTL}} delete pod -n kube-system -l 'k8s-app in (kube-dns,metrics-server)' --ignore-not-found || true
-        {{.KUBECTL}} delete pod -n kube-system -l 'app=local-path-provisioner' --ignore-not-found || true
-        {{.KUBECTL}} delete pod -n kube-system -l 'svccontroller.k3s.cattle.io/svcname=traefik' --ignore-not-found || true
-        {{.KUBECTL}} delete pod -n kube-system -l 'app=svclb-traefik' --ignore-not-found || true
-        {{.KUBECTL}} delete pod -n kube-system -l 'job-name in (helm-install-traefik,helm-install-traefik-crd)' --ignore-not-found || true
-        {{.KUBECTL}} delete job -n kube-system helm-install-traefik helm-install-traefik-crd --ignore-not-found || true
-
   # Generates .k3d/postgres.env once — the status check skips regeneration
   # once a real (non-empty) password is present. Never rotates after first
   # use, since that would lock the already-initialized Postgres data dir out.
@@ -391,10 +312,6 @@ tasks:
     desc: Deploy Postgres and Adminer to the running cluster.
     cmds:
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}} {{.K3S_SYSTEM_IMAGES}} {{.POSTGRES_IMAGE}} {{.ADMINER_IMAGE}}'
-      - task: _unstick-k3s-system
       - task: _apply-namespaces
       - task: _ensure-db-secret
       - '{{.KUBECTL}} rollout status deployment/local-path-provisioner -n kube-system --timeout=120s'
@@ -419,10 +336,6 @@ tasks:
     desc: Deploy Qdrant to the running cluster.
     cmds:
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}} {{.K3S_SYSTEM_IMAGES}} {{.QDRANT_IMAGE}}'
-      - task: _unstick-k3s-system
       - task: _apply-namespaces
       - '{{.KUBECTL}} rollout status deployment/local-path-provisioner -n kube-system --timeout=120s'
       - '{{.KUBECTL}} apply -f k8s/20-qdrant.yaml'
@@ -442,9 +355,6 @@ tasks:
     desc: Deploy NATS to the running cluster.
     cmds:
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}} {{.NATS_IMAGE}}'
       - task: _apply-namespaces
       - '{{.KUBECTL}} apply -f k8s/35-nats.yaml'
       - '{{.KUBECTL}} set image deployment/nats nats={{.NATS_IMAGE}} -n data'
@@ -462,10 +372,6 @@ tasks:
     desc: Deploy Garage to the running cluster and bootstrap its layout, dev bucket, and access key.
     cmds:
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}} {{.K3S_SYSTEM_IMAGES}} {{.GARAGE_IMAGE}}'
-      - task: _unstick-k3s-system
       - task: _apply-namespaces
       - task: _ensure-garage-config
       - '{{.KUBECTL}} rollout status deployment/local-path-provisioner -n kube-system --timeout=120s'
@@ -492,10 +398,6 @@ tasks:
     desc: Deploy Headlamp Kubernetes dashboard to the running cluster.
     cmds:
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.HEADLAMP_IMAGE}} {{.K3S_PAUSE_IMAGE}} {{.K3S_SYSTEM_IMAGES}}'
-      - task: _unstick-k3s-system
       - '{{.KUBECTL}} rollout status deployment/coredns -n kube-system --timeout=120s'
       - '{{.KUBECTL}} rollout status deployment/traefik -n kube-system --timeout=180s'
       - '{{.KUBECTL}} wait --for=condition=Ready pod -n kube-system -l svccontroller.k3s.cattle.io/svcname=traefik --timeout=120s'
@@ -540,9 +442,6 @@ tasks:
         vars:
           APP: dictionary
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}}'
       - task: _apply-namespaces
       - task: _ensure-db-secret
       - task: _migrate-db
@@ -616,9 +515,6 @@ tasks:
         vars:
           APP: phraseforge
       - task: _require-cluster
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}}'
       - task: _apply-namespaces
       - task: _ensure-db-secret
       - task: _migrate-db
@@ -751,9 +647,6 @@ tasks:
     cmds:
       - task: _require-cluster
       - task: _ensure-argo-workflows-manifest
-      - task: _ensure-k3d-images
-        vars:
-          IMAGES: '{{.K3S_PAUSE_IMAGE}} {{.ARGO_EVENTS_IMAGE}} {{.ARGO_WORKFLOWS_IMAGES}}'
       - task: _apply-namespaces
       # --server-side: several of these CRDs (Workflow, WorkflowTemplate, ...) embed a
       # large enough OpenAPI schema that client-side apply's last-applied-configuration

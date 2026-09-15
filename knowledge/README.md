@@ -6,7 +6,8 @@
 `knowledge` is a Go/Chi application for maintaining pre-chunked Markdown knowledge articles for
 RAG. It provides:
 
-- a browser GUI at `http://knowledge.localhost:8080/`
+- a browser GUI at `http://knowledge.localhost:8080/`, gated behind sign-up/login, with a dark/light
+  theme toggle that remembers your last choice
 - a JSON REST API under `/api/v1`
 - semantic/vector search backed by Qdrant
 - chat with your knowledge, with chat history stored in Postgres
@@ -18,12 +19,16 @@ RAG. It provides:
 knowledge/
 ├── main.go                           # serve or migrate entrypoint
 ├── internal/config/config.go          # runtime config from environment
+├── internal/auth/auth.go              # signup/login/session logic (bcrypt + Postgres sessions)
 ├── internal/embeddings/embeddings.go  # Ollama/OpenAI/fake embedding clients
 ├── internal/qdrant/qdrant.go          # Qdrant collection + CRUD/search logic
-├── internal/db/db.go                  # Postgres chat schema/migrations
+├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats)
 ├── internal/chat/chat.go              # chat persistence + RAG orchestration
-├── internal/server/server.go          # Chi router, REST handlers, embedded GUI
-├── internal/server/static/index.html  # vanilla HTML/CSS/JS GUI
+├── internal/server/server.go          # Chi router, REST handlers, session middleware, embedded GUI
+├── internal/server/static/index.html  # vanilla HTML/CSS/JS GUI (theme toggle, logout)
+├── internal/server/static/login.html  # login page
+├── internal/server/static/signup.html # sign-up page
+├── internal/server/static/theme.js    # shared dark/light theme toggle + localStorage persistence
 └── k8s/
     ├── deployment.yaml                # Deployment, Service, Ingress
     └── jobs/migrate-job.yaml          # creates/validates Qdrant collection
@@ -171,6 +176,38 @@ Re-run only the Qdrant collection migration:
 task migrate-knowledge-db
 ```
 
+## Authentication
+
+The whole app — the GUI and every `/api/v1` route except the auth endpoints themselves — requires a
+logged-in session. There is no per-user data isolation: everyone with an account shares the same
+knowledge base and chats; signup/login is purely an access gate.
+
+Visiting the app while logged out redirects to `/login.html`; calling the API while logged out
+returns `401 unauthorized`. Sign up is open — anyone who can reach the app can create an account.
+
+```sh
+BASE=http://knowledge.localhost:8080/api/v1
+
+# Sign up (also logs you in) and log in both set an httpOnly session cookie.
+curl -sS -c cookies.txt -X POST "$BASE/auth/signup" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"at-least-8-chars"}' | jq .
+
+curl -sS -c cookies.txt -X POST "$BASE/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"at-least-8-chars"}' | jq .
+
+# Use the cookie for authenticated requests.
+curl -sS -b cookies.txt "$BASE/auth/me" | jq .
+curl -sS -b cookies.txt "$BASE/knowledge" | jq .
+
+curl -i -b cookies.txt -X POST "$BASE/auth/logout"
+```
+
+Sessions live in Postgres (`sessions` table, 30-day expiry) and are checked on every request; there
+is no server-side session cache. Passwords are hashed with bcrypt (`users` table); the API never
+returns a password or hash.
+
 ## API
 
 Base URL used below:
@@ -280,6 +317,84 @@ curl -sS --get "$BASE/knowledge" \
   --data-urlencode 'start=2026-01-01T00:00:00Z' \
   --data-urlencode 'end=2026-12-31T23:59:59Z' | jq .
 ```
+
+### Bulk export
+
+Returns every item (unlike list/search, unfiltered by default and always including `body`), as a
+download (`Content-Disposition: attachment`). Optional `tag` (repeatable) scopes the export the
+same way it scopes list/search — conjunctive, all requested tags required.
+
+```sh
+curl -sS "$BASE/knowledge/export" -o knowledge-export.json
+
+curl -sS --get "$BASE/knowledge/export" \
+  --data-urlencode 'tag=k8s' \
+  --data-urlencode 'tag=headlamp' -o headlamp-export.json
+```
+
+```json
+{
+  "items": [
+    {
+      "id": "...",
+      "title": "Headlamp in k8s-lab",
+      "summary": "How to deploy and log into Headlamp in the local development cluster.",
+      "body": "# Headlamp\n\n...",
+      "tags": ["gui", "headlamp", "k8s"],
+      "embedding_model": "nomic-embed-text",
+      "created_at": "...",
+      "updated_at": "..."
+    }
+  ]
+}
+```
+
+### Bulk import
+
+Accepts the same `{"items": [...]}` shape an export produces, so it round-trips a prior export
+(backup/restore, or copying a tag subset into another instance). Each item is re-embedded
+independently: one bad row doesn't fail the batch. An item with an `id` overwrites that exact
+point (restore); without one, a new item is created. `created_at`/`updated_at` are preserved if
+given, otherwise set to now.
+
+```sh
+curl -sS -X POST "$BASE/knowledge/import" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "items": [
+      {
+        "title": "Headlamp in k8s-lab",
+        "summary": "How to deploy and log into Headlamp in the local development cluster.",
+        "body": "# Headlamp\n\nRun `task deploy-headlamp`.",
+        "tags": ["k8s", "headlamp"]
+      }
+    ]
+  }' | jq .
+```
+
+```json
+{
+  "imported": 1,
+  "errors": []
+}
+```
+
+A row missing `title`/`summary`/`body` is skipped and reported, not fatal to the rest of the
+batch:
+
+```json
+{
+  "imported": 3,
+  "errors": [
+    { "index": 4, "id": "...", "message": "title, summary, and body are required" }
+  ]
+}
+```
+
+In the GUI, use Export/Import in the Knowledge tab; Export has its own tags field (separate from
+the search filter) — leave it empty to export everything, or list tags to scope the export. Import
+reads a local JSON file (the same shape as Export, or a bare array of items) and reports
+how many rows imported.
 
 ### Fetch a full item by ID
 

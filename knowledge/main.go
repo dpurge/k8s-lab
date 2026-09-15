@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"knowledge/internal/auth"
 	"knowledge/internal/chat"
 	"knowledge/internal/config"
 	"knowledge/internal/db"
@@ -41,6 +42,7 @@ func main() {
 	}
 	defer pool.Close()
 	chatSvc := chat.New(pool, kb, cfg)
+	authSvc := auth.New(pool)
 	log.Printf("knowledge listening on %s, embeddings=%s/%s dim=%d chat=%s/%s", cfg.BindAddr, cfg.EmbeddingsProvider, emb.Model(), emb.Dimension(), cfg.ChatProvider, cfg.ChatModel)
-	log.Fatal(http.ListenAndServe(cfg.BindAddr, server.New(kb, chatSvc).Router()))
+	log.Fatal(http.ListenAndServe(cfg.BindAddr, server.New(kb, chatSvc, authSvc).Router()))
 }

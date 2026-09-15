@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"knowledge/internal/auth"
 	"knowledge/internal/chat"
 	"knowledge/internal/qdrant"
 )
@@ -18,12 +20,17 @@ import (
 //go:embed static/*
 var static embed.FS
 
+const sessionCookieName = "kb_session"
+
 type Server struct {
 	kb   *qdrant.Client
 	chat *chat.Service
+	auth *auth.Service
 }
 
-func New(kb *qdrant.Client, chatSvc *chat.Service) *Server { return &Server{kb: kb, chat: chatSvc} }
+func New(kb *qdrant.Client, chatSvc *chat.Service, authSvc *auth.Service) *Server {
+	return &Server{kb: kb, chat: chatSvc, auth: authSvc}
+}
 
 type itemRequest struct {
 	Title   string   `json:"title"`
@@ -40,6 +47,17 @@ type searchRequest struct {
 }
 type listResponse struct {
 	Items []qdrant.ListItem `json:"items"`
+}
+type exportResponse struct {
+	Items []qdrant.Item `json:"items"`
+}
+type importRequest struct {
+	Items []qdrant.ImportItem `json:"items"`
+}
+
+type authRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type createChatRequest struct {
@@ -67,25 +85,140 @@ func (s *Server) Router() http.Handler {
 		}
 		w.WriteHeader(200)
 	})
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/knowledge", s.list)
-		r.Post("/knowledge", s.create)
-		r.Post("/knowledge/search", s.search)
-		r.Get("/knowledge/{id}", s.get)
-		r.Get("/chats", s.listChats)
-		r.Post("/chats", s.createChat)
-		r.Get("/chats/{id}", s.getChat)
-		r.Delete("/chats/{id}", s.deleteChat)
-		r.Post("/chats/{id}/messages", s.sendMessage)
-		r.Put("/knowledge/{id}", s.update)
-		r.Delete("/knowledge/{id}", s.delete)
+
+	// Public: the login/signup pages, the shared theme script they (and the
+	// main app) load, and the auth API that issues/clears the session
+	// cookie. Registered as exact paths so they take precedence over the
+	// "/*" static handler below regardless of which group added them.
+	r.Get("/login.html", s.serveStatic("login.html"))
+	r.Get("/signup.html", s.serveStatic("signup.html"))
+	r.Get("/theme.js", s.serveStatic("theme.js"))
+	r.Post("/api/v1/auth/signup", s.signup)
+	r.Post("/api/v1/auth/login", s.login)
+	r.Post("/api/v1/auth/logout", s.logout)
+
+	r.Group(func(r chi.Router) {
+		r.Use(s.requireAuth)
+		r.Route("/api/v1", func(r chi.Router) {
+			r.Get("/auth/me", s.me)
+			r.Get("/knowledge", s.list)
+			r.Post("/knowledge", s.create)
+			r.Post("/knowledge/search", s.search)
+			r.Get("/knowledge/export", s.export)
+			r.Post("/knowledge/import", s.importItems)
+			r.Get("/knowledge/{id}", s.get)
+			r.Get("/chats", s.listChats)
+			r.Post("/chats", s.createChat)
+			r.Get("/chats/{id}", s.getChat)
+			r.Delete("/chats/{id}", s.deleteChat)
+			r.Post("/chats/{id}/messages", s.sendMessage)
+			r.Put("/knowledge/{id}", s.update)
+			r.Delete("/knowledge/{id}", s.delete)
+		})
+		staticRoot, err := fs.Sub(static, "static")
+		if err != nil {
+			panic(err)
+		}
+		r.Handle("/*", http.FileServer(http.FS(staticRoot)))
 	})
-	staticRoot, err := fs.Sub(static, "static")
-	if err != nil {
-		panic(err)
-	}
-	r.Handle("/*", http.FileServer(http.FS(staticRoot)))
 	return r
+}
+
+func (s *Server) serveStatic(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, static, "static/"+name)
+	}
+}
+
+type userCtxKey struct{}
+
+func userFromContext(ctx context.Context) auth.User {
+	u, _ := ctx.Value(userCtxKey{}).(auth.User)
+	return u
+}
+
+// requireAuth gates both the JSON API and the static app/assets behind a
+// valid session cookie. API requests get a 401; anything else (the app
+// shell, any other static asset) is redirected to the login page.
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var user auth.User
+		var err error = auth.ErrNoSession
+		if cookie, cerr := r.Cookie(sessionCookieName); cerr == nil {
+			user, err = s.auth.UserForToken(r.Context(), cookie.Value)
+		}
+		if err != nil {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				writeErr(w, 401, "unauthorized", "login required")
+				return
+			}
+			http.Redirect(w, r, "/login.html", http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userCtxKey{}, user)))
+	})
+}
+
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]string{"email": userFromContext(r.Context()).Email})
+}
+
+func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if _, err := s.auth.Signup(r.Context(), req.Email, req.Password); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrValidation):
+			writeErr(w, 400, "validation_failed", err.Error())
+		case errors.Is(err, auth.ErrEmailTaken):
+			writeErr(w, 409, "email_taken", err.Error())
+		default:
+			writeErr(w, 500, "internal", err.Error())
+		}
+		return
+	}
+	s.startSession(w, r, req.Email, req.Password)
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	s.startSession(w, r, req.Email, req.Password)
+}
+
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, email, password string) {
+	token, user, err := s.auth.Login(r.Context(), email, password)
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidLogin) {
+			writeErr(w, 401, "invalid_login", err.Error())
+			return
+		}
+		writeErr(w, 500, "internal", err.Error())
+		return
+	}
+	// No Secure flag: this app is served over plain HTTP in local/dev
+	// clusters (see README) with no TLS termination at the ingress.
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(auth.SessionTTL),
+	})
+	writeJSON(w, 200, map[string]string{"email": user.Email})
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		_ = s.auth.Logout(r.Context(), cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1})
+	w.WriteHeader(204)
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +244,28 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, listResponse{Items: items})
+}
+func (s *Server) export(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	tags := append(q["tag"], splitTags(q.Get("tags"))...)
+	items, err := s.kb.ExportAll(r.Context(), tags)
+	if err != nil {
+		writeErr(w, 500, "internal", err.Error())
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="knowledge-export.json"`)
+	writeJSON(w, 200, exportResponse{Items: items})
+}
+func (s *Server) importItems(w http.ResponseWriter, r *http.Request) {
+	var req importRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if len(req.Items) == 0 {
+		writeErr(w, 400, "validation_failed", "items must be a non-empty array")
+		return
+	}
+	writeJSON(w, 200, s.kb.Import(r.Context(), req.Items))
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var req itemRequest

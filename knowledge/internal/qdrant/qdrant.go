@@ -154,6 +154,104 @@ func (c *Client) Update(ctx context.Context, id, title, summary, body string, ta
 	return old, c.upsert(ctx, old)
 }
 
+// ExportAll scrolls the entire collection (optionally filtered by tags) and
+// returns full items, including body — unlike Search/scroll, which cap
+// results for the UI and omit body from list responses.
+func (c *Client) ExportAll(ctx context.Context, tags []string) ([]Item, error) {
+	tags = NormalizeTags(tags)
+	var all []Item
+	var offset any
+	for {
+		req := map[string]any{"limit": 200, "with_payload": true, "with_vector": false}
+		if len(tags) > 0 {
+			req["filter"] = filter(Search{Tags: tags})
+		}
+		if offset != nil {
+			req["offset"] = offset
+		}
+		var res struct {
+			Result struct {
+				Points         []point `json:"points"`
+				NextPageOffset any     `json:"next_page_offset"`
+			} `json:"result"`
+		}
+		if err := c.do(ctx, http.MethodPost, "/collections/"+c.collection+"/points/scroll", req, &res); err != nil {
+			return nil, err
+		}
+		for _, p := range res.Result.Points {
+			if it, err := p.item(); err == nil {
+				all = append(all, it)
+			}
+		}
+		if res.Result.NextPageOffset == nil || len(res.Result.Points) == 0 {
+			break
+		}
+		offset = res.Result.NextPageOffset
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt.Before(all[j].CreatedAt) })
+	return all, nil
+}
+
+// ImportItem mirrors Item for bulk import: ID/timestamps are optional so the
+// same shape round-trips an ExportAll response (restore/copy) or accepts a
+// hand-written batch (ID/timestamps generated).
+type ImportItem struct {
+	ID        string    `json:"id,omitempty"`
+	Title     string    `json:"title"`
+	Summary   string    `json:"summary"`
+	Body      string    `json:"body"`
+	Tags      []string  `json:"tags"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+type ImportError struct {
+	Index   int    `json:"index"`
+	ID      string `json:"id,omitempty"`
+	Message string `json:"message"`
+}
+type ImportResult struct {
+	Imported int           `json:"imported"`
+	Errors   []ImportError `json:"errors"`
+}
+
+// Import upserts each item independently (re-embedding it), collecting
+// per-row errors rather than aborting the whole batch on the first bad row.
+// An item with an ID overwrites that point (restore/re-import); without one,
+// a new ID is generated.
+func (c *Client) Import(ctx context.Context, items []ImportItem) ImportResult {
+	res := ImportResult{Errors: []ImportError{}}
+	for i, in := range items {
+		if err := validate(in.Title, in.Summary, in.Body); err != nil {
+			res.Errors = append(res.Errors, ImportError{Index: i, ID: in.ID, Message: "title, summary, and body are required"})
+			continue
+		}
+		id := in.ID
+		if id == "" {
+			var err error
+			id, err = newID()
+			if err != nil {
+				res.Errors = append(res.Errors, ImportError{Index: i, Message: err.Error()})
+				continue
+			}
+		}
+		now := time.Now().UTC().Truncate(time.Second)
+		createdAt, updatedAt := now, now
+		if !in.CreatedAt.IsZero() {
+			createdAt = in.CreatedAt
+		}
+		if !in.UpdatedAt.IsZero() {
+			updatedAt = in.UpdatedAt
+		}
+		it := Item{ID: id, Title: in.Title, Summary: in.Summary, Body: in.Body, Tags: NormalizeTags(in.Tags), EmbeddingModel: c.emb.Model(), CreatedAt: createdAt, UpdatedAt: updatedAt}
+		if err := c.upsert(ctx, it); err != nil {
+			res.Errors = append(res.Errors, ImportError{Index: i, ID: id, Message: err.Error()})
+			continue
+		}
+		res.Imported++
+	}
+	return res
+}
+
 func (c *Client) Delete(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/collections/"+c.collection+"/points/delete?wait=true", map[string]any{"points": []string{id}}, nil)
 }
