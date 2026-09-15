@@ -31,7 +31,11 @@ type Client struct {
 	http *http.Client
 }
 
-func New(c Config) *Client { return &Client{cfg: c, http: &http.Client{Timeout: 120 * time.Second}} }
+// New creates an LLM client. The timeout covers provider queueing and
+// response-body transfer while enforcing a two-minute maximum.
+func New(c Config) *Client {
+	return &Client{cfg: c, http: &http.Client{Timeout: 2 * time.Minute}}
+}
 
 func (c *Client) Complete(ctx context.Context, messages []Message) (string, error) {
 	r, err := c.Chat(ctx, messages, nil)
