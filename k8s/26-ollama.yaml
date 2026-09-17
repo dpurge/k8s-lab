@@ -1,0 +1,23 @@
+---
+# Proxies to the Ollama instance running on the host machine's localhost:11434
+# (same mechanism phraseforge and knowledge already reach directly via
+# host.docker.internal — see their deployment.yaml env). This Service exists
+# so in-cluster config can reference "ollama.data.svc.cluster.local:11434"
+# instead of hardcoding the host DNS name, mirroring jdp-helm's
+# jdp-backend-ollama Service so app config looks the same in both places.
+#
+# Not a true headless Service (clusterIP: None + Endpoints) like postgres/
+# qdrant/nats/garage below: those point at a literal IP, but
+# host.docker.internal is a DNS name, not a stable IP, so a plain Endpoints
+# object can't target it. ExternalName is the correct primitive for
+# proxying a Service name to a hostname — it's a DNS CNAME, not a routed
+# ClusterIP, so clients must still connect with the port explicit
+# (":11434"), same as they would to host.docker.internal directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: data
+spec:
+  type: ExternalName
+  externalName: host.docker.internal

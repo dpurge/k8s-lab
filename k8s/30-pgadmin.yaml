@@ -1,0 +1,108 @@
+---
+# Pre-fills the pgAdmin login form's server entry with Postgres's in-cluster
+# DNS name and this cluster's actual superuser (see _generate-postgres-env in
+# Taskfile.yml) — password is still entered by hand from .k3d/postgres.env,
+# same as Adminer required before.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgadmin-config
+  namespace: data
+data:
+  servers.json: |
+    {
+      "Servers": {
+        "1": {
+          "Name": "k8s-lab",
+          "Group": "Servers",
+          "Username": "postgres",
+          "Port": 5432,
+          "Host": "postgres.data.svc.cluster.local",
+          "SSLMode": "prefer",
+          "MaintenanceDB": "postgres"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgadmin
+  namespace: data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgadmin
+  template:
+    metadata:
+      labels:
+        app: pgadmin
+    spec:
+      containers:
+        - name: pgadmin
+          image: dpage/pgadmin4:9.11.0
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            # Fixed, non-secret dev login — matches this cluster's
+            # no-auth-for-dev-tools posture (see Qdrant/NATS/Argo comments
+            # elsewhere in k8s/); not meant to gate anything real.
+            - name: PGADMIN_DEFAULT_EMAIL
+              value: admin@k8s-lab.local
+            - name: PGADMIN_DEFAULT_PASSWORD
+              value: admin
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: config
+              mountPath: /pgadmin4/servers.json
+              subPath: servers.json
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/pgadmin
+      volumes:
+        - name: config
+          configMap:
+            name: pgadmin-config
+        - name: data
+          emptyDir:
+            sizeLimit: 10Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgadmin
+  namespace: data
+spec:
+  selector:
+    app: pgadmin
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pgadmin
+  namespace: data
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: pgadmin.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pgadmin
+                port:
+                  number: 80

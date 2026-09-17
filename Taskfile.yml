@@ -35,7 +35,7 @@ vars:
   HEADLAMP_VERSION: v0.45.0
   HEADLAMP_IMAGE: 'ghcr.io/headlamp-k8s/headlamp:{{.HEADLAMP_VERSION}}'
   POSTGRES_IMAGE: postgres:18-alpine
-  ADMINER_IMAGE: adminer:5.5.1-standalone
+  PGADMIN_IMAGE: dpage/pgadmin4:9.11.0
   QDRANT_IMAGE: qdrant/qdrant:v1.19.0
   GARAGE_IMAGE: dxflrs/garage:v2.3.0
   NATS_IMAGE: nats:2.14.6-alpine
@@ -309,28 +309,28 @@ tasks:
   # manifest(s) only — safe to run in any combination.
 
   deploy-postgres:
-    desc: Deploy Postgres and Adminer to the running cluster.
+    desc: Deploy Postgres and pgAdmin to the running cluster.
     cmds:
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
       - '{{.KUBECTL}} rollout status deployment/local-path-provisioner -n kube-system --timeout=120s'
-      - '{{.KUBECTL}} apply -f k8s/10-postgres.yaml -f k8s/30-adminer.yaml'
+      - '{{.KUBECTL}} apply -f k8s/10-postgres.yaml -f k8s/30-pgadmin.yaml'
       - '{{.KUBECTL}} set image deployment/postgres postgres={{.POSTGRES_IMAGE}} -n data'
-      - '{{.KUBECTL}} set image deployment/adminer adminer={{.ADMINER_IMAGE}} -n data'
+      - '{{.KUBECTL}} set image deployment/pgadmin pgadmin={{.PGADMIN_IMAGE}} -n data'
       - '{{.KUBECTL}} delete pod -n data -l app=postgres --ignore-not-found'
-      - '{{.KUBECTL}} delete pod -n data -l app=adminer --ignore-not-found'
+      - '{{.KUBECTL}} delete pod -n data -l app=pgadmin --ignore-not-found'
       - '{{.KUBECTL}} wait --for=jsonpath=''{.status.phase}''=Bound pvc/postgres-data -n data --timeout=180s'
       - '{{.KUBECTL}} rollout status deployment/postgres -n data --timeout=180s'
-      - '{{.KUBECTL}} rollout status deployment/adminer  -n data --timeout=180s'
+      - '{{.KUBECTL}} rollout status deployment/pgadmin  -n data --timeout=180s'
       - echo "postgres ready."
-      - 'echo "adminer ready: http://adminer.localhost:{{.INGRESS_PORT}}"'
+      - 'echo "pgadmin ready: http://pgadmin.localhost:{{.INGRESS_PORT}}"'
 
   delete-postgres:
-    desc: Delete Postgres and Adminer from the running cluster.
+    desc: Delete Postgres and pgAdmin from the running cluster.
     cmds:
       - task: _require-cluster
-      - '{{.KUBECTL}} delete -f k8s/30-adminer.yaml -f k8s/10-postgres.yaml --ignore-not-found'
+      - '{{.KUBECTL}} delete -f k8s/30-pgadmin.yaml -f k8s/10-postgres.yaml --ignore-not-found'
 
   deploy-qdrant:
     desc: Deploy Qdrant to the running cluster.
@@ -393,6 +393,20 @@ tasks:
     cmds:
       - task: _require-cluster
       - '{{.KUBECTL}} delete -f k8s/25-garage.yaml --ignore-not-found'
+
+  deploy-ollama:
+    desc: Deploy the Ollama proxy Service to the running cluster (points at host.docker.internal:11434 — nothing runs in-cluster).
+    cmds:
+      - task: _require-cluster
+      - task: _apply-namespaces
+      - '{{.KUBECTL}} apply -f k8s/26-ollama.yaml'
+      - 'echo "ollama proxy ready: ollama.data.svc.cluster.local:11434 -> host.docker.internal:11434"'
+
+  delete-ollama:
+    desc: Delete the Ollama proxy Service from the running cluster.
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f k8s/26-ollama.yaml --ignore-not-found'
 
   deploy-headlamp:
     desc: Deploy Headlamp Kubernetes dashboard to the running cluster.

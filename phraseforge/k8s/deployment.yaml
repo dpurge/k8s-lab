@@ -56,13 +56,16 @@ spec:
             - name: LLM_BASE_URL
               value: http://host.docker.internal:11434
             - name: LLM_MODEL
-              value: gemma4:e4b
+              value: rinex20/translategemma3:12b
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+          resources:
+            limits:
+              memory: 128Mi
           livenessProbe:
             httpGet:
               path: /health

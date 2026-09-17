@@ -56,6 +56,13 @@ spec:
               containerPort: 4466
             - name: metrics
               containerPort: 9090
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 128Mi
           readinessProbe:
             httpGet:
               path: /

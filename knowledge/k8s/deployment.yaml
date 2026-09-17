@@ -31,15 +31,17 @@ spec:
             - name: EMBEDDINGS_BASE_URL
               value: http://host.docker.internal:11434
             - name: EMBEDDINGS_MODEL
-              value: nomic-embed-text
+              value: bge-m3
+            # bge-m3 produces 1024-dim dense embeddings — verified directly
+            # against Ollama's /api/embeddings, not assumed.
             - name: EMBEDDINGS_DIMENSION
-              value: "768"
+              value: "1024"
             - name: CHAT_PROVIDER
               value: ollama
             - name: CHAT_BASE_URL
               value: http://host.docker.internal:11434
             - name: CHAT_MODEL
-              value: gemma4:e4b
+              value: llama3-chatqa:8b
             - name: PGHOST
               value: postgres.data.svc.cluster.local
             - name: PGPORT

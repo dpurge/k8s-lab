@@ -9,7 +9,7 @@ This cluster runs three applications, each documented in its own README:
 - [`knowledge/README.md`](knowledge/README.md) — Go/Chi REST API + GUI for Markdown knowledge articles backed by Qdrant.
 
 This file covers only what's shared: the Taskfile, the k3d cluster itself, and the shared
-infrastructure (Postgres, Qdrant, Adminer, Garage, NATS, Argo Workflows/Events, Headlamp) both apps run
+infrastructure (Postgres, Qdrant, pgAdmin, Garage, NATS, Argo Workflows/Events, Headlamp) both apps run
 against. Argo Workflows' own workflow definitions live in [`workflows/README.md`](workflows/README.md).
 
 ## Prerequisites
@@ -111,10 +111,11 @@ directory (`dictionary/k8s/`, `phraseforge/k8s/`, `knowledge/k8s/`), not here.
 
 ```sh
 task start-k8s          # cluster must be running first
-task deploy-postgres     # Postgres + Adminer
+task deploy-postgres     # Postgres + pgAdmin
 task deploy-qdrant
 task deploy-nats
 task deploy-garage       # also bootstraps its layout, dev bucket, and access key
+task deploy-ollama       # proxy Service only — points at host.docker.internal:11434
 task deploy-workflows    # Argo Workflows + Argo Events, plus workflows/*.yaml — see workflows/README.md
 task deploy-headlamp     # Headlamp Kubernetes dashboard at http://headlamp.localhost:8080
 task deploy-dictionary   # see dictionary/README.md
@@ -138,10 +139,11 @@ task run-k8s -- rollout restart deployment/dictionary -n app
 
 | Command | What it does |
 |---|---|
-| `task deploy-postgres` / `task delete-postgres` | Postgres + Adminer: namespaces → credentials → manifests → rollout wait / teardown. |
+| `task deploy-postgres` / `task delete-postgres` | Postgres + pgAdmin: namespaces → credentials → manifests → rollout wait / teardown. |
 | `task deploy-qdrant` / `task delete-qdrant` | Qdrant only. |
 | `task deploy-nats` / `task delete-nats` | NATS only. |
 | `task deploy-garage` / `task delete-garage` | Garage, plus its one-time layout/bucket/key bootstrap — see [Garage](#garage-s3-compatible-object-storage) below. |
+| `task deploy-ollama` / `task delete-ollama` | ExternalName Service proxying `ollama.data.svc.cluster.local:11434` to `host.docker.internal:11434` — nothing runs in-cluster. Not currently used by any app; phraseforge/knowledge still reach Ollama directly via `host.docker.internal`. |
 | `task deploy-workflows` / `task delete-workflows` | Argo Workflows + Argo Events, plus `workflows/*.yaml` and the webhook trigger — see [Argo Workflows / Argo Events](#argo-workflows--argo-events) below. |
 | `task deploy-headlamp` / `task delete-headlamp` | Headlamp Kubernetes dashboard — see [Headlamp](#headlamp-kubernetes-dashboard) below. |
 
@@ -149,7 +151,7 @@ Each app's own deploy/delete/migrate tasks and full API docs live in its own REA
 
 ## Shared infrastructure
 
-Postgres, Qdrant, Adminer, Garage, and NATS run in the `data` namespace and are shared by both apps.
+Postgres, Qdrant, pgAdmin, Garage, and NATS run in the `data` namespace and are shared by both apps.
 
 **Postgres** — one server, two independent databases: `dictionary` (used by the `dictionary`
 app) and `phraseforge_app` (used by `phraseforge`), each created and migrated by its own app's
@@ -162,14 +164,17 @@ into both the `data` and `app` namespaces.
 provisioned ahead of need. It's ClusterIP-only, no ingress; reach it in-cluster only (e.g. via
 `task run-k8s -- exec`).
 
-**Adminer** gives a DB UI for Postgres, server field pre-filled with its in-cluster DNS name:
+**pgAdmin** gives a DB UI for Postgres, server field pre-filled with its in-cluster DNS name and
+superuser. Log in to pgAdmin itself with `admin@k8s-lab.local` / `admin` (fixed, non-secret — this
+cluster's dev tools aren't gated by real auth); the Postgres server password is entered by hand
+from `.k3d/postgres.env` when you connect to it inside pgAdmin.
 
 | Host | Service |
 |---|---|
-| `adminer.localhost:8080` | Adminer DB UI — supply user/password from `.k3d/postgres.env` |
+| `pgadmin.localhost:8080` | pgAdmin DB UI |
 
 ```sh
-curl -H "Host: adminer.localhost" http://localhost:8080/
+curl -H "Host: pgadmin.localhost" http://localhost:8080/
 ```
 
 ### Garage (S3-compatible object storage)
