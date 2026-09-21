@@ -1,29 +1,8 @@
 ---
-# Pre-fills the pgAdmin login form's server entry with Postgres's in-cluster
-# DNS name and this cluster's actual superuser (see _generate-postgres-env in
-# Taskfile.yml) — password is still entered by hand from .k3d/postgres.env,
-# same as Adminer required before.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: pgadmin-config
-  namespace: data
-data:
-  servers.json: |
-    {
-      "Servers": {
-        "1": {
-          "Name": "k8s-lab",
-          "Group": "Servers",
-          "Username": "postgres",
-          "Port": 5432,
-          "Host": "postgres.data.svc.cluster.local",
-          "SSLMode": "prefer",
-          "MaintenanceDB": "postgres"
-        }
-      }
-    }
----
+# The pgadmin-config ConfigMap (servers.json) is generated at deploy time by
+# _ensure-pgadmin-config in Taskfile.yml, from k8s/pgadmin/servers.json.tmpl —
+# not applied from this file — since it needs the real Postgres
+# superuser/db from .k3d/postgres.env, not a hardcoded guess.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -53,13 +32,25 @@ spec:
               value: admin@k8s-lab.local
             - name: PGADMIN_DEFAULT_PASSWORD
               value: admin
+            # pgAdmin's email validator rejects .local as a reserved/
+            # special-use TLD unless explicitly allowed.
+            - name: PGADMIN_CONFIG_ALLOW_SPECIAL_EMAIL_DOMAINS
+              value: "['local']"
+            # Consumed once on first start: entrypoint.sh installs this as
+            # ~<user>/.pgpass (see servers.json's PassFile above).
+            - name: PGPASS_FILE
+              value: /pgpass-secret/pgpass
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
+              # dpage/pgadmin4's python3 binary carries a cap_net_bind_service
+              # file capability so it can bind port 80 as non-root (UID 5050);
+              # without it, exec() of python3/gunicorn fails with EPERM.
+              add: [NET_BIND_SERVICE]
           resources:
             limits:
-              memory: 32Mi
+              memory: 512Mi
           volumeMounts:
             - name: config
               mountPath: /pgadmin4/servers.json
@@ -67,6 +58,9 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/pgadmin
+            - name: pgpass-secret
+              mountPath: /pgpass-secret
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -74,6 +68,9 @@ spec:
         - name: data
           emptyDir:
             sizeLimit: 10Mi
+        - name: pgpass-secret
+          secret:
+            secretName: pgadmin-pgpass
 ---
 apiVersion: v1
 kind: Service

@@ -22,7 +22,7 @@ type Service struct {
 }
 
 func New(db *pgxpool.Pool, kb *qdrant.Client, cfg config.Config) *Service {
-	return &Service{db: db, kb: kb, cfg: cfg, llm: llm.New(llm.Config{Provider: cfg.ChatProvider, BaseURL: cfg.ChatBaseURL, APIKey: cfg.ChatAPIKey, Model: cfg.ChatModel})}
+	return &Service{db: db, kb: kb, cfg: cfg, llm: llm.New(llm.Config{Provider: cfg.ChatProvider, BaseURL: cfg.ChatBaseURL, APIKey: cfg.ChatAPIKey, Model: cfg.ChatModel, NumCtx: cfg.ChatNumCtx})}
 }
 
 type Chat struct {
@@ -124,12 +124,21 @@ func (s *Service) Send(ctx context.Context, chatID, text string) (Message, []Sou
 	if err != nil {
 		return Message{}, nil, err
 	}
-	items, err := s.kb.Search(ctx, qdrant.Search{Query: text, Tags: c.Tags, Limit: 7})
+	// Retrieval uses the current message plus the immediately preceding user
+	// message, not the current message alone: a short follow-up like
+	// "answer my last question" embeds to a near-random, weakly-scored
+	// match on its own — concatenating the prior question fixed this,
+	// confirmed live (0.339 vs 0.342, both weak and tied -> 0.696 vs 0.268,
+	// clearly separated, same two candidate documents).
+	retrievalQuery := text
+	if prev := lastUserMessage(c.Messages); prev != "" {
+		retrievalQuery = prev + " " + text
+	}
+	items, err := s.kb.Search(ctx, qdrant.Search{Query: retrievalQuery, Tags: c.Tags, Limit: 5})
 	if err != nil {
 		return Message{}, nil, err
 	}
 	sources := make([]Source, 0, len(items))
-	allowed := map[string]bool{}
 	for _, it := range items {
 		score := 0.0
 		if it.Score != nil {
@@ -137,9 +146,8 @@ func (s *Service) Send(ctx context.Context, chatID, text string) (Message, []Sou
 		}
 		src := Source{ID: it.ID, Title: it.Title, Summary: it.Summary, Tags: it.Tags, Score: score, URL: "/?knowledge=" + it.ID}
 		sources = append(sources, src)
-		allowed[it.ID] = true
 	}
-	answer, err := s.answer(ctx, c, text, sources, allowed)
+	answer, err := s.answer(ctx, c, text, sources)
 	if err != nil {
 		return Message{}, sources, err
 	}
@@ -155,6 +163,31 @@ func (s *Service) Send(ctx context.Context, chatID, text string) (Message, []Sou
 	_, _ = s.db.Exec(ctx, "UPDATE chats SET updated_at=now() WHERE id=$1", chatID)
 	msg.Sources = sources
 	return msg, sources, nil
+}
+
+// lastUserMessage returns the most recent user-role message's content, or
+// "" if there isn't one. messages is chronological (oldest first).
+func lastUserMessage(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+// maxHistoryMessages bounds how much prior conversation is replayed to the
+// model each turn (3 exchanges), so prompt size doesn't grow unbounded over
+// a long chat. Older turns are simply dropped, not summarized.
+const maxHistoryMessages = 6
+
+// recentHistory returns the last maxHistoryMessages entries of messages
+// (chronological, oldest first), or all of them if there are fewer.
+func recentHistory(messages []Message) []Message {
+	if len(messages) > maxHistoryMessages {
+		return messages[len(messages)-maxHistoryMessages:]
+	}
+	return messages
 }
 
 func (s *Service) sources(ctx context.Context, msgID string) ([]Source, error) {
@@ -178,36 +211,59 @@ func (s *Service) sources(ctx context.Context, msgID string) ([]Source, error) {
 //go:embed prompt.md
 var systemPrompt string
 
-func (s *Service) answer(ctx context.Context, c Chat, question string, sources []Source, allowed map[string]bool) (string, error) {
+// maxDocumentChars caps each retrieved document's body injected into the
+// prompt, sized to fit 5 documents plus the system prompt, question, and
+// response comfortably within CHAT_NUM_CTX=8192 (see deployment.yaml).
+const maxDocumentChars = 4000
+
+func (s *Service) answer(ctx context.Context, c Chat, question string, sources []Source) (string, error) {
 	sys := strings.TrimSpace(systemPrompt)
-	ctxText := "Retrieved documents:\n"
-	for i, src := range sources {
-		ctxText += fmt.Sprintf("%d. id=%s score=%.3f title=%s tags=%v link=%s summary=%s\n", i+1, src.ID, src.Score, src.Title, src.Tags, src.URL, src.Summary)
+	// Plain concatenated document text, deliberately with no id/score/title/
+	// tags annotations: llama3-chatqa (NVIDIA ChatQA) is a completion-style
+	// QA model trained on flowing context passages, not an enumerated
+	// metadata list — confirmed by direct testing against Ollama, where the
+	// annotated form made it return an empty or refusal answer even when the
+	// relevant document was present. Sources still carry id/score/title/url
+	// for appendReferences below; the model itself never needs them.
+	bodies := make([]string, 0, len(sources))
+	for _, src := range sources {
+		body := src.Summary
+		// Priming with the document's existing Summary before its full body
+		// measurably helped the model locate the right content for an
+		// abstractly-phrased question — confirmed live (a vague "physical
+		// appearance" question went from a one-sentence non-answer to a
+		// substantive, multi-fact one with this priming, same document).
+		if it, err := s.kb.Get(ctx, src.ID); err == nil {
+			body = "Summary: " + src.Summary + "\n\n" + truncateBody(it.Body, maxDocumentChars)
+		}
+		bodies = append(bodies, body)
 	}
-	messages := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: ctxText + "\nQuestion: " + question}}
-	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "read_knowledge_body", "description": "Read full Markdown body for a retrieved knowledge document by ID.", "parameters": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]string{"type": "string"}}, "required": []string{"id"}}}}}
-	for step := 0; step < 3; step++ {
-		resp, err := s.llm.Chat(ctx, messages, tools)
-		if err != nil {
-			return "", err
-		}
-		calls := resp.ToolCalls
-		if len(calls) == 0 {
-			return appendReferences(resp.Content, sources), nil
-		}
-		messages = append(messages, llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: calls})
-		for _, tc := range calls {
-			id := tc.Function.Arguments["id"]
-			body := "document not available"
-			if allowed[id] {
-				if it, err := s.kb.Get(ctx, id); err == nil {
-					body = it.Body
-				}
-			}
-			messages = append(messages, llm.Message{Role: "tool", Content: body, ToolName: tc.Function.Name})
-		}
+	ctxText := strings.Join(bodies, "\n\n")
+	userMsg := ctxText + "\n\nQuestion: " + question
+	messages := []llm.Message{{Role: "system", Content: sys}}
+	for _, m := range recentHistory(c.Messages) {
+		messages = append(messages, llm.Message{Role: m.Role, Content: m.Content})
 	}
-	return appendReferences("I do not know.", sources), nil
+	messages = append(messages, llm.Message{Role: "user", Content: userMsg})
+	resp, err := s.llm.Chat(ctx, messages, nil)
+	if err != nil {
+		return "", err
+	}
+	return appendReferences(resp.Content, sources), nil
+}
+
+// truncateBody cuts body at the nearest whitespace at or before maxChars, so
+// a word (and, since whitespace is always single-byte ASCII, any preceding
+// multi-byte rune) is never split mid-way.
+func truncateBody(body string, maxChars int) string {
+	if len(body) <= maxChars {
+		return body
+	}
+	cut := maxChars
+	if idx := strings.LastIndexAny(body[:maxChars], " \n\t"); idx > 0 {
+		cut = idx
+	}
+	return strings.TrimSpace(body[:cut]) + " [truncated]"
 }
 
 func appendReferences(answer string, sources []Source) string {

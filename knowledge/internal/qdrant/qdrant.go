@@ -20,14 +20,14 @@ var ErrNotFound = errors.New("knowledge item not found")
 var ErrValidation = errors.New("validation failed")
 
 type Item struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"`
-	Summary        string    `json:"summary"`
-	Body           string    `json:"body,omitempty"`
-	Tags           []string  `json:"tags"`
-	EmbeddingModel string    `json:"embedding_model,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string    `json:"id" yaml:"id"`
+	Title          string    `json:"title" yaml:"title"`
+	Summary        string    `json:"summary" yaml:"summary"`
+	Body           string    `json:"body,omitempty" yaml:"body,omitempty"`
+	Tags           []string  `json:"tags" yaml:"tags"`
+	EmbeddingModel string    `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
+	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type ListItem struct {
@@ -52,10 +52,11 @@ type Client struct {
 	base, collection string
 	http             *http.Client
 	emb              embeddings.Embedder
+	minScore         float64
 }
 
-func New(base, collection string, emb embeddings.Embedder) *Client {
-	return &Client{base: strings.TrimRight(base, "/"), collection: collection, emb: emb, http: &http.Client{Timeout: 30 * time.Second}}
+func New(base, collection string, emb embeddings.Embedder, minScore float64) *Client {
+	return &Client{base: strings.TrimRight(base, "/"), collection: collection, emb: emb, minScore: minScore, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
 func (c *Client) Health(ctx context.Context) error {
@@ -192,17 +193,19 @@ func (c *Client) ExportAll(ctx context.Context, tags []string) ([]Item, error) {
 	return all, nil
 }
 
-// ImportItem mirrors Item for bulk import: ID/timestamps are optional so the
-// same shape round-trips an ExportAll response (restore/copy) or accepts a
-// hand-written batch (ID/timestamps generated).
+// ImportItem mirrors Item for bulk import. ID is optional (id-less rows
+// create a new item). CreatedAt/UpdatedAt are deliberately absent — the
+// roadmap calls them informational-only on reimport, so a stored value is
+// never even a field this type can carry; the server always sets its own.
+// Delete marks a row for removal instead of create/update: absent/false for
+// every normal row.
 type ImportItem struct {
-	ID        string    `json:"id,omitempty"`
-	Title     string    `json:"title"`
-	Summary   string    `json:"summary"`
-	Body      string    `json:"body"`
-	Tags      []string  `json:"tags"`
-	CreatedAt time.Time `json:"created_at,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	ID      string   `json:"id,omitempty" yaml:"id,omitempty"`
+	Title   string   `json:"title" yaml:"title"`
+	Summary string   `json:"summary" yaml:"summary"`
+	Body    string   `json:"body" yaml:"body"`
+	Tags    []string `json:"tags" yaml:"tags"`
+	Delete  bool     `json:"delete,omitempty" yaml:"delete,omitempty"`
 }
 type ImportError struct {
 	Index   int    `json:"index"`
@@ -210,21 +213,72 @@ type ImportError struct {
 	Message string `json:"message"`
 }
 type ImportResult struct {
-	Imported int           `json:"imported"`
-	Errors   []ImportError `json:"errors"`
+	Imported  int           `json:"imported"`
+	Deleted   int           `json:"deleted"`
+	Unchanged int           `json:"unchanged"`
+	Errors    []ImportError `json:"errors"`
 }
 
-// Import upserts each item independently (re-embedding it), collecting
-// per-row errors rather than aborting the whole batch on the first bad row.
-// An item with an ID overwrites that point (restore/re-import); without one,
-// a new ID is generated.
+// unchanged reports whether old already matches everything in that would be
+// written for in, given the currently-configured embedding model — the
+// title/summary/body/tags the roadmap names, plus the model, since a model
+// swap makes an identical-text item's stored vector stale even though the
+// text itself didn't change.
+func unchanged(old Item, in ImportItem, currentModel string) bool {
+	return old.Title == in.Title &&
+		old.Summary == in.Summary &&
+		old.Body == in.Body &&
+		equalTags(old.Tags, NormalizeTags(in.Tags)) &&
+		old.EmbeddingModel == currentModel
+}
+
+func equalTags(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Import applies each row independently, collecting per-row errors rather
+// than aborting the whole batch on the first bad row:
+//   - Delete: hard-deletes by id (requires an id; a missing target is a
+//     no-op, matching this app's other idempotent deletes).
+//   - An id that already exists AND is unchanged (title/summary/body/tags/
+//     embedding model all match what's stored): skipped entirely — no
+//     write, no re-embed. Re-embedding is a real LLM/embedding cost, only
+//     paid when content actually changed.
+//   - Otherwise: created (id-less, or an id that doesn't exist yet) or
+//     updated (an existing id with different content) — either way,
+//     (re-)embedded via upsert. An update preserves the stored CreatedAt.
 func (c *Client) Import(ctx context.Context, items []ImportItem) ImportResult {
 	res := ImportResult{Errors: []ImportError{}}
 	for i, in := range items {
+		if in.Delete {
+			if in.ID == "" {
+				res.Errors = append(res.Errors, ImportError{Index: i, Message: "delete requires id"})
+				continue
+			}
+			if err := c.Delete(ctx, in.ID); err != nil {
+				res.Errors = append(res.Errors, ImportError{Index: i, ID: in.ID, Message: err.Error()})
+				continue
+			}
+			res.Deleted++
+			continue
+		}
+
 		if err := validate(in.Title, in.Summary, in.Body); err != nil {
 			res.Errors = append(res.Errors, ImportError{Index: i, ID: in.ID, Message: "title, summary, and body are required"})
 			continue
 		}
+
+		now := time.Now().UTC().Truncate(time.Second)
+		createdAt := now
+
 		id := in.ID
 		if id == "" {
 			var err error
@@ -233,16 +287,18 @@ func (c *Client) Import(ctx context.Context, items []ImportItem) ImportResult {
 				res.Errors = append(res.Errors, ImportError{Index: i, Message: err.Error()})
 				continue
 			}
+		} else if old, err := c.Get(ctx, id); err == nil {
+			if unchanged(old, in, c.emb.Model()) {
+				res.Unchanged++
+				continue
+			}
+			createdAt = old.CreatedAt
+		} else if !errors.Is(err, ErrNotFound) {
+			res.Errors = append(res.Errors, ImportError{Index: i, ID: id, Message: err.Error()})
+			continue
 		}
-		now := time.Now().UTC().Truncate(time.Second)
-		createdAt, updatedAt := now, now
-		if !in.CreatedAt.IsZero() {
-			createdAt = in.CreatedAt
-		}
-		if !in.UpdatedAt.IsZero() {
-			updatedAt = in.UpdatedAt
-		}
-		it := Item{ID: id, Title: in.Title, Summary: in.Summary, Body: in.Body, Tags: NormalizeTags(in.Tags), EmbeddingModel: c.emb.Model(), CreatedAt: createdAt, UpdatedAt: updatedAt}
+
+		it := Item{ID: id, Title: in.Title, Summary: in.Summary, Body: in.Body, Tags: NormalizeTags(in.Tags), EmbeddingModel: c.emb.Model(), CreatedAt: createdAt, UpdatedAt: now}
 		if err := c.upsert(ctx, it); err != nil {
 			res.Errors = append(res.Errors, ImportError{Index: i, ID: id, Message: err.Error()})
 			continue
@@ -302,7 +358,7 @@ func (c *Client) vectorSearch(ctx context.Context, s Search) ([]ListItem, error)
 	out := make([]ListItem, 0, len(res.Result))
 	for _, p := range res.Result {
 		it, err := p.item()
-		if err == nil {
+		if err == nil && (c.minScore <= 0 || p.Score >= c.minScore) {
 			score := p.Score
 			out = append(out, ListItem{ID: it.ID, Title: it.Title, Summary: it.Summary, Tags: it.Tags, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, Score: &score})
 		}

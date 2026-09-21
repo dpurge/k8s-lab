@@ -11,7 +11,13 @@ import (
 	"time"
 )
 
-type Config struct{ Provider, BaseURL, APIKey, Model string }
+type Config struct {
+	Provider, BaseURL, APIKey, Model string
+	// NumCtx sets Ollama's runtime context window (options.num_ctx). Zero
+	// means omit it, leaving Ollama's own default in effect. No effect on
+	// the openAI path, which has no equivalent per-request knob.
+	NumCtx int
+}
 type Message struct {
 	Role, Content, ToolName string
 	ToolCalls               []ToolCall
@@ -61,9 +67,16 @@ func (c *Client) ollama(ctx context.Context, messages []Message, tools []map[str
 		}
 		ms[i] = mm
 	}
-	in := map[string]any{"model": c.cfg.Model, "messages": ms, "stream": false}
+	// think:false is unconditional: a hidden reasoning trace on a
+	// thinking-capable model (e.g. gemma4) turned a ~1s answer into 148s —
+	// confirmed by direct testing. No caller here wants that trade-off, and
+	// it's a no-op for models without a thinking capability.
+	in := map[string]any{"model": c.cfg.Model, "messages": ms, "stream": false, "think": false}
 	if len(tools) > 0 {
 		in["tools"] = tools
+	}
+	if c.cfg.NumCtx > 0 {
+		in["options"] = map[string]any{"num_ctx": c.cfg.NumCtx}
 	}
 	var out struct {
 		Message struct {

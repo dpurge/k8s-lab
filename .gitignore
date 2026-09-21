@@ -20,3 +20,6 @@ phraseforge/.docker/corp-ca/_corp-ca.pem
 
 # OS cruft
 .DS_Store
+
+# Agent scratch space (/code) — never a project deliverable
+.agent/

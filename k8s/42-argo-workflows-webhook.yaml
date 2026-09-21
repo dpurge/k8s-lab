@@ -10,6 +10,15 @@
 # accepts 1, per the controller's own validation
 # (https://github.com/argoproj/argo-events/blob/v1.9.11/pkg/reconciler/eventbus/validate.go),
 # which is the right footprint for a single-node dev cluster.
+#
+# Tried pointing this at the standalone NATS (k8s/35-nats.yaml) via
+# jetstreamExotic instead of running a second one — doesn't work: exotic mode
+# unconditionally forces a TLS connection with no opt-out in every released
+# version through v1.9.11 (https://github.com/argoproj/argo-events/issues/2938),
+# and our standalone NATS runs plain TCP. The fix merged upstream
+# (https://github.com/argoproj/argo-events/pull/4114) but isn't in a release
+# yet, so self-managed jetstream (a second NATS) is the only working option
+# today.
 apiVersion: argoproj.io/v1alpha1
 kind: EventBus
 metadata:

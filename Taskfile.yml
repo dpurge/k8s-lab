@@ -30,7 +30,7 @@ vars:
   # ambiguity: it always wins, so this repo never touches ~/.kube/config.
   KUBECTL: 'kubectl --kubeconfig={{.KUBECONFIG_PATH}}'
   # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
-  CORP_CA_BUNDLE: /usr/local/munki/certs.pem
+  CORP_CA_BUNDLE: /usr/local/munki/thd_certs.pem
   ARGO_WORKFLOWS_VERSION: v4.1.3
   HEADLAMP_VERSION: v0.45.0
   HEADLAMP_IMAGE: 'ghcr.io/headlamp-k8s/headlamp:{{.HEADLAMP_VERSION}}'
@@ -267,6 +267,51 @@ tasks:
               --dry-run=client -o yaml \
           | {{.KUBECTL}} apply -f -
 
+  # Same pattern as _generate-garage-toml, for pgAdmin's servers.json instead
+  # of Garage's config file: substitutes the real Postgres superuser/db (from
+  # .k3d/postgres.env) into k8s/pgadmin/servers.json.tmpl, then projects the
+  # rendered file as the pgadmin-config ConfigMap. Always runs — servers.json
+  # holds no secrets, so no need for the once-only guard _generate-postgres-env
+  # uses; kubectl apply is itself idempotent.
+  _ensure-pgadmin-config:
+    internal: true
+    vars:
+      ENV_FILE: .k3d/postgres.env
+      RENDERED_FILE: .k3d/pgadmin-servers.json
+    cmds:
+      - task: _generate-postgres-env
+      - |
+        . {{.ENV_FILE}}
+        sed \
+            -e "s/__POSTGRES_USER__/${POSTGRES_USER}/" \
+            -e "s/__POSTGRES_DB__/${POSTGRES_DB}/" \
+            k8s/pgadmin/servers.json.tmpl > {{.RENDERED_FILE}}
+        echo "Projecting pgadmin-config ConfigMap into namespace data..."
+        {{.KUBECTL}} create configmap pgadmin-config \
+            --from-file=servers.json={{.RENDERED_FILE}} \
+            --namespace=data \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
+
+  # Projects the Postgres password (from .k3d/postgres.env) into a .pgpass-
+  # format Secret pgAdmin's servers.json PassFile points at, so its
+  # preconfigured server connects with no password prompt. Always runs
+  # (kubectl apply is itself idempotent), same reasoning as _ensure-db-secret.
+  _ensure-pgadmin-pgpass:
+    internal: true
+    vars:
+      ENV_FILE: .k3d/postgres.env
+    cmds:
+      - task: _generate-postgres-env
+      - |
+        . {{.ENV_FILE}}
+        echo "Projecting pgadmin-pgpass Secret into namespace data..."
+        {{.KUBECTL}} create secret generic pgadmin-pgpass \
+            --from-literal=pgpass="postgres.data.svc.cluster.local:5432:*:${POSTGRES_USER}:${POSTGRES_PASSWORD}" \
+            --namespace=data \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
+
   # Same pattern as _generate-postgres-env, for Garage's config file instead of
   # a flat env file: substitutes fresh secrets into k8s/garage/garage.toml.tmpl.
   _generate-garage-toml:
@@ -314,6 +359,8 @@ tasks:
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
+      - task: _ensure-pgadmin-config
+      - task: _ensure-pgadmin-pgpass
       - '{{.KUBECTL}} rollout status deployment/local-path-provisioner -n kube-system --timeout=120s'
       - '{{.KUBECTL}} apply -f k8s/10-postgres.yaml -f k8s/30-pgadmin.yaml'
       - '{{.KUBECTL}} set image deployment/postgres postgres={{.POSTGRES_IMAGE}} -n data'
@@ -325,6 +372,7 @@ tasks:
       - '{{.KUBECTL}} rollout status deployment/pgadmin  -n data --timeout=180s'
       - echo "postgres ready."
       - 'echo "pgadmin ready: http://pgadmin.localhost:{{.INGRESS_PORT}}"'
+      - 'echo "  login: admin@k8s-lab.local / admin"'
 
   delete-postgres:
     desc: Delete Postgres and pgAdmin from the running cluster.
@@ -494,6 +542,7 @@ tasks:
       - task: deploy-qdrant
       - task: _apply-namespaces
       - task: _ensure-db-secret
+      - '{{.KUBECTL}} apply -f knowledge/k8s/configmap.yaml'
       - task: _migrate-db
         vars:
           APP: knowledge
@@ -508,6 +557,7 @@ tasks:
     cmds:
       - task: _require-cluster
       - '{{.KUBECTL}} delete -f knowledge/k8s/deployment.yaml --ignore-not-found'
+      - '{{.KUBECTL}} delete -f knowledge/k8s/configmap.yaml --ignore-not-found'
 
   migrate-knowledge-db:
     desc: Ensure the knowledge Qdrant collection exists.

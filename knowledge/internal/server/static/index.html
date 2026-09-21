@@ -88,7 +88,19 @@
       .tab.active {
         display: grid;
         grid-template-columns: 360px 1fr;
-        height: calc(100vh - 54px);
+        height: calc(100vh - 54px - 2.4rem);
+      }
+
+      footer {
+        display: flex;
+        gap: 1rem;
+        align-items: baseline;
+        border-top: 1px solid var(--border);
+        padding: 0.4rem 1rem;
+        height: 2.4rem;
+        box-sizing: border-box;
+        overflow: auto;
+        white-space: pre-wrap;
       }
 
       aside {
@@ -146,6 +158,10 @@
         min-height: 45vh;
       }
 
+      #draftBody {
+        min-height: 40vh;
+      }
+
       #chatMessages {
         border: 1px solid var(--border);
         border-radius: 8px;
@@ -173,7 +189,8 @@
     <header>
       <button onclick="showTab('knowledge')">Knowledge</button>
       <button onclick="showTab('chat')">Chat</button>
-      <a href="http://qdrant.localhost:8080/dashboard" target="_blank" rel="noreferrer">Qdrant console ↗</a>
+      <button onclick="showTab('ingest')">Ingest</button>
+      <a href="http://qdrant.localhost:8080/dashboard" target="_blank" rel="noreferrer">Qdrant ↗</a>
       <div class="spacer"></div>
       <span class="muted" id="userEmail"></span>
       <button class="icon-btn" type="button" onclick="toggleTheme()" title="Toggle theme">🌓</button>
@@ -201,7 +218,7 @@
         <div class="actions">
           <button onclick="exportItems()">Export</button>
           <button onclick="$('importFile').click()">Import</button>
-          <input id="importFile" type="file" accept="application/json" style="display: none" onchange="run(importFile)" />
+          <input id="importFile" type="file" accept=".yaml,.yml,application/yaml,text/yaml" style="display: none" onchange="run(importFile)" />
         </div>
         <div id="list"></div>
       </aside>
@@ -212,6 +229,9 @@
           Title
           <input id="title" />
         </label>
+        <div class="actions">
+          <button type="button" onclick="run(generateTitle)">Generate</button>
+        </div>
         <label>
           Tags
           <input id="tags" placeholder="k8s, qdrant, rag" />
@@ -220,6 +240,9 @@
           Summary
           <textarea id="summary" style="min-height: 5rem"></textarea>
         </label>
+        <div class="actions">
+          <button type="button" onclick="run(generateSummary)">Generate</button>
+        </div>
         <label>
           Body (Markdown)
           <textarea id="body"></textarea>
@@ -228,7 +251,6 @@
           <button onclick="run(save)">Save</button>
           <button class="danger" onclick="run(removeItem)">Delete</button>
         </div>
-        <pre id="msg"></pre>
       </main>
     </section>
 
@@ -265,18 +287,79 @@
         <div class="actions">
           <button onclick="run(sendChat)">Send</button>
         </div>
-        <pre id="chatMsg"></pre>
       </main>
     </section>
+
+    <section id="ingestTab" class="tab">
+      <aside>
+        <h1>Ingest</h1>
+        <input id="ingestUrl" placeholder="URL to ingest" />
+        <input id="ingestTags" placeholder="Tags: k8s, qdrant" />
+        <div class="actions">
+          <button onclick="run(startIngestUrl)">Ingest URL</button>
+          <button onclick="$('ingestFile').click()">Upload file</button>
+          <input
+            id="ingestFile"
+            type="file"
+            accept=".txt,.md,.markdown"
+            style="display: none"
+            onchange="run(startIngestFile)"
+          />
+        </div>
+        <div class="actions">
+          <button onclick="run(loadDrafts)">Refresh</button>
+        </div>
+        <div id="drafts"></div>
+        <h2>Jobs</h2>
+        <div id="jobs"></div>
+      </aside>
+
+      <main>
+        <input id="draftId" type="hidden" />
+        <div id="draftSource" class="muted"></div>
+        <label>
+          Title
+          <input id="draftTitle" />
+        </label>
+        <label>
+          Tags
+          <input id="draftTags" placeholder="k8s, qdrant, rag" />
+        </label>
+        <label>
+          Summary
+          <textarea id="draftSummary" style="min-height: 5rem"></textarea>
+        </label>
+        <label>
+          Body
+          <textarea id="draftBody"></textarea>
+        </label>
+        <div class="actions">
+          <button onclick="run(saveDraft)">Save</button>
+          <button onclick="run(approveDraft)">Approve</button>
+          <button class="danger" onclick="run(discardDraft)">Discard</button>
+        </div>
+      </main>
+    </section>
+
+    <footer id="status">
+      <span class="muted" id="jobStatus"></span>
+      <span id="message"></span>
+    </footer>
 
     <script>
       const $ = (id) => document.getElementById(id);
       let currentChat = "";
+      // Tracks whether the most recently observed current job was an
+      // "ingest" job, so pollStatus can detect the running -> finished
+      // transition and refresh the draft list (see pollStatus below).
+      let ingestJobRunning = false;
+
+      const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab"];
 
       function showTab(tab) {
-        $("knowledgeTab").classList.toggle("active", tab === "knowledge");
-        $("chatTab").classList.toggle("active", tab === "chat");
+        for (const id of TAB_IDS) $(id).classList.toggle("active", id === tab + "Tab");
         if (tab === "chat") run(loadChats);
+        if (tab === "ingest") run(async () => { await loadDrafts(); await loadJobs(); });
       }
 
       function parseTags(value) {
@@ -291,18 +374,19 @@
         return value ? new Date(value).toISOString() : "";
       }
 
-      function message(id, text, error = false) {
-        $(id).className = error ? "error" : "";
-        $(id).textContent = text || "";
+      // One shared footer message, used by every tab — success/error
+      // feedback from any action lands here, not in a per-tab element.
+      function message(text, error = false) {
+        $("message").className = error ? "error" : "";
+        $("message").textContent = text || "";
       }
 
       async function run(fn) {
         try {
-          message("msg", "");
-          message("chatMsg", "");
+          message("");
           await fn();
         } catch (error) {
-          message(document.activeElement.closest("#chatTab") ? "chatMsg" : "msg", error.message || String(error), true);
+          message(error.message || String(error), true);
         }
       }
 
@@ -384,6 +468,30 @@
         $("body").value = "";
       }
 
+      async function generateTitle() {
+        const body = $("body").value.trim();
+        if (!body) {
+          message("Enter a body first.");
+          return;
+        }
+        message("Generating title…");
+        const res = await api("/knowledge/generate/title", { method: "POST", body: JSON.stringify({ body }) });
+        $("title").value = res.title;
+        message("");
+      }
+
+      async function generateSummary() {
+        const body = $("body").value.trim();
+        if (!body) {
+          message("Enter a body first.");
+          return;
+        }
+        message("Generating summary…");
+        const res = await api("/knowledge/generate/summary", { method: "POST", body: JSON.stringify({ body }) });
+        $("summary").value = res.summary;
+        message("");
+      }
+
       async function save() {
         const payload = JSON.stringify({
           title: $("title").value,
@@ -398,7 +506,7 @@
         });
 
         $("id").value = item.id;
-        message("msg", "Saved " + new Date().toLocaleString());
+        message("Saved " + new Date().toLocaleString());
         await loadList();
       }
 
@@ -411,23 +519,21 @@
       async function importFile() {
         const file = $("importFile").files[0];
         if (!file) return;
+        if (!confirm("Import " + file.name + "? Rows marked delete: true are removed permanently.")) return;
 
-        let data;
-        try {
-          data = JSON.parse(await file.text());
-        } catch {
-          throw new Error("Selected file is not valid JSON");
-        }
-        const items = Array.isArray(data) ? data : data.items;
-        if (!Array.isArray(items) || items.length === 0) {
-          throw new Error("File must contain a non-empty items array");
-        }
-
-        const result = await api("/knowledge/import", { method: "POST", body: JSON.stringify({ items }) });
+        // The server parses the YAML; the browser never does — this is an
+        // opaque text blob out (export) and in (import), no client-side
+        // YAML library needed.
+        const content = await file.text();
+        const result = await api("/knowledge/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/yaml" },
+          body: content,
+        });
         $("importFile").value = "";
         message(
-          "msg",
-          `Imported ${result.imported} of ${items.length}` + (result.errors.length ? `; ${result.errors.length} failed — see browser console` : ""),
+          `Imported ${result.imported} · deleted ${result.deleted} · unchanged ${result.unchanged}` +
+            (result.errors.length ? `; ${result.errors.length} failed — see browser console` : ""),
           result.errors.length > 0,
         );
         if (result.errors.length) console.warn("Import errors:", result.errors);
@@ -540,12 +646,12 @@
         if (!text) return;
 
         $("chatInput").value = "";
-        message("chatMsg", "Thinking...");
+        message("Thinking...");
         await api("/chats/" + currentChat + "/messages", {
           method: "POST",
           body: JSON.stringify({ message: text }),
         });
-        message("chatMsg", "");
+        message("");
         await openChat(currentChat);
       }
 
@@ -561,11 +667,200 @@
         location.href = "/login.html";
       }
 
+      async function startIngestUrl() {
+        const url = $("ingestUrl").value.trim();
+        if (!url) {
+          message("Enter a URL first.");
+          return;
+        }
+        const tags = parseTags($("ingestTags").value);
+        const job = await api("/ingest/url", { method: "POST", body: JSON.stringify({ url, tags }) });
+        message(`Started: ${job.kind} (job ${job.id})`);
+      }
+
+      async function startIngestFile() {
+        const file = $("ingestFile").files[0];
+        if (!file) return;
+
+        const content = await file.text();
+        const tags = parseTags($("ingestTags").value);
+        const job = await api("/ingest/text", {
+          method: "POST",
+          body: JSON.stringify({ filename: file.name, content, tags }),
+        });
+        $("ingestFile").value = "";
+        message(`Started: ${job.kind} (job ${job.id})`);
+      }
+
+      async function loadDrafts() {
+        const data = await api("/ingest/drafts");
+        const drafts = data.drafts || [];
+        $("drafts").innerHTML = drafts.length
+          ? drafts.map(renderDraft).join("")
+          : '<p class="muted">No drafts pending review.</p>';
+      }
+
+      function renderDraft(d) {
+        const tags = (d.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
+
+        return `
+          <div class="item" onclick="run(() => openDraft('${esc(d.id)}'))">
+            <b>${esc(d.title)}</b>
+            <div>${esc(d.summary)}</div>
+            <div>${tags}</div>
+            <div class="muted">${esc(d.source_kind)}: ${esc(d.source_ref)} · chunk ${d.chunk_index + 1} · Updated ${new Date(d.updated_at).toLocaleString()}</div>
+          </div>
+        `;
+      }
+
+      async function openDraft(id) {
+        showTab("ingest");
+        const d = await api("/ingest/drafts/" + id);
+        $("draftId").value = d.id;
+        $("draftSource").textContent = `${d.source_kind}: ${d.source_ref} (chunk ${d.chunk_index + 1})`;
+        $("draftTitle").value = d.title;
+        $("draftTags").value = (d.tags || []).join(", ");
+        $("draftSummary").value = d.summary;
+        $("draftBody").value = d.body;
+      }
+
+      function clearDraftForm() {
+        $("draftId").value = "";
+        $("draftSource").textContent = "";
+        $("draftTitle").value = "";
+        $("draftTags").value = "";
+        $("draftSummary").value = "";
+        $("draftBody").value = "";
+      }
+
+      async function saveDraft() {
+        const id = $("draftId").value;
+        if (!id) return;
+        const body = {
+          title: $("draftTitle").value,
+          summary: $("draftSummary").value,
+          body: $("draftBody").value,
+          tags: parseTags($("draftTags").value),
+        };
+        const d = await api("/ingest/drafts/" + id, { method: "PUT", body: JSON.stringify(body) });
+        $("draftTitle").value = d.title;
+        $("draftTags").value = (d.tags || []).join(", ");
+        $("draftSummary").value = d.summary;
+        $("draftBody").value = d.body;
+        message("Saved.");
+      }
+
+      // Approving can take several seconds (one embedding call). This flag
+      // makes a second, overlapping approveDraft call a no-op instead of
+      // racing the in-flight request into the double-approve guard's 404.
+      let approveInFlight = false;
+
+      async function approveDraft() {
+        const id = $("draftId").value;
+        if (!id || approveInFlight) return;
+        if (!confirm("Approve this draft? It will become a real, searchable knowledge item.")) return;
+        message("Approving…");
+        approveInFlight = true;
+        try {
+          const result = await api("/ingest/drafts/" + id + "/approve", { method: "POST" });
+          clearDraftForm();
+          message(`Approved — created knowledge item ${result.id}.`);
+          await loadDrafts();
+        } finally {
+          approveInFlight = false;
+        }
+      }
+
+      async function discardDraft() {
+        const id = $("draftId").value;
+        if (!id) return;
+        if (!confirm("Discard this draft permanently? This cannot be undone.")) return;
+        await api("/ingest/drafts/" + id, { method: "DELETE" });
+        clearDraftForm();
+        message("Discarded.");
+        await loadDrafts();
+      }
+
+      async function loadJobs() {
+        const data = await api("/jobs");
+        const list = data.jobs || [];
+        $("jobs").innerHTML = list.length ? list.map(renderJob).join("") : '<p class="muted">No jobs yet.</p>';
+      }
+
+      function renderJob(j) {
+        const source = j.source_ref ? `${esc(j.source_kind)}: ${esc(j.source_ref)}` : "";
+        const error = j.error ? `<div class="error">${esc(j.error)}</div>` : "";
+        const actions =
+          j.status === "failed"
+            ? `<div class="actions">
+                 <button onclick="run(() => retryJob('${esc(j.id)}'))">Retry</button>
+                 <button class="danger" onclick="run(() => deleteJob('${esc(j.id)}'))">Delete</button>
+               </div>`
+            : j.status !== "running"
+              ? `<div class="actions">
+                   <button class="danger" onclick="run(() => deleteJob('${esc(j.id)}'))">Delete</button>
+                 </div>`
+              : "";
+
+        return `
+          <div class="item">
+            <b>${esc(j.kind)}: ${esc(j.status)}</b>
+            <div class="muted">${source}</div>
+            ${error}
+            <div class="muted">Updated ${new Date(j.updated_at).toLocaleString()}</div>
+            ${actions}
+          </div>
+        `;
+      }
+
+      async function retryJob(id) {
+        const job = await api("/jobs/" + id + "/retry", { method: "POST" });
+        message(`Retrying as new ${job.kind} job (${job.id}).`);
+        await loadJobs();
+      }
+
+      async function deleteJob(id) {
+        if (!confirm("Delete this job's history permanently? This cannot be undone.")) return;
+        await api("/jobs/" + id, { method: "DELETE" });
+        message("Job deleted.");
+        await loadJobs();
+      }
+
+      // Polls for a currently-running server-side job (e.g. ingestion) and
+      // shows it in the footer, regardless of active tab. Failures are
+      // swallowed silently — this is a nice-to-have indicator, never
+      // something that should interrupt the user.
+      async function pollStatus() {
+        try {
+          const job = await api("/jobs/current");
+          $("jobStatus").textContent = job ? `${job.kind}: ${job.step || "running"}` : "";
+
+          // Detect an "ingest" job's running -> finished transition and
+          // refresh the draft list + job history so newly created drafts
+          // and the just-finished/failed job appear without a manual
+          // reload, but only while the Ingest tab is open.
+          const isIngestRunning = job?.kind === "ingest";
+          if (ingestJobRunning && !isIngestRunning && $("ingestTab").classList.contains("active")) {
+            // Called outside run(), so a rejection here can't be caught by
+            // this function's own try/catch below — ignore it the same way
+            // as the /jobs/current call itself: this is a nice-to-have
+            // refresh, and the next poll will retry.
+            loadDrafts().catch(() => {});
+            loadJobs().catch(() => {});
+          }
+          ingestJobRunning = isIngestRunning;
+        } catch {
+          // ignore — next poll will retry
+        }
+      }
+
       run(async () => {
         const me = await api("/auth/me");
         $("userEmail").textContent = me.email;
       });
       run(loadList);
+      pollStatus();
+      setInterval(pollStatus, 3000);
 
       const knowledgeID = new URLSearchParams(location.search).get("knowledge");
       if (knowledgeID) run(() => openItem(knowledgeID));

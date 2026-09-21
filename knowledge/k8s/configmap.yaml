@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-config
+  namespace: app
+data:
+  config.yaml: |
+    qdrant:
+      url: http://qdrant.data.svc.cluster.local:6333
+      collection: knowledge
+      searchMinScore: 0.4
+    postgres:
+      host: postgres.data.svc.cluster.local
+      port: "5432"
+      database: knowledge
+    embeddings:
+      provider: ollama
+      baseURL: http://host.docker.internal:11434
+      model: bge-m3
+      # bge-m3 produces 1024-dim dense embeddings — verified directly
+      # against Ollama's /api/embeddings, not assumed.
+      dimension: 1024
+    chat:
+      provider: ollama
+      baseURL: http://host.docker.internal:11434
+      model: gemma4:12b
+      # gemma4:12b's Ollama runtime default context is 4096 tokens
+      # (verified via `ollama show` / `/api/ps`), far below its trained
+      # max. Full retrieved documents go straight into the prompt (see
+      # knowledge/internal/chat/chat.go), so the larger window matters.
+      numCtx: 8192
+    generate:
+      provider: ollama
+      baseURL: http://host.docker.internal:11434
+      model: gemma4:12b
+    knowledgeLanguage: English
+    translate:
+      provider: ollama
+      baseURL: http://host.docker.internal:11434
+      model: rinex20/translategemma3:12b

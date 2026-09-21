@@ -24,30 +24,6 @@ spec:
           ports:
             - containerPort: 8300
           env:
-            - name: QDRANT_URL
-              value: http://qdrant.data.svc.cluster.local:6333
-            - name: EMBEDDINGS_PROVIDER
-              value: ollama
-            - name: EMBEDDINGS_BASE_URL
-              value: http://host.docker.internal:11434
-            - name: EMBEDDINGS_MODEL
-              value: bge-m3
-            # bge-m3 produces 1024-dim dense embeddings — verified directly
-            # against Ollama's /api/embeddings, not assumed.
-            - name: EMBEDDINGS_DIMENSION
-              value: "1024"
-            - name: CHAT_PROVIDER
-              value: ollama
-            - name: CHAT_BASE_URL
-              value: http://host.docker.internal:11434
-            - name: CHAT_MODEL
-              value: llama3-chatqa:8b
-            - name: PGHOST
-              value: postgres.data.svc.cluster.local
-            - name: PGPORT
-              value: "5432"
-            - name: PGDATABASE
-              value: knowledge
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
@@ -58,6 +34,10 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: config
+              mountPath: /etc/knowledge
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /ready
@@ -70,6 +50,10 @@ spec:
               port: 8300
             initialDelaySeconds: 15
             periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: knowledge-config
 ---
 apiVersion: v1
 kind: Service

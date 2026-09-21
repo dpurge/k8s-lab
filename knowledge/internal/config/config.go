@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
-	"strconv"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -10,6 +12,7 @@ type Config struct {
 
 	QdrantURL        string
 	QdrantCollection string
+	SearchMinScore   float64
 
 	PGHost     string
 	PGPort     string
@@ -27,6 +30,90 @@ type Config struct {
 	ChatBaseURL  string
 	ChatAPIKey   string
 	ChatModel    string
+	ChatNumCtx   int
+
+	GenerateProvider string
+	GenerateBaseURL  string
+	GenerateAPIKey   string
+	GenerateModel    string
+	GenerateNumCtx   int
+
+	KnowledgeLanguage string
+
+	TranslateProvider string
+	TranslateBaseURL  string
+	TranslateAPIKey   string
+	TranslateModel    string
+	TranslateNumCtx   int
+}
+
+// fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
+// (PGUser/PGPassword, the *APIKey fields) are deliberately absent here —
+// they stay plain/Secret-sourced env vars, never read from this file.
+type fileConfig struct {
+	BindAddr string `yaml:"bindAddr"`
+	Qdrant   struct {
+		URL            string  `yaml:"url"`
+		Collection     string  `yaml:"collection"`
+		SearchMinScore float64 `yaml:"searchMinScore"`
+	} `yaml:"qdrant"`
+	Postgres struct {
+		Host     string `yaml:"host"`
+		Port     string `yaml:"port"`
+		Database string `yaml:"database"`
+	} `yaml:"postgres"`
+	Embeddings struct {
+		Provider  string `yaml:"provider"`
+		BaseURL   string `yaml:"baseURL"`
+		Model     string `yaml:"model"`
+		Dimension int    `yaml:"dimension"`
+	} `yaml:"embeddings"`
+	Chat struct {
+		Provider string `yaml:"provider"`
+		BaseURL  string `yaml:"baseURL"`
+		Model    string `yaml:"model"`
+		NumCtx   int    `yaml:"numCtx"`
+	} `yaml:"chat"`
+	Generate struct {
+		Provider string `yaml:"provider"`
+		BaseURL  string `yaml:"baseURL"`
+		Model    string `yaml:"model"`
+		NumCtx   int    `yaml:"numCtx"`
+	} `yaml:"generate"`
+	KnowledgeLanguage string `yaml:"knowledgeLanguage"`
+	Translate         struct {
+		Provider string `yaml:"provider"`
+		BaseURL  string `yaml:"baseURL"`
+		Model    string `yaml:"model"`
+		NumCtx   int    `yaml:"numCtx"`
+	} `yaml:"translate"`
+}
+
+func defaultFileConfig() fileConfig {
+	var f fileConfig
+	f.BindAddr = "0.0.0.0:8300"
+	f.Qdrant.URL = "http://localhost:6333"
+	f.Qdrant.Collection = "knowledge"
+	f.Qdrant.SearchMinScore = 0.4
+	f.Postgres.Host = "localhost"
+	f.Postgres.Port = "5432"
+	f.Postgres.Database = "knowledge"
+	f.Embeddings.Provider = "ollama"
+	f.Embeddings.BaseURL = "http://localhost:11434"
+	f.Embeddings.Model = "bge-m3"
+	f.Embeddings.Dimension = 1024
+	f.Chat.Provider = "ollama"
+	f.Chat.BaseURL = "http://localhost:11434"
+	f.Chat.Model = "gemma4:12b"
+	f.Chat.NumCtx = 8192
+	f.Generate.Provider = "ollama"
+	f.Generate.BaseURL = "http://localhost:11434"
+	f.Generate.Model = "gemma4:12b"
+	f.KnowledgeLanguage = "English"
+	f.Translate.Provider = "ollama"
+	f.Translate.BaseURL = "http://localhost:11434"
+	f.Translate.Model = "rinex20/translategemma3:12b"
+	return f
 }
 
 func env(key, fallback string) string {
@@ -36,37 +123,62 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+// Load reads the mounted config file (path from CONFIG_FILE, default
+// /etc/knowledge/config.yaml) over built-in defaults — a missing file is
+// fine (defaults apply, so local runs without a cluster still work), but a
+// malformed one is a real error, not something to silently paper over.
+func Load() (Config, error) {
+	fc := defaultFileConfig()
+	path := env("CONFIG_FILE", "/etc/knowledge/config.yaml")
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		// use defaults
+	case err != nil:
+		return Config{}, fmt.Errorf("read config file %s: %w", path, err)
+	default:
+		if err := yaml.Unmarshal(data, &fc); err != nil {
+			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
-	return fallback
-}
 
-func Load() Config {
 	return Config{
-		BindAddr: env("BIND_ADDR", "0.0.0.0:8300"),
+		BindAddr: fc.BindAddr,
 
-		QdrantURL:        env("QDRANT_URL", "http://localhost:6333"),
-		QdrantCollection: env("QDRANT_COLLECTION", "knowledge"),
+		QdrantURL:        fc.Qdrant.URL,
+		QdrantCollection: fc.Qdrant.Collection,
+		SearchMinScore:   fc.Qdrant.SearchMinScore,
 
-		PGHost:     env("PGHOST", "localhost"),
-		PGPort:     env("PGPORT", "5432"),
-		PGDatabase: env("PGDATABASE", "knowledge"),
+		PGHost:     fc.Postgres.Host,
+		PGPort:     fc.Postgres.Port,
+		PGDatabase: fc.Postgres.Database,
 		PGUser:     env("PGUSER", "postgres"),
 		PGPassword: env("PGPASSWORD", ""),
 
-		EmbeddingsProvider:  env("EMBEDDINGS_PROVIDER", "ollama"),
-		EmbeddingsBaseURL:   env("EMBEDDINGS_BASE_URL", "http://localhost:11434"),
+		EmbeddingsProvider:  fc.Embeddings.Provider,
+		EmbeddingsBaseURL:   fc.Embeddings.BaseURL,
 		EmbeddingsAPIKey:    env("EMBEDDINGS_API_KEY", ""),
-		EmbeddingsModel:     env("EMBEDDINGS_MODEL", "nomic-embed-text"),
-		EmbeddingsDimension: envInt("EMBEDDINGS_DIMENSION", 768),
+		EmbeddingsModel:     fc.Embeddings.Model,
+		EmbeddingsDimension: fc.Embeddings.Dimension,
 
-		ChatProvider: env("CHAT_PROVIDER", "ollama"),
-		ChatBaseURL:  env("CHAT_BASE_URL", "http://localhost:11434"),
+		ChatProvider: fc.Chat.Provider,
+		ChatBaseURL:  fc.Chat.BaseURL,
 		ChatAPIKey:   env("CHAT_API_KEY", ""),
-		ChatModel:    env("CHAT_MODEL", "gemma4:e4b"),
-	}
+		ChatModel:    fc.Chat.Model,
+		ChatNumCtx:   fc.Chat.NumCtx,
+
+		GenerateProvider: fc.Generate.Provider,
+		GenerateBaseURL:  fc.Generate.BaseURL,
+		GenerateAPIKey:   env("GENERATE_API_KEY", ""),
+		GenerateModel:    fc.Generate.Model,
+		GenerateNumCtx:   fc.Generate.NumCtx,
+
+		KnowledgeLanguage: fc.KnowledgeLanguage,
+
+		TranslateProvider: fc.Translate.Provider,
+		TranslateBaseURL:  fc.Translate.BaseURL,
+		TranslateAPIKey:   env("TRANSLATE_API_KEY", ""),
+		TranslateModel:    fc.Translate.Model,
+		TranslateNumCtx:   fc.Translate.NumCtx,
+	}, nil
 }

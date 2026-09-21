@@ -11,6 +11,7 @@ RAG. It provides:
 - a JSON REST API under `/api/v1`
 - semantic/vector search backed by Qdrant
 - chat with your knowledge, with chat history stored in Postgres
+- LLM-generated title/summary suggestions for a knowledge item, from its body
 - embedding providers for Ollama and OpenAI-compatible APIs such as OpenRouter
 
 ## Application architecture
@@ -18,18 +19,23 @@ RAG. It provides:
 ```text
 knowledge/
 ├── main.go                           # serve or migrate entrypoint
-├── internal/config/config.go          # runtime config from environment
+├── internal/config/config.go          # runtime config: mounted YAML file + credential env vars
 ├── internal/auth/auth.go              # signup/login/session logic (bcrypt + Postgres sessions)
 ├── internal/embeddings/embeddings.go  # Ollama/OpenAI/fake embedding clients
 ├── internal/qdrant/qdrant.go          # Qdrant collection + CRUD/search logic
-├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats)
+├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats, jobs)
 ├── internal/chat/chat.go              # chat persistence + RAG orchestration
+├── internal/generate/generate.go      # LLM-generated title/summary from a knowledge item's body
+├── internal/translate/translate.go    # translates text into the configured knowledge-base language
+├── internal/ingest/ingest.go          # URL/file → draft chunks pipeline (chunk.go, html.go, drafts.go, source.go)
+├── internal/jobs/jobs.go              # async job tracking (start/step/finish/current), polled by the UI
 ├── internal/server/server.go          # Chi router, REST handlers, session middleware, embedded GUI
 ├── internal/server/static/index.html  # vanilla HTML/CSS/JS GUI (theme toggle, logout)
 ├── internal/server/static/login.html  # login page
 ├── internal/server/static/signup.html # sign-up page
 ├── internal/server/static/theme.js    # shared dark/light theme toggle + localStorage persistence
 └── k8s/
+    ├── configmap.yaml                 # mounted config (models, prompts, thresholds)
     ├── deployment.yaml                # Deployment, Service, Ingress
     └── jobs/migrate-job.yaml          # creates/validates Qdrant collection
 ```
@@ -54,6 +60,13 @@ One knowledge item = one Qdrant point:
 }
 ```
 
+**Draft items:** chunks produced by the ingest pipeline (`POST /api/v1/ingest/url` or
+`POST /api/v1/ingest/text`) are stored in a separate `knowledge_drafts` Postgres table and never
+written to Qdrant. Each draft has an `id`, `job_id` (reference to the ingest job), `source_kind`
+(url/text), `source_ref` (the URL or filename), `chunk_index`, `title`, `summary`, `body`, `tags`,
+and timestamps. Drafts are purely for human review and staging — they never appear in search or
+chat results until explicitly promoted into Qdrant (via the Ingest tab).
+
 The embedded text is:
 
 ```text
@@ -67,28 +80,72 @@ Body:
 
 Search embeds the query string and performs Qdrant vector search. Tag filtering is conjunctive:
 when searching with `tag=k8s&tag=headlamp`, an item must contain **both** tags to be returned.
-Semantic search defaults to the 7 most relevant items and caps requested limits at 20.
+Semantic search defaults to the 7 most relevant items and caps requested limits at 20. Results
+scoring below `qdrant.searchMinScore` are dropped entirely — Qdrant otherwise always returns its
+nearest neighbors even when none are a good match, which let weak/irrelevant results reach the
+chat model and get hallucinated over.
 
 Chats are stored in Postgres. A chat may define scope tags; empty tags mean search all knowledge.
-When answering, the app retrieves up to 7 Qdrant knowledge items, lets the local chat model read
-full bodies for retrieved documents if needed, and returns references with clickable links back to
-the Knowledge UI.
+Retrieval embeds the current message concatenated with the immediately preceding user message (if
+any), not the current message alone — a short follow-up like "answer my last question" otherwise
+embeds too weakly to reliably find the right item. The app then retrieves the 5 most relevant
+Qdrant knowledge items, fetches each one's full body in code and primes it with its existing
+Summary (no model tool-calling — the chat model only ever sees plain text, never a `tools`
+request, so it also works with completion-only models like `llama3-chatqa`), replays up to the
+last 3 exchanges of chat history to the model for continuity, and returns references with
+clickable links back to the Knowledge UI.
 
 ## Configuration
 
-| Environment variable | Default | Notes |
-|---|---|---|
-| `BIND_ADDR` | `0.0.0.0:8300` | HTTP bind address. |
-| `QDRANT_URL` | `http://localhost:6333` | In k8s: `http://qdrant.data.svc.cluster.local:6333`. |
-| `QDRANT_COLLECTION` | `knowledge` | Qdrant collection name. |
-| `EMBEDDINGS_PROVIDER` | `ollama` | `ollama`, `openai`, or `fake`. |
-| `EMBEDDINGS_BASE_URL` | `http://localhost:11434` | In k8s defaults to `http://host.k3d.internal:11434`. |
-| `EMBEDDINGS_API_KEY` | empty | Required for OpenAI/OpenRouter. |
-| `EMBEDDINGS_MODEL` | `nomic-embed-text` | Embedding model ID. |
-| `EMBEDDINGS_DIMENSION` | `768` | Must match the embedding model and existing Qdrant collection. |
-| `CHAT_PROVIDER` | `ollama` | Chat provider. Currently Ollama. |
-| `CHAT_BASE_URL` | `http://localhost:11434` | In k8s: `http://host.docker.internal:11434`. |
-| `CHAT_MODEL` | `gemma4:e4b` | Ollama chat model. |
+Most configuration lives in a YAML file — `knowledge/k8s/configmap.yaml`'s `ConfigMap`, mounted
+into both the Deployment and the migrate Job at `/etc/knowledge/config.yaml` (override the path
+with `CONFIG_FILE`). A missing file falls back to built-in defaults (so `go run .` works locally
+without a cluster); a malformed one is a startup error, not a silently-ignored one. Any field the
+file omits keeps its default — the file doesn't need to be complete.
+
+```yaml
+bindAddr: 0.0.0.0:8300
+qdrant:
+  url: http://localhost:6333
+  collection: knowledge
+  searchMinScore: 0.4          # min Qdrant cosine-similarity score to keep a semantic search
+                                # result; 0 (or negative) disables filtering. Applies to general
+                                # search and chat retrieval alike.
+postgres:
+  host: localhost
+  port: "5432"
+  database: knowledge
+embeddings:
+  provider: ollama              # ollama, openai, or fake
+  baseURL: http://localhost:11434
+  model: nomic-embed-text
+  dimension: 768                # must match the model and the existing Qdrant collection
+chat:
+  provider: ollama
+  baseURL: http://localhost:11434
+  model: gemma4:12b              # the client always sends think: false — a thinking-capable
+                                  # model otherwise incurs a large hidden-reasoning latency cost
+                                  # (confirmed: ~150s vs ~14s on the same request)
+  numCtx: 0                      # Ollama options.num_ctx; 0 omits it (Ollama's own default
+                                  # applies). Set to the model's real trained context when full
+                                  # documents in the prompt need more room than that default.
+generate:
+  provider: ollama                # used by the knowledge-item "Generate" title/summary buttons;
+  baseURL: http://localhost:11434 # independently configurable from chat because not every model
+  model: gemma4:12b                # can do this — llama3-chatqa:8b (completion-only QA) hallucinated
+  numCtx: 0                        # an unrelated continuation instead of a title when tried
+knowledgeLanguage: English         # the knowledge base's target language; fixed per deployment
+translate:
+  provider: ollama
+  baseURL: http://localhost:11434
+  model: rinex20/translategemma3:12b  # translation-specialized; used by the ingest pipeline to translate chunks
+  numCtx: 0
+```
+
+**Credentials are never in this file** — they stay as plain (or Kubernetes-Secret-sourced) env
+vars, exactly as before: `PGUSER`/`PGPASSWORD` (from the `postgres-credentials` Secret in k8s),
+and `EMBEDDINGS_API_KEY`/`CHAT_API_KEY`/`GENERATE_API_KEY` (empty by default; needed for
+OpenAI/OpenRouter).
 
 The migration validates collection vector size. If the collection already exists with a different
 size, migration fails; use a matching model/dimension or recreate the collection.
@@ -115,30 +172,38 @@ example:
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
 ```
 
-Or edit `EMBEDDINGS_BASE_URL` in `knowledge/k8s/deployment.yaml` and
-`knowledge/k8s/jobs/migrate-job.yaml` to point at an Ollama server on your LAN.
+Or edit `embeddings.baseURL`/`chat.baseURL`/`generate.baseURL` in
+`knowledge/k8s/configmap.yaml` (shared by the Deployment and the migrate Job) to point at an
+Ollama server on your LAN.
 
 ### OpenAI / OpenRouter-compatible embeddings
 
-Set the provider to `openai`; the app calls `<EMBEDDINGS_BASE_URL>/embeddings` with a bearer token.
-For OpenAI:
+Set the provider to `openai` in the config file; the app calls `<embeddings.baseURL>/embeddings`
+with a bearer token from the `EMBEDDINGS_API_KEY` env var (a credential — never in the config
+file). For OpenAI:
 
+```yaml
+embeddings:
+  provider: openai
+  baseURL: https://api.openai.com/v1
+  model: text-embedding-3-small
+  dimension: 1536
+```
 ```env
-EMBEDDINGS_PROVIDER=openai
-EMBEDDINGS_BASE_URL=https://api.openai.com/v1
 EMBEDDINGS_API_KEY=sk-...
-EMBEDDINGS_MODEL=text-embedding-3-small
-EMBEDDINGS_DIMENSION=1536
 ```
 
 For OpenRouter, use its OpenAI-compatible base URL and the embedding model ID/dimension you choose:
 
+```yaml
+embeddings:
+  provider: openai
+  baseURL: https://openrouter.ai/api/v1
+  model: <openrouter-embedding-model>
+  dimension: <model-dimension>
+```
 ```env
-EMBEDDINGS_PROVIDER=openai
-EMBEDDINGS_BASE_URL=https://openrouter.ai/api/v1
 EMBEDDINGS_API_KEY=...
-EMBEDDINGS_MODEL=<openrouter-embedding-model>
-EMBEDDINGS_DIMENSION=<model-dimension>
 ```
 
 ## Deploy
@@ -321,80 +386,87 @@ curl -sS --get "$BASE/knowledge" \
 ### Bulk export
 
 Returns every item (unlike list/search, unfiltered by default and always including `body`), as a
-download (`Content-Disposition: attachment`). Optional `tag` (repeatable) scopes the export the
-same way it scopes list/search — conjunctive, all requested tags required.
+pretty-printed YAML download (`Content-Disposition: attachment; filename="knowledge-export.yaml"`).
+Optional `tag` (repeatable) scopes the export the same way it scopes list/search — conjunctive, all
+requested tags required.
 
 ```sh
-curl -sS "$BASE/knowledge/export" -o knowledge-export.json
+curl -sS "$BASE/knowledge/export" -o knowledge-export.yaml
 
 curl -sS --get "$BASE/knowledge/export" \
   --data-urlencode 'tag=k8s' \
-  --data-urlencode 'tag=headlamp' -o headlamp-export.json
+  --data-urlencode 'tag=headlamp' -o headlamp-export.yaml
 ```
 
-```json
-{
-  "items": [
-    {
-      "id": "...",
-      "title": "Headlamp in k8s-lab",
-      "summary": "How to deploy and log into Headlamp in the local development cluster.",
-      "body": "# Headlamp\n\n...",
-      "tags": ["gui", "headlamp", "k8s"],
-      "embedding_model": "nomic-embed-text",
-      "created_at": "...",
-      "updated_at": "..."
-    }
-  ]
-}
+```yaml
+items:
+  - id: 9f1c2d34-5678-4abc-9def-0123456789ab
+    title: Headlamp in k8s-lab
+    summary: How to deploy and log into Headlamp in the local development cluster.
+    body: |
+      # Headlamp
+
+      Run `task deploy-headlamp`.
+    tags:
+      - gui
+      - headlamp
+      - k8s
+    embedding_model: bge-m3
+    created_at: 2026-09-12T08:31:00Z
+    updated_at: 2026-09-12T08:31:00Z
 ```
 
 ### Bulk import
 
-Accepts the same `{"items": [...]}` shape an export produces, so it round-trips a prior export
-(backup/restore, or copying a tag subset into another instance). Each item is re-embedded
-independently: one bad row doesn't fail the batch. An item with an `id` overwrites that exact
-point (restore); without one, a new item is created. `created_at`/`updated_at` are preserved if
-given, otherwise set to now.
+Accepts the same `{items: [...]}` shape an export produces, so it round-trips a prior export
+(backup/restore, or copying a tag subset into another instance). `created_at`/`updated_at` in the
+file are informational only — always ignored on import; the server sets its own. Each row is
+handled independently, so one bad row doesn't fail the batch:
+
+- An item **with** an `id` that already exists, and whose `title`/`summary`/`body`/`tags` all
+  exactly match what's already stored, is skipped entirely — no write, no re-embedding. Re-embedding
+  is a real LLM/embedding cost, only paid when content actually changed.
+- An item with an `id` that already exists but differs is updated in place and re-embedded,
+  preserving the original `created_at`.
+- An item with no `id`, or an `id` that doesn't exist yet, is created (new random `id` if none
+  given) and embedded.
+- An item with `delete: true` and an `id` is deleted permanently. A missing target is a no-op, not
+  an error — safe to reimport the same file twice.
 
 ```sh
 curl -sS -X POST "$BASE/knowledge/import" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "items": [
-      {
-        "title": "Headlamp in k8s-lab",
-        "summary": "How to deploy and log into Headlamp in the local development cluster.",
-        "body": "# Headlamp\n\nRun `task deploy-headlamp`.",
-        "tags": ["k8s", "headlamp"]
-      }
-    ]
-  }' | jq .
+  -H 'Content-Type: application/yaml' \
+  --data-binary @knowledge-export.yaml
 ```
 
 ```json
-{
-  "imported": 1,
-  "errors": []
-}
+{ "imported": 1, "deleted": 0, "unchanged": 8, "errors": [] }
 ```
 
-A row missing `title`/`summary`/`body` is skipped and reported, not fatal to the rest of the
-batch:
+A row missing `title`/`summary`/`body` (and not marked `delete: true`) is skipped and reported, not
+fatal to the rest of the batch:
 
 ```json
 {
   "imported": 3,
+  "deleted": 0,
+  "unchanged": 0,
   "errors": [
     { "index": 4, "id": "...", "message": "title, summary, and body are required" }
   ]
 }
 ```
 
+Request body is capped at 8 MiB (`413 payload_too_large` beyond that — a whole-collection export,
+not a single item, so this cap is much larger than ingest's per-source 2 MiB cap). Malformed YAML
+anywhere in the file rejects the whole request (`400 invalid_yaml`) — YAML's indentation
+sensitivity makes this more likely than with JSON, so a syntax mistake near a `delete: true` row
+can reject rows that were otherwise fine.
+
 In the GUI, use Export/Import in the Knowledge tab; Export has its own tags field (separate from
 the search filter) — leave it empty to export everything, or list tags to scope the export. Import
-reads a local JSON file (the same shape as Export, or a bare array of items) and reports
-how many rows imported.
+reads a local `.yaml`/`.yml` file (the same shape Export produces) and reports how many rows were
+imported, deleted, unchanged, and failed.
 
 ### Fetch a full item by ID
 
@@ -456,6 +528,241 @@ Delete a chat and all its messages:
 ```sh
 curl -i -X DELETE "$BASE/chats/$CHAT_ID"
 ```
+
+### Generate title/summary
+
+Suggest a title or summary from a knowledge item's body, using `generate.model` (independent of
+`chat.model`). The Knowledge UI's editor has a "Generate" button next to each field that does
+this; either result can be edited before Save.
+
+```sh
+curl -sS -X POST "$BASE/knowledge/generate/title" \
+  -H 'Content-Type: application/json' \
+  -d '{"body":"Kubernetes namespaces isolate cluster resources into logical groups for organization and access control."}' | jq .
+```
+
+The same request against `/knowledge/generate/summary` returns `{"summary": "..."}` instead. An
+empty `body` returns `400 validation_failed` without calling the model.
+
+### Ingest
+
+Ingest a URL or text file into the knowledge base as draft chunks pending human review. Both endpoints
+start an async job and return `202` with the job status. The job processes the source, chunks it,
+translates and generates a title/summary for each chunk, and stores the results in a staging table
+(never written to Qdrant until explicitly approved via the Ingest tab).
+
+**Ingest a URL:**
+
+```sh
+curl -sS -X POST "$BASE/ingest/url" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/article","tags":["docs","example"]}' | jq .
+```
+
+Request:
+- `url` (required, string): the HTTP(S) URL to fetch
+- `tags` (optional, array of strings): tags to apply to all chunks from this source
+
+Response: `202` with a job object `{"id","kind","status","step","created_at","updated_at"}` once
+the job starts running.
+
+Error codes:
+- `400 validation_failed` — missing/empty url, invalid scheme (must be http/https), or invalid host
+- `409 job_running` — another ingest job is already running; only one job can run at a time
+- `500 internal` — fetch or processing error; check the job's error field via `/api/v1/jobs/current`
+
+**Ingest a text file:**
+
+```sh
+curl -sS -X POST "$BASE/ingest/text" \
+  -H 'Content-Type: application/json' \
+  -d '{"filename":"readme.md","content":"# My Document\n\nContent here...","tags":["docs"]}' | jq .
+```
+
+Request:
+- `filename` (required, string): the file name (extension must be `.txt`, `.md`, or `.markdown`)
+- `content` (required, string): the file contents (max 2 MiB)
+- `tags` (optional, array of strings): tags to apply to all chunks from this source
+
+Response: same as URL ingest — `202` with a job object.
+
+Error codes:
+- `400 validation_failed` — missing/empty filename, invalid extension, or invalid UTF-8
+- `409 job_running` — another ingest job is already running
+- `413 payload_too_large` — request body exceeds 2 MiB plus headroom for JSON structure
+- `500 internal` — processing error; check `/api/v1/jobs/current`
+
+**List draft chunks:**
+
+```sh
+curl -sS "$BASE/ingest/drafts" | jq .
+```
+
+Response: `200` with an array of draft chunk summaries (most recent first, up to 500):
+
+```json
+{
+  "drafts": [
+    {
+      "id": "...",
+      "job_id": "...",
+      "source_kind": "url",
+      "source_ref": "https://example.com/article",
+      "chunk_index": 0,
+      "title": "Generated title for this chunk",
+      "summary": "Generated summary for this chunk",
+      "tags": ["docs", "example"],
+      "created_at": "2026-09-21T14:32:00Z",
+      "updated_at": "2026-09-21T14:32:00Z"
+    }
+  ]
+}
+```
+
+**Get a full draft by ID:**
+
+```sh
+ID=<draft-id>
+curl -sS -b cookies.txt "$BASE/ingest/drafts/$ID" | jq .
+```
+
+Response: `200` with the full `Draft` (including `body`, unlike the list endpoint):
+
+```json
+{
+  "id": "...",
+  "job_id": "...",
+  "source_kind": "url",
+  "source_ref": "https://example.com/article",
+  "chunk_index": 0,
+  "title": "Generated title for this chunk",
+  "summary": "Generated summary for this chunk",
+  "body": "# Full Markdown body of this chunk",
+  "tags": ["docs", "example"],
+  "created_at": "2026-09-21T14:32:00Z",
+  "updated_at": "2026-09-21T14:32:00Z"
+}
+```
+
+Error codes:
+- `404 not_found` — draft does not exist or id is malformed
+- `500 internal` — database error
+
+**Update a draft:**
+
+```sh
+curl -sS -b cookies.txt -X PUT "$BASE/ingest/drafts/$ID" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Edited title",
+    "summary": "Edited summary",
+    "body": "# Edited Markdown body",
+    "tags": ["docs"]
+  }' | jq .
+```
+
+Request:
+- `title` (required, string): new title (non-empty)
+- `summary` (required, string): new summary (non-empty)
+- `body` (required, string): new body (non-empty, max 256 KiB)
+- `tags` (optional, array of strings): new tags
+
+Response: `200` with the updated `Draft` (same shape as Get).
+
+Error codes:
+- `400 validation_failed` — title/summary/body are empty or missing
+- `404 not_found` — draft does not exist or id is malformed
+- `413 payload_too_large` — request body exceeds 256 KiB
+- `500 internal` — database error
+
+**Approve and promote a draft:**
+
+Promote a draft into Qdrant as a real, searchable knowledge item via the same creation path the manual "add knowledge item" flow uses. The draft is deleted if the promotion succeeds; if it fails, the draft remains unchanged.
+
+```sh
+curl -sS -b cookies.txt -X POST "$BASE/ingest/drafts/$ID/approve" | jq .
+```
+
+Response: `201` with the new knowledge item's id:
+
+```json
+{
+  "id": "<new knowledge item id>"
+}
+```
+
+Error codes:
+- `400 validation_failed` — draft has an empty title, summary, or body (rare; would indicate a bug in the ingest pipeline)
+- `404 not_found` — draft does not exist, id is malformed, or the draft was already promoted by another request
+- `500 internal` — Qdrant error, network error, or database error; the draft is unchanged
+
+**Discard a draft:**
+
+Permanently delete a draft without promoting it.
+
+```sh
+curl -sS -b cookies.txt -X DELETE "$BASE/ingest/drafts/$ID"
+```
+
+Response: `204 No Content` (idempotent — returns 204 whether or not the draft existed).
+
+Error codes:
+- `500 internal` — database error
+
+### Job status
+
+The most recently updated running job, if any — polled by the footer status line in the Knowledge
+UI every few seconds, visible on any tab. Ingest jobs (started by `POST /api/v1/ingest/url` or
+`POST /api/v1/ingest/text`) drive this endpoint during a fetch+process run, reporting
+fetch/chunk/translate/generate/save progress at each stage.
+
+```sh
+curl -sS -w '\n%{http_code}\n' -b cookies.txt "$BASE/jobs/current"
+```
+
+`200` with `{"id","kind","status","step","created_at","updated_at"}` (plus `"error"`,
+`"source_kind"`, `"source_ref"`, `"source_tags"` if the job has a stored source) when a job is
+running; `204` with no body otherwise.
+
+### Job history, retry, and delete
+
+Unlike `/jobs/current`, this lists every job regardless of status (most recent first, capped at
+500), so a failed job's error stays visible after it stops running:
+
+```sh
+curl -sS -b cookies.txt "$BASE/jobs"
+```
+
+```json
+{ "jobs": [ { "id": "...", "kind": "ingest", "status": "failed", "step": "fetching example.com", "error": "...", "source_kind": "url", "source_ref": "https://example.com/page", "source_tags": ["docs"], "created_at": "...", "updated_at": "..." } ] }
+```
+
+Retry a failed job from its stored source — starts a brand-new job (the original stays in history
+unchanged); re-fetches a URL fresh, or re-uses the originally uploaded text for a file source:
+
+```sh
+curl -sS -b cookies.txt -X POST "$BASE/jobs/$ID/retry"
+```
+
+Response: `202` with the new job (same shape as starting an ingest job directly).
+
+Error codes:
+- `404 not_found` — no such job, or malformed id
+- `409 job_running` — another job of that kind is already running
+- `409 not_retryable` — the job already succeeded, or has no stored source (e.g. a job row from
+  before this feature existed)
+- `400 validation_failed` — the stored source itself fails revalidation (e.g. a URL that's no
+  longer well-formed)
+
+Delete a job's history row permanently:
+
+```sh
+curl -sS -b cookies.txt -X DELETE "$BASE/jobs/$ID"
+```
+
+Response: `204` (idempotent — returns 204 whether or not the job existed). Refuses a still-running
+job with `409 job_running`, since removing that row mid-run would silently defeat the
+single-concurrent-job-per-kind guard.
 
 ## Validation and errors
 
