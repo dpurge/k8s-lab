@@ -3,8 +3,9 @@ package chat
 import (
 	"context"
 	"crypto/rand"
-	_ "embed"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,17 +13,36 @@ import (
 	"k8s-lab/shared/llm"
 	"knowledge/internal/config"
 	"knowledge/internal/qdrant"
+	"knowledge/internal/queue"
 )
 
+// KindReply is the queue.Service operation kind registered for producing a
+// chat reply. It is exported so main.go can call queue.Register(chat.KindReply, chatSvc.HandleReply).
+const KindReply = "chat_reply"
+
 type Service struct {
-	db  *pgxpool.Pool
-	kb  *qdrant.Client
-	cfg config.Config
-	llm *llm.Client
+	db    *pgxpool.Pool
+	kb    *qdrant.Client
+	cfg   config.Config
+	llm   *llm.Client
+	queue *queue.Service
 }
 
-func New(db *pgxpool.Pool, kb *qdrant.Client, cfg config.Config) *Service {
-	return &Service{db: db, kb: kb, cfg: cfg, llm: llm.New(llm.Config{Provider: cfg.ChatProvider, BaseURL: cfg.ChatBaseURL, APIKey: cfg.ChatAPIKey, Model: cfg.ChatModel, NumCtx: cfg.ChatNumCtx})}
+func New(db *pgxpool.Pool, kb *qdrant.Client, cfg config.Config, q *queue.Service) *Service {
+	return &Service{db: db, kb: kb, cfg: cfg, queue: q, llm: llm.New(llm.Config{Provider: cfg.ChatProvider, BaseURL: cfg.ChatBaseURL, APIKey: cfg.ChatAPIKey, Model: cfg.ChatModel, NumCtx: cfg.ChatNumCtx})}
+}
+
+// replyPayload is the queue.Operation payload for a KindReply operation. It
+// carries a full snapshot of everything HandleReply needs, captured by Send
+// before the current message is inserted, so the async handler never has
+// to re-derive retrieval query or history from a chat_messages table that
+// may have changed by the time it runs.
+type replyPayload struct {
+	ChatID         string    `json:"chat_id"`
+	Text           string    `json:"text"`
+	RetrievalQuery string    `json:"retrieval_query"`
+	Tags           []string  `json:"tags"`
+	History        []Message `json:"history"`
 }
 
 type Chat struct {
@@ -114,29 +134,62 @@ func (s *Service) Get(ctx context.Context, id string) (Chat, error) {
 	return c, rows.Err()
 }
 
-func (s *Service) Send(ctx context.Context, chatID, text string) (Message, []Source, error) {
+// Send persists the user's message and returns immediately — it never
+// waits on the LLM. The reply is produced by a queued, interactive-priority
+// KindReply operation (see HandleReply) and becomes visible through the
+// existing GET /chats/{id} polling once it lands, so sending stays fast
+// even while the LLM call itself is slow or the queue is backed up behind
+// other work.
+func (s *Service) Send(ctx context.Context, chatID, text string) (Message, error) {
 	c, err := s.Get(ctx, chatID)
 	if err != nil {
-		return Message{}, nil, err
-	}
-	uid, _ := uuid()
-	_, err = s.db.Exec(ctx, "INSERT INTO chat_messages(id,chat_id,role,content) VALUES($1,$2,'user',$3)", uid, chatID, text)
-	if err != nil {
-		return Message{}, nil, err
+		return Message{}, err
 	}
 	// Retrieval uses the current message plus the immediately preceding user
 	// message, not the current message alone: a short follow-up like
 	// "answer my last question" embeds to a near-random, weakly-scored
 	// match on its own — concatenating the prior question fixed this,
 	// confirmed live (0.339 vs 0.342, both weak and tied -> 0.696 vs 0.268,
-	// clearly separated, same two candidate documents).
+	// clearly separated, same two candidate documents). This must be
+	// computed here, against the snapshot of c.Messages taken before the
+	// current message is inserted below — not recomputed later inside
+	// HandleReply, where a second message sent in quick succession could
+	// already be the newest row by the time this operation is claimed.
 	retrievalQuery := text
 	if prev := lastUserMessage(c.Messages); prev != "" {
 		retrievalQuery = prev + " " + text
 	}
-	items, err := s.kb.Search(ctx, qdrant.Search{Query: retrievalQuery, Tags: c.Tags, Limit: 5})
+	history := recentHistory(c.Messages)
+
+	uid, _ := uuid()
+	var msg Message
+	err = s.db.QueryRow(ctx, "INSERT INTO chat_messages(id,chat_id,role,content) VALUES($1,$2,'user',$3) RETURNING id,role,content,created_at", uid, chatID, text).Scan(&msg.ID, &msg.Role, &msg.Content, &msg.CreatedAt)
 	if err != nil {
-		return Message{}, nil, err
+		return Message{}, err
+	}
+	_, _ = s.db.Exec(ctx, "UPDATE chats SET updated_at=now() WHERE id=$1", chatID)
+
+	payload := replyPayload{ChatID: chatID, Text: text, RetrievalQuery: retrievalQuery, Tags: c.Tags, History: history}
+	if _, err := s.queue.Enqueue(ctx, KindReply, queue.PriorityInteractive, payload); err != nil {
+		return msg, err
+	}
+	return msg, nil
+}
+
+// HandleReply is the queue.HandlerFunc registered for KindReply — it does
+// everything Send used to do inline (retrieval, the LLM call, persisting
+// the assistant message and its sources) once the queue's single worker
+// gets to it. It operates entirely on the payload snapshot Send captured,
+// never re-deriving retrieval query or history from the live chat_messages
+// table, since those could have shifted by the time this runs.
+func (s *Service) HandleReply(ctx context.Context, rawPayload json.RawMessage) (json.RawMessage, error) {
+	var p replyPayload
+	if err := json.Unmarshal(rawPayload, &p); err != nil {
+		return nil, err
+	}
+	items, err := s.kb.Search(ctx, qdrant.Search{Query: p.RetrievalQuery, Tags: p.Tags, Limit: 5})
+	if err != nil {
+		return nil, err
 	}
 	sources := make([]Source, 0, len(items))
 	for _, it := range items {
@@ -144,25 +197,32 @@ func (s *Service) Send(ctx context.Context, chatID, text string) (Message, []Sou
 		if it.Score != nil {
 			score = *it.Score
 		}
-		src := Source{ID: it.ID, Title: it.Title, Summary: it.Summary, Tags: it.Tags, Score: score, URL: "/?knowledge=" + it.ID}
-		sources = append(sources, src)
+		sources = append(sources, Source{ID: it.ID, Title: it.Title, Summary: it.Summary, Tags: it.Tags, Score: score, URL: "/?knowledge=" + it.ID})
 	}
-	answer, err := s.answer(ctx, c, text, sources)
+
+	start := time.Now()
+	answer, err := s.answer(ctx, p.History, p.Text, sources)
+	outcome := "ok"
 	if err != nil {
-		return Message{}, sources, err
+		outcome = "error"
 	}
+	slog.Info("chat llm call", "model", s.cfg.ChatModel, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	if err != nil {
+		return nil, err
+	}
+
 	aid, _ := uuid()
 	var msg Message
-	err = s.db.QueryRow(ctx, "INSERT INTO chat_messages(id,chat_id,role,content) VALUES($1,$2,'assistant',$3) RETURNING id,role,content,created_at", aid, chatID, answer).Scan(&msg.ID, &msg.Role, &msg.Content, &msg.CreatedAt)
+	err = s.db.QueryRow(ctx, "INSERT INTO chat_messages(id,chat_id,role,content) VALUES($1,$2,'assistant',$3) RETURNING id,role,content,created_at", aid, p.ChatID, answer).Scan(&msg.ID, &msg.Role, &msg.Content, &msg.CreatedAt)
 	if err != nil {
-		return msg, sources, err
+		return nil, err
 	}
 	for _, src := range sources {
 		_, _ = s.db.Exec(ctx, "INSERT INTO chat_message_sources(message_id,knowledge_id,title,summary,tags,score) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING", msg.ID, src.ID, src.Title, src.Summary, src.Tags, src.Score)
 	}
-	_, _ = s.db.Exec(ctx, "UPDATE chats SET updated_at=now() WHERE id=$1", chatID)
+	_, _ = s.db.Exec(ctx, "UPDATE chats SET updated_at=now() WHERE id=$1", p.ChatID)
 	msg.Sources = sources
-	return msg, sources, nil
+	return json.Marshal(msg)
 }
 
 // lastUserMessage returns the most recent user-role message's content, or
@@ -208,16 +268,13 @@ func (s *Service) sources(ctx context.Context, msgID string) ([]Source, error) {
 	return out, rows.Err()
 }
 
-//go:embed prompt.md
-var systemPrompt string
-
 // maxDocumentChars caps each retrieved document's body injected into the
 // prompt, sized to fit 5 documents plus the system prompt, question, and
 // response comfortably within CHAT_NUM_CTX=8192 (see deployment.yaml).
 const maxDocumentChars = 4000
 
-func (s *Service) answer(ctx context.Context, c Chat, question string, sources []Source) (string, error) {
-	sys := strings.TrimSpace(systemPrompt)
+func (s *Service) answer(ctx context.Context, history []Message, question string, sources []Source) (string, error) {
+	sys := strings.TrimSpace(s.cfg.ChatPrompt)
 	// Plain concatenated document text, deliberately with no id/score/title/
 	// tags annotations: llama3-chatqa (NVIDIA ChatQA) is a completion-style
 	// QA model trained on flowing context passages, not an enumerated
@@ -241,7 +298,7 @@ func (s *Service) answer(ctx context.Context, c Chat, question string, sources [
 	ctxText := strings.Join(bodies, "\n\n")
 	userMsg := ctxText + "\n\nQuestion: " + question
 	messages := []llm.Message{{Role: "system", Content: sys}}
-	for _, m := range recentHistory(c.Messages) {
+	for _, m := range history {
 		messages = append(messages, llm.Message{Role: m.Role, Content: m.Content})
 	}
 	messages = append(messages, llm.Message{Role: "user", Content: userMsg})

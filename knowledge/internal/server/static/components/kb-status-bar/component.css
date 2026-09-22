@@ -1,0 +1,16 @@
+kb-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 2.4rem;
+  width: 100%;
+}
+
+kb-status-bar .kb-status-job {
+  color: var(--muted, #666);
+  font-size: 0.85rem;
+}
+
+kb-status-bar .kb-status-message.error {
+  color: var(--danger, #b00020);
+}

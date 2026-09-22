@@ -45,6 +45,11 @@ type Config struct {
 	TranslateAPIKey   string
 	TranslateModel    string
 	TranslateNumCtx   int
+
+	ChatPrompt            string
+	GenerateTitlePrompt   string
+	GenerateSummaryPrompt string
+	TranslatePrompt       string
 }
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
@@ -87,6 +92,12 @@ type fileConfig struct {
 		Model    string `yaml:"model"`
 		NumCtx   int    `yaml:"numCtx"`
 	} `yaml:"translate"`
+	Prompts struct {
+		Chat            string `yaml:"chat"`
+		GenerateTitle   string `yaml:"generateTitle"`
+		GenerateSummary string `yaml:"generateSummary"`
+		Translate       string `yaml:"translate"`
+	} `yaml:"prompts"`
 }
 
 func defaultFileConfig() fileConfig {
@@ -112,7 +123,11 @@ func defaultFileConfig() fileConfig {
 	f.KnowledgeLanguage = "English"
 	f.Translate.Provider = "ollama"
 	f.Translate.BaseURL = "http://localhost:11434"
-	f.Translate.Model = "rinex20/translategemma3:12b"
+	f.Translate.Model = "gemma4:12b"
+	f.Prompts.Chat = "You answer using only the retrieved knowledge documents below.\n\nIf unsupported by the retrieved knowledge documents, say you do not know."
+	f.Prompts.GenerateTitle = `You write a short, specific title for the given Markdown document. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble like "Title:".`
+	f.Prompts.GenerateSummary = `You write a one-paragraph summary of the given Markdown document, for use as a search-result preview. Respond with only the summary text — no preamble like "Summary:", no quotes.`
+	f.Prompts.Translate = "If the following text is already in {{language}}, return it unchanged. Otherwise, translate it into {{language}}. Respond with only the resulting text — no preamble, no explanation."
 	return f
 }
 
@@ -180,5 +195,10 @@ func Load() (Config, error) {
 		TranslateAPIKey:   env("TRANSLATE_API_KEY", ""),
 		TranslateModel:    fc.Translate.Model,
 		TranslateNumCtx:   fc.Translate.NumCtx,
+
+		ChatPrompt:            fc.Prompts.Chat,
+		GenerateTitlePrompt:   fc.Prompts.GenerateTitle,
+		GenerateSummaryPrompt: fc.Prompts.GenerateSummary,
+		TranslatePrompt:       fc.Prompts.Translate,
 	}, nil
 }

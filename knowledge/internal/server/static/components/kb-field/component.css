@@ -1,0 +1,11 @@
+kb-field {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+
+kb-field .kb-field-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted, #666);
+  margin-bottom: 0.25rem;
+}

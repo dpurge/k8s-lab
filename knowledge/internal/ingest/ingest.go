@@ -2,9 +2,11 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -12,8 +14,34 @@ import (
 
 	"knowledge/internal/generate"
 	"knowledge/internal/jobs"
+	"knowledge/internal/queue"
 	"knowledge/internal/translate"
 )
+
+// KindAcquire and KindChunk are the queue.Service operation kinds
+// registered for ingest's two stages. Both are background priority: an
+// interactive chat reply or manual generate always jumps ahead of them.
+// Exported so main.go can call queue.Register(ingest.KindAcquire, ...).
+const (
+	KindAcquire = "ingest_acquire"
+	KindChunk   = "ingest_chunk"
+)
+
+// acquirePayload is the queue.Operation payload for KindAcquire.
+type acquirePayload struct {
+	JobID string `json:"job_id"`
+}
+
+// chunkPayload is the queue.Operation payload for KindChunk. It carries
+// only the job id and this chunk's index — never chunk text itself. The
+// handler re-derives the actual chunk list by re-chunking job.SourceText
+// (a pure, deterministic function of that already-durably-stored text),
+// so nothing about the source's content needs to be duplicated across
+// every chunk's operation row.
+type chunkPayload struct {
+	JobID string `json:"job_id"`
+	Index int    `json:"index"`
+}
 
 // ErrValidation is returned when the caller's input is malformed (empty
 // URL, unsupported text extension, empty/invalid content, etc.), following
@@ -31,25 +59,6 @@ var ErrJobRunning = errors.New("ingest: a job is already running")
 // with no way to tell the copies apart), or it has no stored source
 // (source_kind is empty, e.g. a job row created before this feature).
 var ErrNotRetryable = errors.New("ingest: job is not retryable")
-
-// baseTimeout bounds the fetch/read-and-chunk phase of a run: the part that
-// happens before the number of chunks — and therefore the amount of
-// per-chunk LLM work ahead — is known. Fetch is already separately bounded
-// by fetchTimeout and MaxSourceBytes, and chunking is pure in-memory
-// computation, so a few minutes of headroom here is generous. It is also
-// reused as the fixed component of the per-chunk deadline derived in run,
-// covering the same fetch/chunk phase inside that larger budget.
-const baseTimeout = 5 * time.Minute
-
-// perChunkTimeout bounds the LLM/save budget for a single chunk:
-// translate, title, and summary are three separate LLM calls, each already
-// bounded by shared/llm's 2-minute client timeout, plus one draft save.
-// 8 minutes is 4x the per-call timeout, giving comfortable margin (more
-// than the minimum 3x) for one call to run slow without starving the
-// others. run multiplies this by the actual chunk count once Chunk has
-// run, so the deadline scales with the real amount of work rather than
-// being fixed before that count is known.
-const perChunkTimeout = 8 * time.Minute
 
 // finishTimeout bounds the final Finish write in the finish helper below.
 // It is deliberately short and derived from context.Background rather than
@@ -80,29 +89,34 @@ type Promoter interface {
 }
 
 // Service orchestrates the ingest pipeline: source acquisition, chunking,
-// per-chunk translation and generation, and draft persistence.
+// per-chunk translation and generation, and draft persistence. Acquisition
+// and each chunk run as separate queue.Service operations (KindAcquire,
+// KindChunk) rather than a per-job goroutine, so ingest's LLM/network work
+// is sequenced through the same single-worker, priority-ordered queue as
+// chat and generate.
 type Service struct {
 	db        *pgxpool.Pool
 	jobs      *jobs.Service
 	translate *translate.Service
 	generate  *generate.Service
 	promoter  Promoter
+	queue     *queue.Service
 }
 
 // New builds a Service from its already-constructed dependencies, matching
 // the constructor shape used by chat/generate/translate.
-func New(db *pgxpool.Pool, jobsSvc *jobs.Service, translateSvc *translate.Service, generateSvc *generate.Service, promoter Promoter) *Service {
-	return &Service{db: db, jobs: jobsSvc, translate: translateSvc, generate: generateSvc, promoter: promoter}
+func New(db *pgxpool.Pool, jobsSvc *jobs.Service, translateSvc *translate.Service, generateSvc *generate.Service, promoter Promoter, q *queue.Service) *Service {
+	return &Service{db: db, jobs: jobsSvc, translate: translateSvc, generate: generateSvc, promoter: promoter, queue: q}
 }
 
 // StartURL validates rawURL, guards against a job already running, starts a
-// new "ingest" job, and launches the fetch+chunk+LLM pipeline in a detached
-// goroutine. It returns as soon as the job is recorded; the goroutine does
-// the work and reports progress via jobs.SetStep/Finish. Scheme/host
-// validation happens synchronously here (per the spec's HTTP contract: a bad
-// scheme or missing host is a 400, not a job that starts and then fails) —
-// fetchURL repeats the same check inside the goroutine since it has no other
-// caller to trust.
+// new "ingest" job, and enqueues the KindAcquire operation that fetches and
+// processes it. It returns as soon as the job is recorded; the queue's
+// worker does the work and reports progress via jobs.SetStep/Finish.
+// Scheme/host validation happens synchronously here (per the spec's HTTP
+// contract: a bad scheme or missing host is a 400, not a job that starts
+// and then fails) — fetchURL repeats the same check inside HandleAcquire
+// since it has no other caller to trust.
 func (s *Service) StartURL(ctx context.Context, rawURL string, tags []string) (jobs.Job, error) {
 	if err := validateURL(rawURL); err != nil {
 		return jobs.Job{}, fmt.Errorf("%w: %w", ErrValidation, err)
@@ -111,8 +125,9 @@ func (s *Service) StartURL(ctx context.Context, rawURL string, tags []string) (j
 }
 
 // StartText validates filename/content via validateText, guards against a
-// job already running, starts a new "ingest" job, and launches the
-// chunk+LLM pipeline (no fetch, no HTML stripping) in a detached goroutine.
+// job already running, starts a new "ingest" job, and enqueues the
+// KindAcquire operation that begins chunking (no fetch, no HTML stripping
+// needed for this source kind).
 func (s *Service) StartText(ctx context.Context, filename, content string, tags []string) (jobs.Job, error) {
 	if err := validateText(filename, content); err != nil {
 		return jobs.Job{}, fmt.Errorf("%w: %w", ErrValidation, err)
@@ -121,12 +136,10 @@ func (s *Service) StartText(ctx context.Context, filename, content string, tags 
 }
 
 // start enforces the single-concurrent-job guard, starts the job row, and
-// launches run in a goroutine over a context detached from ctx — the
-// goroutine must outlive the HTTP request that triggered it, so it gets its
-// own timeout rather than inheriting the request's cancellation. Only
-// baseTimeout is applied here: the chunk count (and therefore the size of
-// the much larger per-chunk budget) isn't known until run calls Chunk, so
-// run derives its own, larger deadline for that phase once it is.
+// enqueues the KindAcquire operation that begins the pipeline — it returns
+// as soon as that's done, never waiting on any fetch or LLM call. The
+// queue's own worker (started once, for the app's whole lifetime, in
+// main.go) does everything from here on, one operation at a time.
 func (s *Service) start(ctx context.Context, src source) (jobs.Job, error) {
 	current, err := s.jobs.Current(ctx)
 	if err != nil {
@@ -148,107 +161,143 @@ func (s *Service) start(ctx context.Context, src source) (jobs.Job, error) {
 		}
 		return jobs.Job{}, err
 	}
+	slog.Info("ingest job started", "job_id", job.ID, "source_kind", src.kind)
 
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), baseTimeout)
-	go func() {
-		defer cancel()
-		s.run(runCtx, job.ID, src)
-	}()
+	if _, err := s.queue.Enqueue(context.WithoutCancel(ctx), KindAcquire, queue.PriorityBackground, acquirePayload{JobID: job.ID}); err != nil {
+		s.finish(context.Background(), job.ID, err)
+		return jobs.Job{}, err
+	}
 
 	return job, nil
 }
 
-// run is the detached goroutine body launched by start. It must never
-// return without calling s.jobs.Finish exactly once: this runs in the
-// background with no caller left to hand an error to, so Finish is the only
-// way a failure (or success) becomes visible through /api/v1/jobs/current.
-func (s *Service) run(ctx context.Context, jobID string, src source) {
-	text, err := s.acquireText(ctx, jobID, src)
-	if err != nil {
-		s.finish(ctx, jobID, err)
-		return
-	}
-
-	if err := s.jobs.SetStep(ctx, jobID, "chunking"); err != nil {
-		log.Printf("ingest: job %s: failed to set step: %v", jobID, err)
-	}
-	chunks, err := chunk(text)
-	if err != nil {
-		s.finish(ctx, jobID, err)
-		return
-	}
-
-	// The per-chunk deadline is derived here, now that the chunk count is
-	// known, instead of being fixed in start before Chunk ever ran: it must
-	// scale with the actual amount of per-chunk LLM work ahead. ctx's own
-	// deadline (baseTimeout, set by start) covered only the acquire+chunk
-	// phase above; context.WithoutCancel strips that now-irrelevant, much
-	// smaller deadline before WithTimeout applies the new, proportional one
-	// — without it, the earlier and smaller deadline would still win.
-	total := len(chunks)
-	chunkTimeout := baseTimeout + perChunkTimeout*time.Duration(total)
-	chunkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chunkTimeout)
-	defer cancel()
-
-	for i, c := range chunks {
-		if err := s.processChunk(chunkCtx, jobID, src, i, total, c); err != nil {
-			s.finish(ctx, jobID, err)
-			return
-		}
-	}
-
-	s.finish(ctx, jobID, nil)
-}
-
 // finish records a job's outcome using a fresh, short-lived deadline rather
-// than run's own ctx, so a run that hit its deadline can still write its
-// failure — reusing an already-expired ctx here would make Finish fail too,
-// leaving the job stuck at status='running' forever (see FailStale's doc
-// comment for the resulting blast radius). context.WithoutCancel(ctx) keeps
-// any trace/log values ctx may carry while discarding its
-// deadline/cancellation, and WithTimeout then adds a fresh one. If Finish
-// itself still fails (e.g. Postgres is genuinely down), that failure has no
-// other caller to surface to, so it is logged here.
+// than the caller's own ctx, so a worker shutdown mid-run can still write
+// the failure — reusing an already-cancelled ctx here would make Finish
+// fail too, leaving the job stuck at status='running' forever (see
+// FailStale's doc comment for the resulting blast radius). It also logs
+// the job's outcome and duration (never its source/body content), per this
+// feature's logging requirement.
 func (s *Service) finish(ctx context.Context, jobID string, jobErr error) {
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancel()
+	outcome, sourceKind := "done", ""
+	var createdAt time.Time
+	if job, err := s.jobs.Get(finishCtx, jobID); err == nil {
+		sourceKind, createdAt = job.SourceKind, job.CreatedAt
+	}
+	if jobErr != nil {
+		outcome = "failed"
+	}
 	if err := s.jobs.Finish(finishCtx, jobID, jobErr); err != nil {
 		log.Printf("ingest: job %s: failed to record finish: %v", jobID, err)
 	}
+	fields := []any{"job_id", jobID, "source_kind", sourceKind, "outcome", outcome}
+	if !createdAt.IsZero() {
+		fields = append(fields, "duration_ms", time.Since(createdAt).Milliseconds())
+	}
+	slog.Info("ingest job finished", fields...)
 }
 
-// acquireText fetches the URL or accepts the already-provided text,
-// reporting the fetch/read and extract steps as it goes. For a "url"
-// source, an HTML response is stripped to plain text; text/plain and
-// text/markdown responses pass through unchanged. For a "text" source,
-// src.text was already validated by the caller (StartText) and is used as
-// is — no HTML stripping, and so no separate "extracting text" step: there
-// is nothing to extract from content that is already plain text.
-func (s *Service) acquireText(ctx context.Context, jobID string, src source) (string, error) {
-	switch src.kind {
-	case "url":
-		if err := s.jobs.SetStep(ctx, jobID, fmt.Sprintf("fetching %s", urlHost(src.ref))); err != nil {
-			log.Printf("ingest: job %s: failed to set step: %v", jobID, err)
-		}
-		body, contentType, err := fetchURL(ctx, src.ref)
-		if err != nil {
-			return "", err
-		}
-		if err := s.jobs.SetStep(ctx, jobID, "extracting text"); err != nil {
-			log.Printf("ingest: job %s: failed to set step: %v", jobID, err)
-		}
-		if contentType == "text/html" || contentType == "application/xhtml+xml" {
-			return stripHTML(string(body)), nil
-		}
-		return string(body), nil
-	case "text":
-		if err := s.jobs.SetStep(ctx, jobID, "reading input"); err != nil {
-			log.Printf("ingest: job %s: failed to set step: %v", jobID, err)
-		}
-		return src.text, nil
-	default:
-		return "", fmt.Errorf("ingest: unknown source kind %q", src.kind)
+// HandleAcquire is the queue.HandlerFunc registered for KindAcquire. For a
+// "url" job whose source_text is still empty, it fetches and extracts the
+// text and persists it into the job row before chunking ever starts — a
+// retried job whose earlier attempt already fetched successfully arrives
+// here with source_text already populated (see Retry) and skips the fetch
+// entirely, which is the fix for the bug where a URL retry always
+// re-fetched even when the content had already been cached. A "text" job's
+// source_text was already set at job creation (StartText), so there is
+// nothing to acquire for it beyond the step label.
+func (s *Service) HandleAcquire(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var p acquirePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, err
 	}
+	job, err := s.jobs.Get(ctx, p.JobID)
+	if err != nil {
+		s.finish(ctx, p.JobID, err)
+		return nil, err
+	}
+
+	if job.SourceKind == "url" && job.SourceText == "" {
+		if err := s.jobs.SetStep(ctx, p.JobID, fmt.Sprintf("fetching %s", urlHost(job.SourceRef))); err != nil {
+			log.Printf("ingest: job %s: failed to set step: %v", p.JobID, err)
+		}
+		body, contentType, err := fetchURL(ctx, job.SourceRef)
+		if err != nil {
+			s.finish(ctx, p.JobID, err)
+			return nil, err
+		}
+		text := string(body)
+		if contentType == "text/html" || contentType == "application/xhtml+xml" {
+			if err := s.jobs.SetStep(ctx, p.JobID, "extracting text"); err != nil {
+				log.Printf("ingest: job %s: failed to set step: %v", p.JobID, err)
+			}
+			text = stripHTML(text)
+		}
+		if err := s.jobs.SetSourceText(ctx, p.JobID, text); err != nil {
+			s.finish(ctx, p.JobID, err)
+			return nil, err
+		}
+	} else if job.SourceKind == "text" {
+		if err := s.jobs.SetStep(ctx, p.JobID, "reading input"); err != nil {
+			log.Printf("ingest: job %s: failed to set step: %v", p.JobID, err)
+		}
+	}
+
+	if err := s.jobs.SetStep(ctx, p.JobID, "chunking"); err != nil {
+		log.Printf("ingest: job %s: failed to set step: %v", p.JobID, err)
+	}
+	if _, err := s.queue.Enqueue(ctx, KindChunk, queue.PriorityBackground, chunkPayload{JobID: p.JobID, Index: 0}); err != nil {
+		s.finish(ctx, p.JobID, err)
+		return nil, err
+	}
+	return nil, nil
+}
+
+// HandleChunk is the queue.HandlerFunc registered for KindChunk. It
+// re-derives the chunk list from the job's own stored source_text (a pure
+// function of that text, so nothing about it needs to be duplicated across
+// operations), processes exactly one chunk, then either enqueues the next
+// chunk's operation or finishes the job — never both, and never loops
+// in-process, so a chat reply or manual generate enqueued in the meantime
+// gets a chance to run before the next chunk starts.
+func (s *Service) HandleChunk(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var p chunkPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, err
+	}
+	job, err := s.jobs.Get(ctx, p.JobID)
+	if err != nil {
+		s.finish(ctx, p.JobID, err)
+		return nil, err
+	}
+	chunks, err := chunk(job.SourceText)
+	if err != nil {
+		s.finish(ctx, p.JobID, err)
+		return nil, err
+	}
+	total := len(chunks)
+	if p.Index >= total {
+		s.finish(ctx, p.JobID, nil)
+		return nil, nil
+	}
+
+	src := source{kind: job.SourceKind, ref: job.SourceRef, tags: job.SourceTags}
+	if err := s.processChunk(ctx, p.JobID, src, p.Index, total, chunks[p.Index]); err != nil {
+		s.finish(ctx, p.JobID, err)
+		return nil, err
+	}
+
+	if p.Index+1 < total {
+		if _, err := s.queue.Enqueue(ctx, KindChunk, queue.PriorityBackground, chunkPayload{JobID: p.JobID, Index: p.Index + 1}); err != nil {
+			s.finish(ctx, p.JobID, err)
+			return nil, err
+		}
+		return nil, nil
+	}
+	s.finish(ctx, p.JobID, nil)
+	return nil, nil
 }
 
 // urlHost returns raw's host for display in a job step name, falling back
@@ -281,7 +330,11 @@ func (s *Service) processChunk(ctx context.Context, jobID string, src source, in
 	if err := s.jobs.SetStep(ctx, jobID, label+": generating title"); err != nil {
 		log.Printf("ingest: job %s: failed to set step: %v", jobID, err)
 	}
-	title, err := s.generate.Title(ctx, translated)
+	// TitleDirect/SummaryDirect, not Title/Summary: this runs inside a
+	// KindChunk operation, which already owns the queue's one worker slot —
+	// calling Title/Summary here would enqueue-and-await a second operation
+	// that the same (single, busy) worker could never get to, deadlocking.
+	title, err := s.generate.TitleDirect(ctx, translated)
 	if err != nil {
 		return fmt.Errorf("%s: generate title: %w", label, err)
 	}
@@ -289,7 +342,7 @@ func (s *Service) processChunk(ctx context.Context, jobID string, src source, in
 	if err := s.jobs.SetStep(ctx, jobID, label+": generating summary"); err != nil {
 		log.Printf("ingest: job %s: failed to set step: %v", jobID, err)
 	}
-	summary, err := s.generate.Summary(ctx, translated)
+	summary, err := s.generate.SummaryDirect(ctx, translated)
 	if err != nil {
 		return fmt.Errorf("%s: generate summary: %w", label, err)
 	}
@@ -389,10 +442,15 @@ func retrySource(job jobs.Job) (source, error) {
 
 // Retry re-launches a failed job from its stored source, as a brand-new
 // job row — the original failed row is left untouched, as permanent
-// history. Retry re-enters through StartURL/StartText, so it gets the same
-// synchronous validation and the same single-concurrent-job guard
-// (jobs_one_running_idx) as a fresh submission; a stored-but-since-invalid
-// source is rejected as ErrValidation, not silently retried.
+// history. It calls s.start directly (not StartURL/StartText): the source
+// was already validated when the original job was submitted, and — this
+// is the fix for the bug where a URL retry always re-fetched even when the
+// content was already cached — going through StartURL would discard
+// src.text (it has no text parameter at all), throwing away a successful
+// prior fetch. start passes src.text through to the new job row
+// unconditionally, exactly like it already does for a "text" source, and
+// HandleAcquire skips re-fetching a "url" source once it sees that text is
+// already there.
 func (s *Service) Retry(ctx context.Context, id string) (jobs.Job, error) {
 	if !isUUID(id) {
 		return jobs.Job{}, ErrNotFound
@@ -408,10 +466,5 @@ func (s *Service) Retry(ctx context.Context, id string) (jobs.Job, error) {
 	if err != nil {
 		return jobs.Job{}, err
 	}
-	switch src.kind {
-	case "url":
-		return s.StartURL(ctx, src.ref, src.tags)
-	default: // "text"
-		return s.StartText(ctx, src.ref, src.text, src.tags)
-	}
+	return s.start(ctx, src)
 }

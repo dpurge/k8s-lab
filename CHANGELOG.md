@@ -8,12 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- knowledge: chat messages (both user and assistant) now render as sanitized
+  Markdown HTML — headers, bold/italic, code (inline and fenced), lists
+  (unordered and ordered, including the chat retrieval reference list),
+  tables, links, and images — via a vendored markdown-it + DOMPurify
+  pipeline, instead of escaped text with only basic link support.
 - knowledge: "Generate" buttons in the knowledge item editor fill Title and
   Summary from the current Body via the LLM (`generate.model`), editable
   before saving.
 - knowledge: a translation capability (`translate.model`, defaulting to
-  `rinex20/translategemma3:12b`) and a configured knowledge-base language
+  `gemma4:12b`) and a configured knowledge-base language
   (`knowledgeLanguage`), used by the ingest pipeline to translate chunks.
+- knowledge: chat/generate/translate prompt templates are now configurable
+  via the mounted config file (`knowledge/k8s/configmap.yaml`'s
+  `prompts:` block — `chat`, `generateTitle`, `generateSummary`,
+  `translate`) instead of being hardcoded in Go, so they are editable
+  without a rebuild.
 - knowledge: a footer status area, visible on every tab, showing what the
   app is currently doing during a long-running background job
   (`GET /api/v1/jobs/current`) and every action's success/error feedback in
@@ -35,9 +45,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source) and delete (`DELETE /api/v1/jobs/{id}`) — a failed job's error no
   longer disappears once it stops running, visible in the Ingest tab's Jobs
   list.
+- knowledge: a single app-wide background operation queue — chat replies,
+  manual title/summary generation, and ingest's per-chunk pipeline all run
+  through one worker, one operation at a time, with interactive work
+  (chat, manual generate) always jumping ahead of background work (ingest).
+  Sending a chat message now returns immediately; the reply appears
+  asynchronously once ready. Importing data now only requires `body`
+  (title/summary/tags are all optional); a missing title/summary is
+  filled in later by a queued background generate operation.
+- knowledge: `GET /api/v1/knowledge` and the search endpoint now accept
+  `offset`/`limit` and return `has_more`, with Prev/Next controls in the
+  Knowledge tab, so the list scales past a single page.
+- knowledge: the Jobs list shows a colored status badge
+  (pending/active/done/failed) and the job's current step text, instead of
+  only a bare `status` string.
+- knowledge: structured (`log/slog`, JSON to stdout) logging for every LLM
+  call, ingest job start/finish, data import, and knowledge item
+  create/update/delete — durations and outcomes only, never content.
+
+### Fixed
+
+- knowledge: retrying a URL-sourced ingest job now reuses the content
+  already fetched on the failed attempt instead of re-fetching the URL,
+  matching how text/file-upload retries already behaved.
 
 ### Changed
 
+- knowledge: the Knowledge tab's aside now visually separates the search
+  block from the export/import block with a divider, instead of both
+  reading as one undifferentiated stack of inputs.
+
+- knowledge: the footer status/message area, delete/discard/approve confirmations,
+  item/draft/chat list cards, and form field labels are now built from four new
+  `kb-*` Web Components (`kb-status-bar`, `kb-dialog`, `kb-card`, `kb-field`) rather
+  than native browser dialogs and ad-hoc markup — fixing a footer-height jump bug in
+  the process and replacing native `confirm()` popups with an in-app modal.
+- knowledge: every remaining button in the knowledge app, plus the login and signup
+  pages, now use the same `kb-button`/`kb-field` components as the rest of the app;
+  `index.html`'s and login/signup's inline CSS/JS were extracted into shared files
+  (`theme.css`, `app.css`, `app.js`, `auth.css`, `auth.js`).
+- knowledge: the Knowledge and Ingest tabs now use a list/detail workspace layout. The
+  sidebar holds only search/filter controls (plus "New" for Knowledge); the main
+  workspace shows the item/draft list as a responsive card grid by default, and
+  clicking an item switches to a detail view (with a "← Back to list" control) instead
+  of always showing a single cramped sidebar-plus-form layout.
+- knowledge: header navigation (Knowledge/Chat/Ingest) and its theme-toggle/log-out
+  controls are now built from reusable `kb-button` and `kb-nav` Web Components with
+  real visual styling (color variants, hover states, active-item highlights),
+  replacing unstyled plain `<button>` elements — establishes the first use of the
+  new cross-app Web Components convention (see `specs/tech-stack.md`'s Frontend
+  components entry).
 - knowledge: the "Generate" title/summary buttons now show a "Generating…"
   message while their request is in flight, instead of no feedback at all.
 

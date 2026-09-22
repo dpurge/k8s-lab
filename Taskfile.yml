@@ -567,6 +567,13 @@ tasks:
           APP: knowledge
           JOB_NAME: knowledge-migrate
 
+  test-knowledge-frontend:
+    desc: Run knowledge's kb-* Web Component tests (Node+jsdom, dev-time only).
+    dir: knowledge/internal/server/static/components
+    cmds:
+      - npm install
+      - npm test
+
   # ── phraseforge ──────────────────────────────────────────────────────────────
 
   deploy-phraseforge:

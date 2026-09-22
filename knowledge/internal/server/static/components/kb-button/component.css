@@ -1,0 +1,52 @@
+kb-button {
+  display: inline-block;
+}
+
+/* Base style doubles as variant="secondary" — no separate rule needed since
+   "no variant" and "secondary" look identical (bordered, neutral). */
+kb-button button {
+  font: inherit;
+  padding: 0.5rem 0.9rem;
+  min-width: 6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
+}
+
+kb-button button:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+kb-button button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+kb-button[variant="primary"] button {
+  background: var(--accent, #2f6fed);
+  border-color: var(--accent, #2f6fed);
+  color: #fff;
+}
+
+kb-button[variant="primary"] button:hover:not(:disabled) {
+  background: var(--accent-hover, #2557bd);
+  border-color: var(--accent-hover, #2557bd);
+}
+
+kb-button[variant="danger"] button {
+  background: var(--danger, #b00020);
+  border-color: var(--danger, #b00020);
+  color: #fff;
+}
+
+kb-button[variant="danger"] button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+kb-button[variant="icon"] button {
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+}

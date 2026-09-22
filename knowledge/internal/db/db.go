@@ -93,4 +93,17 @@ CREATE TABLE IF NOT EXISTS knowledge_drafts (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS knowledge_drafts_job_id_idx ON knowledge_drafts (job_id);
-CREATE INDEX IF NOT EXISTS knowledge_drafts_created_at_idx ON knowledge_drafts (created_at DESC);`
+CREATE INDEX IF NOT EXISTS knowledge_drafts_created_at_idx ON knowledge_drafts (created_at DESC);
+CREATE TABLE IF NOT EXISTS operations (
+    id UUID PRIMARY KEY,
+    kind TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('interactive', 'background')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'done', 'failed')),
+    payload JSONB NOT NULL DEFAULT '{}',
+    result JSONB,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS operations_one_running_idx ON operations ((true)) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS operations_claim_idx ON operations (created_at ASC) WHERE status = 'pending';`

@@ -1,0 +1,30 @@
+kb-nav {
+  display: inline-flex;
+}
+
+.kb-nav-items {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.kb-nav-item {
+  font: inherit;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  color: var(--muted, #666);
+  cursor: pointer;
+  transition: background-color 0.1s ease, color 0.1s ease;
+}
+
+.kb-nav-item:hover {
+  background: var(--hover-bg, #f7f7f7);
+  color: var(--fg, #1a1a1a);
+}
+
+.kb-nav-item.active {
+  background: var(--accent, #2f6fed);
+  color: #fff;
+  font-weight: 600;
+}

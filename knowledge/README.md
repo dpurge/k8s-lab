@@ -23,17 +23,20 @@ knowledge/
 ├── internal/auth/auth.go              # signup/login/session logic (bcrypt + Postgres sessions)
 ├── internal/embeddings/embeddings.go  # Ollama/OpenAI/fake embedding clients
 ├── internal/qdrant/qdrant.go          # Qdrant collection + CRUD/search logic
-├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats, jobs)
-├── internal/chat/chat.go              # chat persistence + RAG orchestration
-├── internal/generate/generate.go      # LLM-generated title/summary from a knowledge item's body
+├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats, jobs, operations)
+├── internal/queue/queue.go            # single-worker, priority-ordered LLM operation queue used by chat/generate/ingest
+├── internal/chat/chat.go              # chat persistence + RAG orchestration; replies run async via internal/queue
+├── internal/generate/generate.go      # LLM-generated title/summary from a knowledge item's body, queued via internal/queue
 ├── internal/translate/translate.go    # translates text into the configured knowledge-base language
-├── internal/ingest/ingest.go          # URL/file → draft chunks pipeline (chunk.go, html.go, drafts.go, source.go)
+├── internal/ingest/ingest.go          # URL/file → draft chunks pipeline, chained through internal/queue (chunk.go, html.go, drafts.go, source.go)
 ├── internal/jobs/jobs.go              # async job tracking (start/step/finish/current), polled by the UI
 ├── internal/server/server.go          # Chi router, REST handlers, session middleware, embedded GUI
 ├── internal/server/static/index.html  # vanilla HTML/CSS/JS GUI (theme toggle, logout)
 ├── internal/server/static/login.html  # login page
 ├── internal/server/static/signup.html # sign-up page
 ├── internal/server/static/theme.js    # shared dark/light theme toggle + localStorage persistence
+├── internal/server/static/vendor/     # vendored (no CDN) markdown-it + DOMPurify for chat rendering
+├── internal/server/static/components/ # kb-* Web Components (kb-button, kb-nav); component.test.js per one, Node+jsdom
 └── k8s/
     ├── configmap.yaml                 # mounted config (models, prompts, thresholds)
     ├── deployment.yaml                # Deployment, Service, Ingress
@@ -138,8 +141,25 @@ knowledgeLanguage: English         # the knowledge base's target language; fixed
 translate:
   provider: ollama
   baseURL: http://localhost:11434
-  model: rinex20/translategemma3:12b  # translation-specialized; used by the ingest pipeline to translate chunks
+  model: gemma4:12b  # same model used for chat/generate; chosen after live comparison showed comparable translation quality
   numCtx: 0
+prompts:
+  chat: |
+    You answer using only the retrieved knowledge documents below.
+
+    If unsupported by the retrieved knowledge documents, say you do not know.
+  generateTitle: >-
+    You write a short, specific title for the given Markdown document.
+    Respond with only the title text on a single line — no quotes, no
+    punctuation at the end, no preamble like "Title:".
+  generateSummary: >-
+    You write a one-paragraph summary of the given Markdown document,
+    for use as a search-result preview. Respond with only the summary
+    text — no preamble like "Summary:", no quotes.
+  translate: >-
+    If the following text is already in {{language}}, return it
+    unchanged. Otherwise, translate it into {{language}}. Respond with
+    only the resulting text — no preamble, no explanation.
 ```
 
 **Credentials are never in this file** — they stay as plain (or Kubernetes-Secret-sourced) env
@@ -423,6 +443,13 @@ Accepts the same `{items: [...]}` shape an export produces, so it round-trips a 
 file are informational only — always ignored on import; the server sets its own. Each row is
 handled independently, so one bad row doesn't fail the batch:
 
+- Only `body` is required — `title`, `summary`, and `tags` may all be omitted. If a **new** item's
+  `title` or `summary` is missing, it's created with that field blank and a background operation
+  is queued to fill it in from `body` (see
+  [Background operation queue](#background-operation-queue)); the Knowledge list shows a
+  "(generating title/summary…)" placeholder until it lands. Omitting `title`/`summary` on a row
+  that updates an **existing** `id` instead keeps that item's current value rather than blanking
+  it out.
 - An item **with** an `id` that already exists, and whose `title`/`summary`/`body`/`tags` all
   exactly match what's already stored, is skipped entirely — no write, no re-embedding. Re-embedding
   is a real LLM/embedding cost, only paid when content actually changed.
@@ -519,9 +546,21 @@ curl -sS -X POST "$BASE/chats/$CHAT_ID/messages" \
   -d '{"message":"How do I open Headlamp?"}' | jq .
 ```
 
-The response includes the assistant answer plus `sources` containing `title`, `summary`, `score`,
-`tags`, and a `url` link back to the Knowledge UI for each referenced item. In the Chat UI, Enter
-sends the prompt and Shift+Enter inserts a new line.
+This returns immediately with only `user_message` — it does not wait on the LLM. The reply is
+produced by a background operation (see [Background operation queue](#background-operation-queue))
+and appears asynchronously as a new `assistant`-role message the next time the chat is fetched:
+
+```sh
+curl -sS "$BASE/chats/$CHAT_ID" | jq .messages
+```
+
+Each assistant message carries `sources` containing `title`, `summary`, `score`, `tags`, and a
+`url` link back to the Knowledge UI for each referenced item. In the Chat UI, Enter sends the
+prompt and Shift+Enter inserts a new line; the UI polls for the reply and shows a status-bar
+message while it's pending. Message content (both roles) is rendered as Markdown — headers,
+bold/italic, inline and fenced code, lists, tables, links, and images — via a vendored
+`markdown-it` + `DOMPurify` pipeline (see `knowledge/internal/server/static/vendor/`), not raw
+text; this is also why the reference list above renders as a real bulleted list.
 
 Delete a chat and all its messages:
 
@@ -738,7 +777,9 @@ curl -sS -b cookies.txt "$BASE/jobs"
 ```
 
 Retry a failed job from its stored source — starts a brand-new job (the original stays in history
-unchanged); re-fetches a URL fresh, or re-uses the originally uploaded text for a file source:
+unchanged). Reuses the content already acquired on the failed attempt rather than redoing the
+work: a URL source reuses the text already fetched (only re-fetches if the original attempt never
+got that far), and a file/text source reuses the originally uploaded text, same as before:
 
 ```sh
 curl -sS -b cookies.txt -X POST "$BASE/jobs/$ID/retry"
@@ -763,6 +804,28 @@ curl -sS -b cookies.txt -X DELETE "$BASE/jobs/$ID"
 Response: `204` (idempotent — returns 204 whether or not the job existed). Refuses a still-running
 job with `409 job_running`, since removing that row mid-run would silently defeat the
 single-concurrent-job-per-kind guard.
+
+### Background operation queue
+
+Every LLM-calling code path — chat replies, manual title/summary generation, and ingest's
+per-chunk pipeline (translate, title, summary, save draft) — runs through one app-wide operation
+queue (`internal/queue`) with a single worker: **at most one LLM call happens at a time**, never
+concurrently. Two priorities exist:
+
+- **Interactive** — chat replies and manual "Generate" clicks. Always processed ahead of any
+  pending background work, so the app stays responsive even while a large ingest job is running.
+- **Background** — ingest's chunk-by-chunk pipeline. Only runs when no interactive work is
+  pending; completing one chunk enqueues the next rather than looping in-process, so an
+  interactive request that arrives in between gets a chance to run first.
+
+This is why `POST .../messages` returns immediately (see [Chat with knowledge](#chat-with-knowledge))
+while `/knowledge/generate/title` and `/knowledge/generate/summary` still block until the model
+responds — both are interactive-priority, but generate's HTTP handler waits for its own operation
+to finish (usually fast, since nothing outranks it) while chat's doesn't wait at all. A fired
+operation is durable — it completes even if the original HTTP request that triggered it is long
+gone, so a slow reply is never silently lost. Every LLM call, ingest job start/finish, data
+import, and knowledge item create/update/delete is logged (structured, `log/slog` JSON to
+stdout) with duration and outcome, never content.
 
 ## Validation and errors
 

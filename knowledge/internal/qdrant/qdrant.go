@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -41,11 +43,12 @@ type ListItem struct {
 }
 
 type Search struct {
-	Query string
-	Tags  []string
-	Start *time.Time
-	End   *time.Time
-	Limit int
+	Query  string
+	Tags   []string
+	Start  *time.Time
+	End    *time.Time
+	Limit  int
+	Offset int
 }
 
 type Client struct {
@@ -53,6 +56,7 @@ type Client struct {
 	http             *http.Client
 	emb              embeddings.Embedder
 	minScore         float64
+	generator        BackgroundGenerator
 }
 
 func New(base, collection string, emb embeddings.Embedder, minScore float64) *Client {
@@ -112,6 +116,18 @@ func validate(title, summary, body string) error {
 	}
 	return nil
 }
+
+// validateImport is the relaxed counterpart of validate used only by
+// Import: only body is required there. title, summary, and tags may all
+// be empty — a missing title/summary is backfilled by a queued background
+// generate operation (see Import's Generator field) rather than rejected
+// up front. Create/Update keep using validate, unchanged.
+func validateImport(body string) error {
+	if strings.TrimSpace(body) == "" {
+		return ErrValidation
+	}
+	return nil
+}
 func NormalizeTags(tags []string) []string {
 	seen := map[string]bool{}
 	out := []string{}
@@ -140,7 +156,9 @@ func (c *Client) Create(ctx context.Context, title, summary, body string, tags [
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	it := Item{ID: id, Title: title, Summary: summary, Body: body, Tags: NormalizeTags(tags), EmbeddingModel: c.emb.Model(), CreatedAt: now, UpdatedAt: now}
-	return it, c.upsert(ctx, it)
+	err = c.upsert(ctx, it)
+	slog.Info("knowledge item created", "id", id, "outcome", outcomeOf(err))
+	return it, err
 }
 
 func (c *Client) Update(ctx context.Context, id, title, summary, body string, tags []string) (Item, error) {
@@ -151,8 +169,38 @@ func (c *Client) Update(ctx context.Context, id, title, summary, body string, ta
 	if err := validate(title, summary, body); err != nil {
 		return Item{}, err
 	}
+	changed := changedFields(old, title, summary, body, NormalizeTags(tags))
 	old.Title, old.Summary, old.Body, old.Tags, old.EmbeddingModel, old.UpdatedAt = title, summary, body, NormalizeTags(tags), c.emb.Model(), time.Now().UTC().Truncate(time.Second)
-	return old, c.upsert(ctx, old)
+	err = c.upsert(ctx, old)
+	slog.Info("knowledge item updated", "id", id, "fields_changed", changed, "outcome", outcomeOf(err))
+	return old, err
+}
+
+// changedFields names which of title/summary/body/tags actually differ
+// from old, for a log line that says what changed without logging any of
+// the content itself.
+func changedFields(old Item, title, summary, body string, tags []string) []string {
+	var changed []string
+	if old.Title != title {
+		changed = append(changed, "title")
+	}
+	if old.Summary != summary {
+		changed = append(changed, "summary")
+	}
+	if old.Body != body {
+		changed = append(changed, "body")
+	}
+	if !equalTags(old.Tags, tags) {
+		changed = append(changed, "tags")
+	}
+	return changed
+}
+
+func outcomeOf(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
 }
 
 // ExportAll scrolls the entire collection (optionally filtered by tags) and
@@ -248,10 +296,17 @@ func equalTags(a, b []string) bool {
 // than aborting the whole batch on the first bad row:
 //   - Delete: hard-deletes by id (requires an id; a missing target is a
 //     no-op, matching this app's other idempotent deletes).
+//   - Only body is required (validateImport, not validate — title,
+//     summary, and tags may all be omitted). A brand-new row with no
+//     title/summary is created with that field blank and a background
+//     generate operation is queued for it (see enqueueMissingFields); an
+//     omitted title/summary on a row updating an *existing* id instead
+//     keeps that item's current value rather than blanking it out — only
+//     a genuinely new item ever starts blank.
 //   - An id that already exists AND is unchanged (title/summary/body/tags/
 //     embedding model all match what's stored): skipped entirely — no
-//     write, no re-embed. Re-embedding is a real LLM/embedding cost, only
-//     paid when content actually changed.
+//     write, no re-embed, no generate re-queued. Re-embedding is a real
+//     LLM/embedding cost, only paid when content actually changed.
 //   - Otherwise: created (id-less, or an id that doesn't exist yet) or
 //     updated (an existing id with different content) — either way,
 //     (re-)embedded via upsert. An update preserves the stored CreatedAt.
@@ -271,13 +326,14 @@ func (c *Client) Import(ctx context.Context, items []ImportItem) ImportResult {
 			continue
 		}
 
-		if err := validate(in.Title, in.Summary, in.Body); err != nil {
-			res.Errors = append(res.Errors, ImportError{Index: i, ID: in.ID, Message: "title, summary, and body are required"})
+		if err := validateImport(in.Body); err != nil {
+			res.Errors = append(res.Errors, ImportError{Index: i, ID: in.ID, Message: "body is required"})
 			continue
 		}
 
 		now := time.Now().UTC().Truncate(time.Second)
 		createdAt := now
+		title, summary := in.Title, in.Summary
 
 		id := in.ID
 		if id == "" {
@@ -293,23 +349,101 @@ func (c *Client) Import(ctx context.Context, items []ImportItem) ImportResult {
 				continue
 			}
 			createdAt = old.CreatedAt
+			if title == "" {
+				title = old.Title
+			}
+			if summary == "" {
+				summary = old.Summary
+			}
 		} else if !errors.Is(err, ErrNotFound) {
 			res.Errors = append(res.Errors, ImportError{Index: i, ID: id, Message: err.Error()})
 			continue
 		}
 
-		it := Item{ID: id, Title: in.Title, Summary: in.Summary, Body: in.Body, Tags: NormalizeTags(in.Tags), EmbeddingModel: c.emb.Model(), CreatedAt: createdAt, UpdatedAt: now}
+		it := Item{ID: id, Title: title, Summary: summary, Body: in.Body, Tags: NormalizeTags(in.Tags), EmbeddingModel: c.emb.Model(), CreatedAt: createdAt, UpdatedAt: now}
 		if err := c.upsert(ctx, it); err != nil {
 			res.Errors = append(res.Errors, ImportError{Index: i, ID: id, Message: err.Error()})
 			continue
 		}
 		res.Imported++
+		c.enqueueMissingFields(ctx, it)
 	}
+	slog.Info("knowledge import", "items", len(items), "imported", res.Imported, "deleted", res.Deleted, "unchanged", res.Unchanged, "errors", len(res.Errors))
 	return res
 }
 
+// BackgroundGenerator lets Import queue best-effort title/summary
+// generation for an item that arrived without one, following this
+// codebase's existing import-graph-avoidance convention (see
+// ingest.Promoter's doc comment): qdrant otherwise imports no generate
+// code at all. main.go supplies the adapter via SetGenerator once both
+// services exist.
+type BackgroundGenerator interface {
+	EnqueueBackgroundTitle(ctx context.Context, itemID, body string) error
+	EnqueueBackgroundSummary(ctx context.Context, itemID, body string) error
+}
+
+// SetGenerator wires in the background generator used by
+// enqueueMissingFields. Left nil (the default), Import simply leaves a
+// missing title/summary blank with nothing queued to fill it — this is
+// only a setter, not a constructor parameter, because generate.Service
+// itself needs a qdrant-backed ItemWriteback adapter to exist first, and
+// main.go's construction order builds *qdrant.Client before generate.Service.
+func (c *Client) SetGenerator(g BackgroundGenerator) {
+	c.generator = g
+}
+
+// enqueueMissingFields queues background generation for whichever of
+// title/summary is still blank after Import upserts it. A queue failure
+// is logged, not returned: the item itself was already imported
+// successfully, and losing the auto-fill is a lesser problem than
+// reporting the whole row as a failed import.
+func (c *Client) enqueueMissingFields(ctx context.Context, it Item) {
+	if c.generator == nil {
+		return
+	}
+	if strings.TrimSpace(it.Title) == "" {
+		if err := c.generator.EnqueueBackgroundTitle(ctx, it.ID, it.Body); err != nil {
+			log.Printf("qdrant: item %s: failed to queue title generation: %v", it.ID, err)
+		}
+	}
+	if strings.TrimSpace(it.Summary) == "" {
+		if err := c.generator.EnqueueBackgroundSummary(ctx, it.ID, it.Body); err != nil {
+			log.Printf("qdrant: item %s: failed to queue summary generation: %v", it.ID, err)
+		}
+	}
+}
+
 func (c *Client) Delete(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodPost, "/collections/"+c.collection+"/points/delete?wait=true", map[string]any{"points": []string{id}}, nil)
+	err := c.do(ctx, http.MethodPost, "/collections/"+c.collection+"/points/delete?wait=true", map[string]any{"points": []string{id}}, nil)
+	slog.Info("knowledge item deleted", "id", id, "outcome", outcomeOf(err))
+	return err
+}
+
+// SetTitle and SetSummary satisfy generate.ItemWriteback: an
+// import-triggered background generate operation calls these once its
+// result is ready, so a *qdrant.Client can be passed directly as that
+// interface with no adapter needed (see main.go).
+func (c *Client) SetTitle(ctx context.Context, id, title string) error {
+	it, err := c.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	it.Title, it.EmbeddingModel, it.UpdatedAt = title, c.emb.Model(), time.Now().UTC().Truncate(time.Second)
+	err = c.upsert(ctx, it)
+	slog.Info("knowledge item updated", "id", id, "fields_changed", []string{"title"}, "outcome", outcomeOf(err))
+	return err
+}
+
+func (c *Client) SetSummary(ctx context.Context, id, summary string) error {
+	it, err := c.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	it.Summary, it.EmbeddingModel, it.UpdatedAt = summary, c.emb.Model(), time.Now().UTC().Truncate(time.Second)
+	err = c.upsert(ctx, it)
+	slog.Info("knowledge item updated", "id", id, "fields_changed", []string{"summary"}, "outcome", outcomeOf(err))
+	return err
 }
 
 func (c *Client) Get(ctx context.Context, id string) (Item, error) {
@@ -346,6 +480,9 @@ func (c *Client) vectorSearch(ctx context.Context, s Search) ([]ListItem, error)
 		return nil, err
 	}
 	req := map[string]any{"vector": vec, "limit": s.Limit, "with_payload": true, "with_vector": false}
+	if s.Offset > 0 {
+		req["offset"] = s.Offset
+	}
 	if f := filter(s); f != nil {
 		req["filter"] = f
 	}
@@ -366,8 +503,17 @@ func (c *Client) vectorSearch(ctx context.Context, s Search) ([]ListItem, error)
 	return out, nil
 }
 
+// scroll pages through Qdrant's scroll cursor (an opaque point-id offset,
+// not a plain integer) internally, but exposes a plain integer Offset to
+// callers: it simply discards the first s.Offset matched items before
+// starting to collect into all. This scans (and discards) every skipped
+// item rather than seeking directly to it — acceptable for this app's
+// paging depth, but not a substitute for a real keyset cursor if item
+// counts grow far beyond what a UI "next page" click realistically pages
+// through.
 func (c *Client) scroll(ctx context.Context, s Search) ([]ListItem, error) {
 	var all []ListItem
+	skipped := 0
 	offset := any(nil)
 	for len(all) < s.Limit {
 		req := map[string]any{"limit": s.Limit, "with_payload": true, "with_vector": false}
@@ -388,11 +534,16 @@ func (c *Client) scroll(ctx context.Context, s Search) ([]ListItem, error) {
 		}
 		for _, p := range res.Result.Points {
 			it, err := p.item()
-			if err == nil {
-				all = append(all, ListItem{ID: it.ID, Title: it.Title, Summary: it.Summary, Tags: it.Tags, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt})
-				if len(all) >= s.Limit {
-					break
-				}
+			if err != nil {
+				continue
+			}
+			if skipped < s.Offset {
+				skipped++
+				continue
+			}
+			all = append(all, ListItem{ID: it.ID, Title: it.Title, Summary: it.Summary, Tags: it.Tags, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt})
+			if len(all) >= s.Limit {
+				break
 			}
 		}
 		if res.Result.NextPageOffset == nil {

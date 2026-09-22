@@ -1,15 +1,14 @@
 ---
-version: 7
+version: 22
 status: approved
-updated: 2026-09-21
+updated: 2026-09-22
 ---
 
 ## Now
 
 ## Next
 
-- `knowledge-prompts-configmap` — Move model prompt templates (chat/generate/translate system prompts) from Go source into the mounted ConfigMap YAML, so prompts are editable without a rebuild.
-- `knowledge-markdown-chat-render` — Render chat message markdown as HTML instead of plain text, using a sanitizing/allowlist-based renderer (not raw innerHTML of arbitrary markdown) to preserve the existing textContent-equivalent XSS safety.
+- `knowledge-workspace-redesign` — Extract remaining page sections into standalone components (login/signup forms, knowledge tab, knowledge detail view, chat tab, ingest tab, jobs list, drafts list); split jobs and drafts into separate workspaces; redesign the ingest tab. (Aside visual separation and job status indicators already shipped — see CHANGELOG.)
 
 ## Later
 

@@ -1,0 +1,29 @@
+/* Shared CSS variable palette (light/dark) — used by index.html, login.html,
+   and signup.html, alongside theme.js's data-theme attribute toggle. */
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --border: #ddd;
+  --muted: #666;
+  --hover-bg: #f7f7f7;
+  --tag-bg: #eee;
+  --danger: #b00020;
+  --sources-bg: #f8f8f8;
+  --accent: #2f6fed;
+  --accent-hover: #2557bd;
+  --success: #1a7f37;
+}
+
+:root[data-theme="dark"] {
+  --bg: #181818;
+  --fg: #e6e6e6;
+  --border: #3a3a3a;
+  --muted: #a0a0a0;
+  --hover-bg: #262626;
+  --tag-bg: #333333;
+  --danger: #ff6b81;
+  --sources-bg: #222222;
+  --accent: #5b8def;
+  --accent-hover: #7aa5f2;
+  --success: #4caf6d;
+}

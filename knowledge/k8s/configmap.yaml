@@ -37,4 +37,21 @@ data:
     translate:
       provider: ollama
       baseURL: http://host.docker.internal:11434
-      model: rinex20/translategemma3:12b
+      model: gemma4:12b
+    prompts:
+      chat: |
+        You answer using only the retrieved knowledge documents below.
+
+        If unsupported by the retrieved knowledge documents, say you do not know.
+      generateTitle: >-
+        You write a short, specific title for the given Markdown document.
+        Respond with only the title text on a single line — no quotes, no
+        punctuation at the end, no preamble like "Title:".
+      generateSummary: >-
+        You write a one-paragraph summary of the given Markdown document,
+        for use as a search-result preview. Respond with only the summary
+        text — no preamble like "Summary:", no quotes.
+      translate: >-
+        If the following text is already in {{language}}, return it
+        unchanged. Otherwise, translate it into {{language}}. Respond with
+        only the resulting text — no preamble, no explanation.

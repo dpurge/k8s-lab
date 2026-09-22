@@ -1,0 +1,17 @@
+kb-card {
+  display: block;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  padding: 0.7rem;
+  margin: 0.5rem 0;
+  cursor: pointer;
+}
+
+kb-card:hover {
+  background: var(--hover-bg, #f7f7f7);
+}
+
+#list kb-card,
+#drafts kb-card {
+  margin: 0;
+}

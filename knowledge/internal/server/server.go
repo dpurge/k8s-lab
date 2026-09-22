@@ -61,14 +61,21 @@ type generateSummaryResponse struct {
 	Summary string `json:"summary"`
 }
 type searchRequest struct {
-	Query string     `json:"query"`
-	Tags  []string   `json:"tags"`
-	Start *time.Time `json:"start"`
-	End   *time.Time `json:"end"`
-	Limit int        `json:"limit"`
+	Query  string     `json:"query"`
+	Tags   []string   `json:"tags"`
+	Start  *time.Time `json:"start"`
+	End    *time.Time `json:"end"`
+	Limit  int        `json:"limit"`
+	Offset int        `json:"offset"`
 }
+
+// listResponse's HasMore is a simple heuristic — true whenever a full page
+// (len(Items) == the effective limit) came back — not an exact count, but
+// enough for a "Next" button to know whether to enable itself without a
+// separate, more expensive total-count query against Qdrant.
 type listResponse struct {
-	Items []qdrant.ListItem `json:"items"`
+	Items   []qdrant.ListItem `json:"items"`
+	HasMore bool              `json:"has_more"`
 }
 type exportResponse struct {
 	Items []qdrant.Item `json:"items" yaml:"items"`
@@ -92,9 +99,12 @@ type sendMessageRequest struct {
 type chatsResponse struct {
 	Chats []chat.Chat `json:"chats"`
 }
+// sendMessageResponse carries only the persisted user message: the
+// assistant's reply is produced asynchronously (see chat.Service.Send) and
+// becomes visible through the existing GET /chats/{id} polling once it
+// lands, rather than in this response.
 type sendMessageResponse struct {
-	AssistantMessage chat.Message  `json:"assistant_message"`
-	Sources          []chat.Source `json:"sources"`
+	UserMessage chat.Message `json:"user_message"`
 }
 
 // ingestURLBodyCap bounds an ingest/url request body — a URL plus tags
@@ -140,12 +150,21 @@ func (s *Server) Router() http.Handler {
 	})
 
 	// Public: the login/signup pages, the shared theme script they (and the
-	// main app) load, and the auth API that issues/clears the session
+	// main app) load, their own CSS/JS, the kb-button/kb-field components
+	// they're built from, and the auth API that issues/clears the session
 	// cookie. Registered as exact paths so they take precedence over the
-	// "/*" static handler below regardless of which group added them.
+	// "/*" static handler below regardless of which group added them — a
+	// logged-out user hitting the authenticated catch-all for any of this
+	// would otherwise get a login page with no styling and no working
+	// components.
 	r.Get("/login.html", s.serveStatic("login.html"))
 	r.Get("/signup.html", s.serveStatic("signup.html"))
 	r.Get("/theme.js", s.serveStatic("theme.js"))
+	r.Get("/theme.css", s.serveStatic("theme.css"))
+	r.Get("/auth.css", s.serveStatic("auth.css"))
+	r.Get("/auth.js", s.serveStatic("auth.js"))
+	r.Get("/components/kb-button/*", s.serveStaticGlob("components/kb-button"))
+	r.Get("/components/kb-field/*", s.serveStaticGlob("components/kb-field"))
 	r.Post("/api/v1/auth/signup", s.signup)
 	r.Post("/api/v1/auth/login", s.login)
 	r.Post("/api/v1/auth/logout", s.logout)
@@ -193,6 +212,15 @@ func (s *Server) Router() http.Handler {
 func (s *Server) serveStatic(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, static, "static/"+name)
+	}
+}
+
+// serveStaticGlob serves every file under a directory (registered with a
+// chi "/*" wildcard route), for the handful of static subtrees that must
+// stay public alongside login.html/signup.html.
+func (s *Server) serveStaticGlob(dir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, static, "static/"+dir+"/"+chi.URLParam(r, "*"))
 	}
 }
 
@@ -343,29 +371,45 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// effectiveLimit mirrors qdrant.Client.Search's own default/cap so a
+// handler can tell, after the fact, whether a full page came back
+// (len(items) == effectiveLimit) without Search itself needing to report
+// what limit it actually used.
+func effectiveLimit(limit int) int {
+	if limit <= 0 {
+		return 7
+	}
+	if limit > 20 {
+		return 20
+	}
+	return limit
+}
+
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	search, ok := searchFromQuery(w, r)
 	if !ok {
 		return
 	}
+	search.Limit = effectiveLimit(search.Limit)
 	items, err := s.kb.Search(r.Context(), search)
 	if err != nil {
 		writeErr(w, 500, "internal", err.Error())
 		return
 	}
-	writeJSON(w, 200, listResponse{Items: items})
+	writeJSON(w, 200, listResponse{Items: items, HasMore: len(items) == search.Limit})
 }
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	var req searchRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	items, err := s.kb.Search(r.Context(), qdrant.Search{Query: req.Query, Tags: req.Tags, Start: req.Start, End: req.End, Limit: req.Limit})
+	limit := effectiveLimit(req.Limit)
+	items, err := s.kb.Search(r.Context(), qdrant.Search{Query: req.Query, Tags: req.Tags, Start: req.Start, End: req.End, Limit: limit, Offset: req.Offset})
 	if err != nil {
 		writeErr(w, 500, "internal", err.Error())
 		return
 	}
-	writeJSON(w, 200, listResponse{Items: items})
+	writeJSON(w, 200, listResponse{Items: items, HasMore: len(items) == limit})
 }
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -507,12 +551,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "validation_failed", "message is required")
 		return
 	}
-	msg, sources, err := s.chat.Send(r.Context(), chi.URLParam(r, "id"), req.Message)
+	msg, err := s.chat.Send(r.Context(), chi.URLParam(r, "id"), req.Message)
 	if err != nil {
 		writeErr(w, 500, "internal", err.Error())
 		return
 	}
-	writeJSON(w, 200, sendMessageResponse{AssistantMessage: msg, Sources: sources})
+	writeJSON(w, 200, sendMessageResponse{UserMessage: msg})
 }
 
 func (s *Server) ingestURL(w http.ResponseWriter, r *http.Request) {
@@ -647,6 +691,14 @@ func searchFromQuery(w http.ResponseWriter, r *http.Request) (qdrant.Search, boo
 			return s, false
 		}
 		s.End = &t
+	}
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, 400, "validation_failed", "offset must be a non-negative integer")
+			return s, false
+		}
+		s.Offset = n
 	}
 	return s, true
 }

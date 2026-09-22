@@ -127,6 +127,14 @@ func (s *Service) SetStep(ctx context.Context, id, step string) error {
 	return err
 }
 
+// SetSourceText persists text acquired after the job row was created (a
+// URL fetch's result) so a later retry can reuse it instead of re-fetching
+// — see ingest.Service.HandleAcquire.
+func (s *Service) SetSourceText(ctx context.Context, id, text string) error {
+	_, err := s.db.Exec(ctx, "UPDATE jobs SET source_text=$1, updated_at=now() WHERE id=$2", text, id)
+	return err
+}
+
 // jobColumns is the column list every full-row Job query scans, factored
 // out so List/Get/Current/Start's RETURNING stay in sync by construction.
 const jobColumns = "id,kind,status,step,coalesce(error,''),coalesce(source_kind,''),coalesce(source_ref,''),coalesce(source_text,''),source_tags,created_at,updated_at"

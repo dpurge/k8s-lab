@@ -2,199 +2,28 @@
 <html lang="en">
   <head>
     <script src="/theme.js"></script>
+    <script src="/vendor/markdown-it.min.js"></script>
+    <script src="/vendor/purify.min.js"></script>
+    <script src="/components/kb-button/component.js"></script>
+    <script src="/components/kb-nav/component.js"></script>
+    <script src="/components/kb-status-bar/component.js"></script>
+    <script src="/components/kb-dialog/component.js"></script>
+    <script src="/components/kb-card/component.js"></script>
+    <script src="/components/kb-field/component.js"></script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Knowledge</title>
-    <style>
-      :root {
-        --bg: #ffffff;
-        --fg: #1a1a1a;
-        --border: #ddd;
-        --muted: #666;
-        --hover-bg: #f7f7f7;
-        --tag-bg: #eee;
-        --danger: #b00020;
-        --sources-bg: #f8f8f8;
-      }
-
-      :root[data-theme="dark"] {
-        --bg: #181818;
-        --fg: #e6e6e6;
-        --border: #3a3a3a;
-        --muted: #a0a0a0;
-        --hover-bg: #262626;
-        --tag-bg: #333333;
-        --danger: #ff6b81;
-        --sources-bg: #222222;
-      }
-
-      body {
-        font-family: system-ui, sans-serif;
-        margin: 0;
-        height: 100vh;
-        background: var(--bg);
-        color: var(--fg);
-      }
-
-      header {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-        border-bottom: 1px solid var(--border);
-        padding: 0.5rem 1rem;
-      }
-
-      header .spacer {
-        flex: 1;
-      }
-
-      header a {
-        color: var(--fg);
-      }
-
-      button,
-      input,
-      textarea {
-        font: inherit;
-        background: var(--bg);
-        color: var(--fg);
-      }
-
-      button {
-        padding: 0.5rem 0.75rem;
-        min-width: 6rem;
-        text-align: center;
-        cursor: pointer;
-      }
-
-      button.icon-btn {
-        min-width: 0;
-        padding: 0.5rem 0.6rem;
-      }
-
-      input,
-      textarea {
-        width: 100%;
-        box-sizing: border-box;
-        margin: 0.25rem 0 0.75rem;
-        padding: 0.5rem;
-        border: 1px solid var(--border);
-      }
-
-      .tab {
-        display: none;
-      }
-
-      .tab.active {
-        display: grid;
-        grid-template-columns: 360px 1fr;
-        height: calc(100vh - 54px - 2.4rem);
-      }
-
-      footer {
-        display: flex;
-        gap: 1rem;
-        align-items: baseline;
-        border-top: 1px solid var(--border);
-        padding: 0.4rem 1rem;
-        height: 2.4rem;
-        box-sizing: border-box;
-        overflow: auto;
-        white-space: pre-wrap;
-      }
-
-      aside {
-        border-right: 1px solid var(--border);
-        padding: 1rem;
-        overflow: auto;
-      }
-
-      main {
-        padding: 1rem;
-        overflow: auto;
-      }
-
-      .item,
-      .chat {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 0.7rem;
-        margin: 0.5rem 0;
-        cursor: pointer;
-      }
-
-      .item:hover,
-      .chat:hover {
-        background: var(--hover-bg);
-      }
-
-      .muted {
-        color: var(--muted);
-        font-size: 0.85rem;
-      }
-
-      .tag {
-        display: inline-block;
-        background: var(--tag-bg);
-        border-radius: 999px;
-        padding: 0.1rem 0.45rem;
-        margin: 0.15rem 0.15rem 0 0;
-        font-size: 0.8rem;
-      }
-
-      .actions {
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-        margin: 0 0 0.75rem;
-      }
-
-      .danger,
-      .error {
-        color: var(--danger);
-      }
-
-      #body {
-        min-height: 45vh;
-      }
-
-      #draftBody {
-        min-height: 40vh;
-      }
-
-      #chatMessages {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1rem;
-        min-height: 45vh;
-      }
-
-      .msg {
-        margin: 0.7rem 0;
-      }
-
-      .role {
-        font-weight: 700;
-      }
-
-      .sources {
-        font-size: 0.9rem;
-        background: var(--sources-bg);
-        padding: 0.5rem;
-        border-radius: 6px;
-      }
-    </style>
+    <link rel="stylesheet" href="/theme.css" />
+    <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
     <header>
-      <button onclick="showTab('knowledge')">Knowledge</button>
-      <button onclick="showTab('chat')">Chat</button>
-      <button onclick="showTab('ingest')">Ingest</button>
+      <kb-nav id="mainNav"></kb-nav>
       <a href="http://qdrant.localhost:8080/dashboard" target="_blank" rel="noreferrer">Qdrant ↗</a>
       <div class="spacer"></div>
       <span class="muted" id="userEmail"></span>
-      <button class="icon-btn" type="button" onclick="toggleTheme()" title="Toggle theme">🌓</button>
-      <button type="button" onclick="run(logout)">Log out</button>
+      <kb-button variant="icon" onclick="toggleTheme()" title="Toggle theme">🌓</kb-button>
+      <kb-button variant="secondary" onclick="run(logout)">Log out</kb-button>
     </header>
 
     <section id="knowledgeTab" class="tab active">
@@ -202,54 +31,59 @@
         <h1>Knowledge</h1>
         <input id="q" placeholder="Semantic search query" />
         <input id="filterTags" placeholder="Filter tags: k8s, qdrant" />
-        <label class="muted">
-          Updated after
+        <kb-field label="Updated after" for="start">
           <input id="start" type="datetime-local" />
-        </label>
-        <label class="muted">
-          Updated before
+        </kb-field>
+        <kb-field label="Updated before" for="end">
           <input id="end" type="datetime-local" />
-        </label>
+        </kb-field>
         <div class="actions">
-          <button onclick="run(loadList)">Search</button>
-          <button onclick="newItem()">New</button>
+          <kb-button onclick="run(loadList)">Search</kb-button>
+          <kb-button onclick="newItem()">New</kb-button>
         </div>
+        <hr class="aside-divider" />
         <input id="exportTags" placeholder="Export tags: k8s, qdrant (empty = all)" />
         <div class="actions">
-          <button onclick="exportItems()">Export</button>
-          <button onclick="$('importFile').click()">Import</button>
+          <kb-button onclick="exportItems()">Export</kb-button>
+          <kb-button onclick="$('importFile').click()">Import</kb-button>
           <input id="importFile" type="file" accept=".yaml,.yml,application/yaml,text/yaml" style="display: none" onchange="run(importFile)" />
         </div>
-        <div id="list"></div>
       </aside>
 
       <main>
-        <input id="id" type="hidden" />
-        <label>
-          Title
-          <input id="title" />
-        </label>
-        <div class="actions">
-          <button type="button" onclick="run(generateTitle)">Generate</button>
+        <div id="knowledgeListView" class="view active">
+          <div id="list"></div>
+          <div class="actions">
+            <kb-button variant="secondary" id="listPrev" onclick="run(loadListPrev)">← Prev</kb-button>
+            <kb-button variant="secondary" id="listNext" onclick="run(loadListNext)">Next →</kb-button>
+          </div>
         </div>
-        <label>
-          Tags
-          <input id="tags" placeholder="k8s, qdrant, rag" />
-        </label>
-        <label>
-          Summary
-          <textarea id="summary" style="min-height: 5rem"></textarea>
-        </label>
-        <div class="actions">
-          <button type="button" onclick="run(generateSummary)">Generate</button>
-        </div>
-        <label>
-          Body (Markdown)
-          <textarea id="body"></textarea>
-        </label>
-        <div class="actions">
-          <button onclick="run(save)">Save</button>
-          <button class="danger" onclick="run(removeItem)">Delete</button>
+
+        <div id="knowledgeDetailView" class="view">
+          <a class="back-link" onclick="showKnowledgeView('list')">← Back to list</a>
+          <input id="id" type="hidden" />
+          <kb-field label="Title" for="title">
+            <input id="title" />
+          </kb-field>
+          <div class="actions">
+            <kb-button type="button" onclick="run(generateTitle)">Generate</kb-button>
+          </div>
+          <kb-field label="Tags" for="tags">
+            <input id="tags" placeholder="k8s, qdrant, rag" />
+          </kb-field>
+          <kb-field label="Summary" for="summary">
+            <textarea id="summary" style="min-height: 5rem"></textarea>
+          </kb-field>
+          <div class="actions">
+            <kb-button type="button" onclick="run(generateSummary)">Generate</kb-button>
+          </div>
+          <kb-field label="Body (Markdown)" for="body">
+            <textarea id="body"></textarea>
+          </kb-field>
+          <div class="actions">
+            <kb-button onclick="run(save)">Save</kb-button>
+            <kb-button variant="danger" onclick="run(removeItem)">Delete</kb-button>
+          </div>
         </div>
       </main>
     </section>
@@ -257,16 +91,14 @@
     <section id="chatTab" class="tab">
       <aside>
         <h1>Chats</h1>
-        <label>
-          New chat title
+        <kb-field label="New chat title" for="newChatTitle">
           <input id="newChatTitle" />
-        </label>
-        <label>
-          Scope tags
+        </kb-field>
+        <kb-field label="Scope tags" for="newChatTags">
           <input id="newChatTags" placeholder="empty = all knowledge" />
-        </label>
+        </kb-field>
         <div class="actions">
-          <button onclick="run(createChat)">Create chat</button>
+          <kb-button onclick="run(createChat)">Create chat</kb-button>
         </div>
         <div id="chats"></div>
       </aside>
@@ -275,7 +107,7 @@
         <h1 id="chatTitle">Select or create a chat</h1>
         <div id="chatScope" class="muted"></div>
         <div class="actions">
-          <button class="danger" onclick="run(deleteChat)">Delete chat</button>
+          <kb-button variant="danger" onclick="run(deleteChat)">Delete chat</kb-button>
         </div>
         <div id="chatMessages"></div>
         <textarea
@@ -285,7 +117,7 @@
         ></textarea>
         <div class="muted">Enter sends · Shift+Enter inserts a new line</div>
         <div class="actions">
-          <button onclick="run(sendChat)">Send</button>
+          <kb-button onclick="run(sendChat)">Send</kb-button>
         </div>
       </main>
     </section>
@@ -296,8 +128,8 @@
         <input id="ingestUrl" placeholder="URL to ingest" />
         <input id="ingestTags" placeholder="Tags: k8s, qdrant" />
         <div class="actions">
-          <button onclick="run(startIngestUrl)">Ingest URL</button>
-          <button onclick="$('ingestFile').click()">Upload file</button>
+          <kb-button onclick="run(startIngestUrl)">Ingest URL</kb-button>
+          <kb-button onclick="$('ingestFile').click()">Upload file</kb-button>
           <input
             id="ingestFile"
             type="file"
@@ -307,563 +139,47 @@
           />
         </div>
         <div class="actions">
-          <button onclick="run(loadDrafts)">Refresh</button>
+          <kb-button onclick="run(loadDrafts)">Refresh</kb-button>
         </div>
-        <div id="drafts"></div>
-        <h2>Jobs</h2>
-        <div id="jobs"></div>
       </aside>
 
       <main>
-        <input id="draftId" type="hidden" />
-        <div id="draftSource" class="muted"></div>
-        <label>
-          Title
-          <input id="draftTitle" />
-        </label>
-        <label>
-          Tags
-          <input id="draftTags" placeholder="k8s, qdrant, rag" />
-        </label>
-        <label>
-          Summary
-          <textarea id="draftSummary" style="min-height: 5rem"></textarea>
-        </label>
-        <label>
-          Body
-          <textarea id="draftBody"></textarea>
-        </label>
-        <div class="actions">
-          <button onclick="run(saveDraft)">Save</button>
-          <button onclick="run(approveDraft)">Approve</button>
-          <button class="danger" onclick="run(discardDraft)">Discard</button>
+        <div id="ingestListView" class="view active">
+          <div id="drafts"></div>
+          <h2>Jobs</h2>
+          <div id="jobs"></div>
+        </div>
+
+        <div id="ingestDetailView" class="view">
+          <a class="back-link" onclick="showIngestView('list')">← Back to list</a>
+          <input id="draftId" type="hidden" />
+          <div id="draftSource" class="muted"></div>
+          <kb-field label="Title" for="draftTitle">
+            <input id="draftTitle" />
+          </kb-field>
+          <kb-field label="Tags" for="draftTags">
+            <input id="draftTags" placeholder="k8s, qdrant, rag" />
+          </kb-field>
+          <kb-field label="Summary" for="draftSummary">
+            <textarea id="draftSummary" style="min-height: 5rem"></textarea>
+          </kb-field>
+          <kb-field label="Body" for="draftBody">
+            <textarea id="draftBody"></textarea>
+          </kb-field>
+          <div class="actions">
+            <kb-button onclick="run(saveDraft)">Save</kb-button>
+            <kb-button onclick="run(approveDraft)">Approve</kb-button>
+            <kb-button variant="danger" onclick="run(discardDraft)">Discard</kb-button>
+          </div>
         </div>
       </main>
     </section>
 
     <footer id="status">
-      <span class="muted" id="jobStatus"></span>
-      <span id="message"></span>
+      <kb-status-bar id="statusBar"></kb-status-bar>
     </footer>
+    <kb-dialog id="confirmDialog"></kb-dialog>
 
-    <script>
-      const $ = (id) => document.getElementById(id);
-      let currentChat = "";
-      // Tracks whether the most recently observed current job was an
-      // "ingest" job, so pollStatus can detect the running -> finished
-      // transition and refresh the draft list (see pollStatus below).
-      let ingestJobRunning = false;
-
-      const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab"];
-
-      function showTab(tab) {
-        for (const id of TAB_IDS) $(id).classList.toggle("active", id === tab + "Tab");
-        if (tab === "chat") run(loadChats);
-        if (tab === "ingest") run(async () => { await loadDrafts(); await loadJobs(); });
-      }
-
-      function parseTags(value) {
-        return (value || "")
-          .split(",")
-          .map((tag) => tag.trim().toLowerCase())
-          .filter(Boolean);
-      }
-
-      function toRFC(id) {
-        const value = $(id).value;
-        return value ? new Date(value).toISOString() : "";
-      }
-
-      // One shared footer message, used by every tab — success/error
-      // feedback from any action lands here, not in a per-tab element.
-      function message(text, error = false) {
-        $("message").className = error ? "error" : "";
-        $("message").textContent = text || "";
-      }
-
-      async function run(fn) {
-        try {
-          message("");
-          await fn();
-        } catch (error) {
-          message(error.message || String(error), true);
-        }
-      }
-
-      async function api(path, options = {}) {
-        const response = await fetch("/api/v1" + path, {
-          headers: { "Content-Type": "application/json" },
-          ...options,
-        });
-
-        if (!response.ok) {
-          let body = await response.text();
-          try {
-            const parsed = JSON.parse(body);
-            body = parsed.error?.message || body;
-          } catch {}
-          throw new Error(body);
-        }
-
-        return response.status === 204 ? null : response.json();
-      }
-
-      function esc(value) {
-        return (value || "").replace(/[&<>"']/g, (char) => {
-          return {
-            "&": "&amp;",
-            "<": "&lt;",
-            ">": "&gt;",
-            '"': "&quot;",
-            "'": "&#39;",
-          }[char];
-        });
-      }
-
-      async function loadList() {
-        const params = new URLSearchParams();
-
-        if ($("q").value) params.set("q", $("q").value);
-        for (const tag of parseTags($("filterTags").value)) params.append("tag", tag);
-        if (toRFC("start")) params.set("start", toRFC("start"));
-        if (toRFC("end")) params.set("end", toRFC("end"));
-
-        const data = await api("/knowledge?" + params);
-        const items = data.items || [];
-
-        $("list").innerHTML = items.length
-          ? items.map(renderItem).join("")
-          : '<p class="muted">No knowledge items found.</p>';
-      }
-
-      function renderItem(item) {
-        const score = item.score === undefined ? "" : "Score " + item.score.toFixed(3) + " · ";
-        const tags = (item.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
-
-        return `
-          <div class="item" onclick="run(() => openItem('${item.id}'))">
-            <b>${esc(item.title)}</b>
-            <div>${esc(item.summary)}</div>
-            <div>${tags}</div>
-            <div class="muted">${score}Updated ${new Date(item.updated_at).toLocaleString()}</div>
-          </div>
-        `;
-      }
-
-      async function openItem(id) {
-        showTab("knowledge");
-        const item = await api("/knowledge/" + id);
-        $("id").value = item.id;
-        $("title").value = item.title;
-        $("tags").value = (item.tags || []).join(", ");
-        $("summary").value = item.summary;
-        $("body").value = item.body;
-      }
-
-      function newItem() {
-        $("id").value = "";
-        $("title").value = "";
-        $("tags").value = "";
-        $("summary").value = "";
-        $("body").value = "";
-      }
-
-      async function generateTitle() {
-        const body = $("body").value.trim();
-        if (!body) {
-          message("Enter a body first.");
-          return;
-        }
-        message("Generating title…");
-        const res = await api("/knowledge/generate/title", { method: "POST", body: JSON.stringify({ body }) });
-        $("title").value = res.title;
-        message("");
-      }
-
-      async function generateSummary() {
-        const body = $("body").value.trim();
-        if (!body) {
-          message("Enter a body first.");
-          return;
-        }
-        message("Generating summary…");
-        const res = await api("/knowledge/generate/summary", { method: "POST", body: JSON.stringify({ body }) });
-        $("summary").value = res.summary;
-        message("");
-      }
-
-      async function save() {
-        const payload = JSON.stringify({
-          title: $("title").value,
-          summary: $("summary").value,
-          body: $("body").value,
-          tags: parseTags($("tags").value),
-        });
-        const id = $("id").value;
-        const item = await api(id ? "/knowledge/" + id : "/knowledge", {
-          method: id ? "PUT" : "POST",
-          body: payload,
-        });
-
-        $("id").value = item.id;
-        message("Saved " + new Date().toLocaleString());
-        await loadList();
-      }
-
-      function exportItems() {
-        const params = new URLSearchParams();
-        for (const tag of parseTags($("exportTags").value)) params.append("tag", tag);
-        location.href = "/api/v1/knowledge/export" + (params.toString() ? "?" + params : "");
-      }
-
-      async function importFile() {
-        const file = $("importFile").files[0];
-        if (!file) return;
-        if (!confirm("Import " + file.name + "? Rows marked delete: true are removed permanently.")) return;
-
-        // The server parses the YAML; the browser never does — this is an
-        // opaque text blob out (export) and in (import), no client-side
-        // YAML library needed.
-        const content = await file.text();
-        const result = await api("/knowledge/import", {
-          method: "POST",
-          headers: { "Content-Type": "application/yaml" },
-          body: content,
-        });
-        $("importFile").value = "";
-        message(
-          `Imported ${result.imported} · deleted ${result.deleted} · unchanged ${result.unchanged}` +
-            (result.errors.length ? `; ${result.errors.length} failed — see browser console` : ""),
-          result.errors.length > 0,
-        );
-        if (result.errors.length) console.warn("Import errors:", result.errors);
-        await loadList();
-      }
-
-      async function removeItem() {
-        const id = $("id").value;
-        if (!id || !confirm("Delete this item?")) return;
-        await api("/knowledge/" + id, { method: "DELETE" });
-        newItem();
-        await loadList();
-      }
-
-      async function createChat() {
-        const chat = await api("/chats", {
-          method: "POST",
-          body: JSON.stringify({
-            title: $("newChatTitle").value,
-            tags: parseTags($("newChatTags").value),
-          }),
-        });
-
-        currentChat = chat.id;
-        await loadChats();
-        await openChat(chat.id);
-      }
-
-      async function loadChats() {
-        const data = await api("/chats");
-        $("chats").innerHTML = (data.chats || []).map(renderChat).join("");
-      }
-
-      function renderChat(chat) {
-        const tags = (chat.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
-        const scope = tags || '<span class="muted">all knowledge</span>';
-
-        return `
-          <div class="chat" onclick="run(() => openChat('${chat.id}'))">
-            <b>${esc(chat.title)}</b>
-            <div>${scope}</div>
-          </div>
-        `;
-      }
-
-      async function openChat(id) {
-        currentChat = id;
-        const chat = await api("/chats/" + id);
-        const tags = (chat.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
-
-        $("chatTitle").textContent = chat.title;
-        $("chatScope").innerHTML = "Scope: " + (tags || "all knowledge");
-        $("chatMessages").innerHTML = (chat.messages || []).map(renderMsg).join("");
-      }
-
-      function md(value) {
-        return esc(value)
-          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, title, url) => `<a href="${esc(url)}">${esc(title)}</a>`)
-          .replace(/\n/g, "<br>");
-      }
-
-      function renderMsg(message) {
-        const sources = message.sources?.length
-          ? `
-            <div class="sources">
-              <b>Retrieved knowledge items</b>
-              <ul>
-                ${message.sources.map(renderSource).join("")}
-              </ul>
-            </div>
-          `
-          : "";
-
-        return `
-          <div class="msg">
-            <div class="role">${esc(message.role)}</div>
-            <div>${md(message.content)}</div>
-            ${sources}
-          </div>
-        `;
-      }
-
-      function renderSource(source) {
-        return `
-          <li>
-            <a href="#" onclick="run(() => openItem('${source.id}')); return false">${esc(source.title)}</a>
-            <span class="muted">${source.score.toFixed(3)}</span><br />
-            ${esc(source.summary)}
-          </li>
-        `;
-      }
-
-      async function deleteChat() {
-        if (!currentChat) throw new Error("Select a chat first");
-        if (!confirm("Delete this chat and all of its messages?")) return;
-
-        await api("/chats/" + currentChat, { method: "DELETE" });
-        currentChat = "";
-        $("chatTitle").textContent = "Select or create a chat";
-        $("chatScope").textContent = "";
-        $("chatMessages").innerHTML = "";
-        $("chatInput").value = "";
-        await loadChats();
-      }
-
-      async function sendChat() {
-        if (!currentChat) throw new Error("Create or select a chat first");
-
-        const text = $("chatInput").value.trim();
-        if (!text) return;
-
-        $("chatInput").value = "";
-        message("Thinking...");
-        await api("/chats/" + currentChat + "/messages", {
-          method: "POST",
-          body: JSON.stringify({ message: text }),
-        });
-        message("");
-        await openChat(currentChat);
-      }
-
-      $("chatInput").addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          run(sendChat);
-        }
-      });
-
-      async function logout() {
-        await api("/auth/logout", { method: "POST" });
-        location.href = "/login.html";
-      }
-
-      async function startIngestUrl() {
-        const url = $("ingestUrl").value.trim();
-        if (!url) {
-          message("Enter a URL first.");
-          return;
-        }
-        const tags = parseTags($("ingestTags").value);
-        const job = await api("/ingest/url", { method: "POST", body: JSON.stringify({ url, tags }) });
-        message(`Started: ${job.kind} (job ${job.id})`);
-      }
-
-      async function startIngestFile() {
-        const file = $("ingestFile").files[0];
-        if (!file) return;
-
-        const content = await file.text();
-        const tags = parseTags($("ingestTags").value);
-        const job = await api("/ingest/text", {
-          method: "POST",
-          body: JSON.stringify({ filename: file.name, content, tags }),
-        });
-        $("ingestFile").value = "";
-        message(`Started: ${job.kind} (job ${job.id})`);
-      }
-
-      async function loadDrafts() {
-        const data = await api("/ingest/drafts");
-        const drafts = data.drafts || [];
-        $("drafts").innerHTML = drafts.length
-          ? drafts.map(renderDraft).join("")
-          : '<p class="muted">No drafts pending review.</p>';
-      }
-
-      function renderDraft(d) {
-        const tags = (d.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
-
-        return `
-          <div class="item" onclick="run(() => openDraft('${esc(d.id)}'))">
-            <b>${esc(d.title)}</b>
-            <div>${esc(d.summary)}</div>
-            <div>${tags}</div>
-            <div class="muted">${esc(d.source_kind)}: ${esc(d.source_ref)} · chunk ${d.chunk_index + 1} · Updated ${new Date(d.updated_at).toLocaleString()}</div>
-          </div>
-        `;
-      }
-
-      async function openDraft(id) {
-        showTab("ingest");
-        const d = await api("/ingest/drafts/" + id);
-        $("draftId").value = d.id;
-        $("draftSource").textContent = `${d.source_kind}: ${d.source_ref} (chunk ${d.chunk_index + 1})`;
-        $("draftTitle").value = d.title;
-        $("draftTags").value = (d.tags || []).join(", ");
-        $("draftSummary").value = d.summary;
-        $("draftBody").value = d.body;
-      }
-
-      function clearDraftForm() {
-        $("draftId").value = "";
-        $("draftSource").textContent = "";
-        $("draftTitle").value = "";
-        $("draftTags").value = "";
-        $("draftSummary").value = "";
-        $("draftBody").value = "";
-      }
-
-      async function saveDraft() {
-        const id = $("draftId").value;
-        if (!id) return;
-        const body = {
-          title: $("draftTitle").value,
-          summary: $("draftSummary").value,
-          body: $("draftBody").value,
-          tags: parseTags($("draftTags").value),
-        };
-        const d = await api("/ingest/drafts/" + id, { method: "PUT", body: JSON.stringify(body) });
-        $("draftTitle").value = d.title;
-        $("draftTags").value = (d.tags || []).join(", ");
-        $("draftSummary").value = d.summary;
-        $("draftBody").value = d.body;
-        message("Saved.");
-      }
-
-      // Approving can take several seconds (one embedding call). This flag
-      // makes a second, overlapping approveDraft call a no-op instead of
-      // racing the in-flight request into the double-approve guard's 404.
-      let approveInFlight = false;
-
-      async function approveDraft() {
-        const id = $("draftId").value;
-        if (!id || approveInFlight) return;
-        if (!confirm("Approve this draft? It will become a real, searchable knowledge item.")) return;
-        message("Approving…");
-        approveInFlight = true;
-        try {
-          const result = await api("/ingest/drafts/" + id + "/approve", { method: "POST" });
-          clearDraftForm();
-          message(`Approved — created knowledge item ${result.id}.`);
-          await loadDrafts();
-        } finally {
-          approveInFlight = false;
-        }
-      }
-
-      async function discardDraft() {
-        const id = $("draftId").value;
-        if (!id) return;
-        if (!confirm("Discard this draft permanently? This cannot be undone.")) return;
-        await api("/ingest/drafts/" + id, { method: "DELETE" });
-        clearDraftForm();
-        message("Discarded.");
-        await loadDrafts();
-      }
-
-      async function loadJobs() {
-        const data = await api("/jobs");
-        const list = data.jobs || [];
-        $("jobs").innerHTML = list.length ? list.map(renderJob).join("") : '<p class="muted">No jobs yet.</p>';
-      }
-
-      function renderJob(j) {
-        const source = j.source_ref ? `${esc(j.source_kind)}: ${esc(j.source_ref)}` : "";
-        const error = j.error ? `<div class="error">${esc(j.error)}</div>` : "";
-        const actions =
-          j.status === "failed"
-            ? `<div class="actions">
-                 <button onclick="run(() => retryJob('${esc(j.id)}'))">Retry</button>
-                 <button class="danger" onclick="run(() => deleteJob('${esc(j.id)}'))">Delete</button>
-               </div>`
-            : j.status !== "running"
-              ? `<div class="actions">
-                   <button class="danger" onclick="run(() => deleteJob('${esc(j.id)}'))">Delete</button>
-                 </div>`
-              : "";
-
-        return `
-          <div class="item">
-            <b>${esc(j.kind)}: ${esc(j.status)}</b>
-            <div class="muted">${source}</div>
-            ${error}
-            <div class="muted">Updated ${new Date(j.updated_at).toLocaleString()}</div>
-            ${actions}
-          </div>
-        `;
-      }
-
-      async function retryJob(id) {
-        const job = await api("/jobs/" + id + "/retry", { method: "POST" });
-        message(`Retrying as new ${job.kind} job (${job.id}).`);
-        await loadJobs();
-      }
-
-      async function deleteJob(id) {
-        if (!confirm("Delete this job's history permanently? This cannot be undone.")) return;
-        await api("/jobs/" + id, { method: "DELETE" });
-        message("Job deleted.");
-        await loadJobs();
-      }
-
-      // Polls for a currently-running server-side job (e.g. ingestion) and
-      // shows it in the footer, regardless of active tab. Failures are
-      // swallowed silently — this is a nice-to-have indicator, never
-      // something that should interrupt the user.
-      async function pollStatus() {
-        try {
-          const job = await api("/jobs/current");
-          $("jobStatus").textContent = job ? `${job.kind}: ${job.step || "running"}` : "";
-
-          // Detect an "ingest" job's running -> finished transition and
-          // refresh the draft list + job history so newly created drafts
-          // and the just-finished/failed job appear without a manual
-          // reload, but only while the Ingest tab is open.
-          const isIngestRunning = job?.kind === "ingest";
-          if (ingestJobRunning && !isIngestRunning && $("ingestTab").classList.contains("active")) {
-            // Called outside run(), so a rejection here can't be caught by
-            // this function's own try/catch below — ignore it the same way
-            // as the /jobs/current call itself: this is a nice-to-have
-            // refresh, and the next poll will retry.
-            loadDrafts().catch(() => {});
-            loadJobs().catch(() => {});
-          }
-          ingestJobRunning = isIngestRunning;
-        } catch {
-          // ignore — next poll will retry
-        }
-      }
-
-      run(async () => {
-        const me = await api("/auth/me");
-        $("userEmail").textContent = me.email;
-      });
-      run(loadList);
-      pollStatus();
-      setInterval(pollStatus, 3000);
-
-      const knowledgeID = new URLSearchParams(location.search).get("knowledge");
-      if (knowledgeID) run(() => openItem(knowledgeID));
-    </script>
+    <script src="/app.js"></script>
   </body>
 </html>

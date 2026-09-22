@@ -23,3 +23,7 @@ phraseforge/.docker/corp-ca/_corp-ca.pem
 
 # Agent scratch space (/code) — never a project deliverable
 .agent/
+
+# Node dev-time-only test tooling for kb-* Web Components (jsdom); never
+# used to build or ship the actual assets.
+node_modules/
