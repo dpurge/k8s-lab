@@ -7,6 +7,7 @@ let ingestJobRunning = false;
 
 const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab"];
 const mainNav = $("mainNav");
+const ingestSubNav = $("ingestSubNav");
 const confirmDialog = $("confirmDialog");
 mainNav.items = [
   { id: "knowledge", label: "Knowledge" },
@@ -16,12 +17,25 @@ mainNav.items = [
 mainNav.active = "knowledge"; // matches the markup's default "tab active" on knowledgeTab
 mainNav.addEventListener("kb-nav-select", (event) => showTab(event.detail.id));
 
+ingestSubNav.items = [
+  { id: "drafts", label: "Drafts" },
+  { id: "jobs", label: "Jobs" },
+];
+ingestSubNav.active = "drafts"; // matches the markup's default "subview active" on ingestDraftsSection
+// Bound directly to ingestSubNav (not document), so this can't be reached by
+// or collide with mainNav's own element-bound kb-nav-select listener above,
+// even though both listen for the same event name.
+ingestSubNav.addEventListener("kb-nav-select", (event) => showIngestSection(event.detail.id));
+
 // One delegated kb-card-select listener per list container, added
 // once here, instead of an inline onclick handler re-created on every
 // card each time #list/#drafts/#chats gets re-rendered.
 $("list").addEventListener("kb-card-select", (event) => run(() => openItem(event.detail.id)));
 $("drafts").addEventListener("kb-card-select", (event) => run(() => openDraft(event.detail.id)));
 $("chats").addEventListener("kb-card-select", (event) => run(() => openChat(event.detail.id)));
+$("chatMessages").addEventListener("kb-source-select", (event) => run(() => openItem(event.detail.id)));
+$("jobs").addEventListener("kb-job-retry", (event) => run(() => retryJob(event.detail.id)));
+$("jobs").addEventListener("kb-job-delete", (event) => run(() => deleteJob(event.detail.id)));
 
 function showKnowledgeView(view) {
   $("knowledgeListView").classList.toggle("active", view === "list");
@@ -33,6 +47,12 @@ function showIngestView(view) {
   $("ingestDetailView").classList.toggle("active", view === "detail");
 }
 
+function showIngestSection(id) {
+  $("ingestDraftsSection").classList.toggle("active", id === "drafts");
+  $("ingestJobsSection").classList.toggle("active", id === "jobs");
+  ingestSubNav.active = id;
+}
+
 function showTab(tab) {
   for (const id of TAB_IDS) $(id).classList.toggle("active", id === tab + "Tab");
   mainNav.active = tab;
@@ -41,6 +61,7 @@ function showTab(tab) {
   // to the detail view immediately after, overriding this.
   if (tab === "knowledge") showKnowledgeView("list");
   if (tab === "ingest") showIngestView("list");
+  if (tab === "ingest") showIngestSection("drafts");
   if (tab === "chat") run(loadChats);
   if (tab === "ingest") run(async () => { await loadDrafts(); await loadJobs(); });
 }
@@ -150,7 +171,7 @@ function renderItem(item) {
   const summary = item.summary ? esc(item.summary) : '<span class="muted">(generating summary…)</span>';
 
   return `
-    <kb-card data-id="${item.id}">
+    <kb-card data-id="${esc(item.id)}">
       <b>${title}</b>
       <div>${summary}</div>
       <div>${tags}</div>
@@ -288,7 +309,7 @@ function renderChat(chat) {
   const scope = tags || '<span class="muted">all knowledge</span>';
 
   return `
-    <kb-card data-id="${chat.id}">
+    <kb-card data-id="${esc(chat.id)}">
       <b>${esc(chat.title)}</b>
       <div>${scope}</div>
     </kb-card>
@@ -302,49 +323,33 @@ async function openChat(id) {
 
   $("chatTitle").textContent = chat.title;
   $("chatScope").innerHTML = "Scope: " + (tags || "all knowledge");
-  $("chatMessages").innerHTML = (chat.messages || []).map(renderMsg).join("");
+  $("chatMessages").textContent = "";
+  for (const chatMessage of chat.messages || []) {
+    $("chatMessages").appendChild(buildMessageElement(chatMessage));
+  }
 }
 
 // markdownit() defaults to html:false (raw HTML is escaped, not passed
 // through) and rejects dangerous link protocols (e.g. javascript:) via
 // its built-in link validator; DOMPurify.sanitize() is a second,
-// independent safety layer on the resulting HTML before it ever
-// reaches innerHTML.
+// independent safety layer on the resulting fragment before it ever
+// reaches the DOM — RETURN_DOM_FRAGMENT means callers get an already-
+// sanitized DocumentFragment, never an HTML string, so it's structurally
+// impossible to innerHTML this content.
 const markdownRenderer = markdownit({ linkify: true, breaks: true });
 
 function md(value) {
-  return DOMPurify.sanitize(markdownRenderer.render(value || ""));
+  return DOMPurify.sanitize(markdownRenderer.render(value || ""), { RETURN_DOM_FRAGMENT: true });
 }
 
-function renderMsg(message) {
-  const sources = message.sources?.length
-    ? `
-      <div class="sources">
-        <b>Retrieved knowledge items</b>
-        <ul>
-          ${message.sources.map(renderSource).join("")}
-        </ul>
-      </div>
-    `
-    : "";
-
-  return `
-    <div class="msg">
-      <div class="role">${esc(message.role)}</div>
-      <div>${md(message.content)}</div>
-      ${sources}
-    </div>
-  `;
-}
-
-function renderSource(source) {
-  return `
-    <li>
-      <a href="#" onclick="run(() => openItem('${source.id}')); return false">${esc(source.title)}</a>
-      <span class="muted">${source.score.toFixed(3)}</span><br />
-      ${esc(source.summary)}
-    </li>
-  `;
+function buildMessageElement(chatMessage) {
+  const el = document.createElement("kb-message");
+  el.message = {
+    role: chatMessage.role,
+    contentNode: md(chatMessage.content),
+    sources: chatMessage.sources,
+  };
+  return el;
 }
 
 async function deleteChat() {
@@ -372,8 +377,15 @@ async function sendChat() {
   // openChat's server-truth re-render below replaces this exact markup
   // with the persisted version, so this is purely a perceived-latency
   // improvement, not a second source of truth.
-  $("chatMessages").insertAdjacentHTML("beforeend", renderMsg({ role: "user", content: text }));
+  $("chatMessages").appendChild(buildMessageElement({ role: "user", content: text }));
   $("chatMessages").scrollTop = $("chatMessages").scrollHeight;
+
+  // Captured before the send/openChat re-render below, and scoped to
+  // assistant replies specifically — counting all kb-message elements (or
+  // capturing after openChat's re-render) risks the baseline already
+  // including the reply once it's persisted quickly, which would make the
+  // loop below wait for a count that never comes and burn the full timeout.
+  const assistantCountBefore = $("chatMessages").querySelectorAll('kb-message[data-role="assistant"]').length;
 
   message("Waiting for reply…");
   await api("/chats/" + currentChat + "/messages", {
@@ -389,12 +401,13 @@ async function sendChat() {
   // specs/memory.md), so this keeps checking well past a first glance —
   // and says so plainly rather than going silent — instead of quietly
   // giving up.
-  const before = $("chatMessages").querySelectorAll(".msg").length;
-  for (let i = 0; i < 60 && $("chatMessages").querySelectorAll(".msg").length < before + 1; i++) {
+  const hasNewAssistantReply = () =>
+    $("chatMessages").querySelectorAll('kb-message[data-role="assistant"]').length > assistantCountBefore;
+  for (let i = 0; i < 60 && !hasNewAssistantReply(); i++) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     await openChat(currentChat);
   }
-  message($("chatMessages").querySelectorAll(".msg").length < before + 1 ? "Still waiting on a reply — it will appear here once ready." : "");
+  message(hasNewAssistantReply() ? "" : "Still waiting on a reply — it will appear here once ready.");
 }
 
 $("chatInput").addEventListener("keydown", (event) => {
@@ -434,12 +447,29 @@ async function startIngestFile() {
   message(`Started: ${job.kind} (job ${job.id})`);
 }
 
+// Tracks the live Drafts/Jobs counts shown in ingestSubNav's pill labels.
+// Kept as its own object (rather than recomputed from the DOM) so
+// loadDrafts()/loadJobs() can each update their own count independently —
+// including a background refresh of the currently-hidden pill (see
+// pollStatus below) — without clobbering the other pill's last-known count.
+// null means "not loaded yet", shown as a bare label with no count.
+const ingestPillCounts = { drafts: null, jobs: null };
+
+function updateIngestPillCount(id, count) {
+  ingestPillCounts[id] = count;
+  ingestSubNav.items = [
+    { id: "drafts", label: ingestPillCounts.drafts === null ? "Drafts" : `Drafts (${ingestPillCounts.drafts})` },
+    { id: "jobs", label: ingestPillCounts.jobs === null ? "Jobs" : `Jobs (${ingestPillCounts.jobs})` },
+  ];
+}
+
 async function loadDrafts() {
   const data = await api("/ingest/drafts");
   const drafts = data.drafts || [];
   $("drafts").innerHTML = drafts.length
     ? drafts.map(renderDraft).join("")
     : '<p class="muted">No drafts pending review.</p>';
+  updateIngestPillCount("drafts", drafts.length);
 }
 
 function renderDraft(d) {
@@ -529,46 +559,28 @@ async function discardDraft() {
 async function loadJobs() {
   const data = await api("/jobs");
   const list = data.jobs || [];
-  $("jobs").innerHTML = list.length ? list.map(renderJob).join("") : '<p class="muted">No jobs yet.</p>';
+  $("jobs").innerHTML = "";
+  if (!list.length) {
+    $("jobs").innerHTML = '<p class="muted">No jobs yet.</p>';
+    updateIngestPillCount("jobs", 0);
+    return;
+  }
+  for (const job of list) {
+    const card = document.createElement("kb-job-card");
+    card.job = job;
+    $("jobs").appendChild(card);
+  }
+  updateIngestPillCount("jobs", list.length);
 }
 
-// jobStatusLabel distinguishes a job that's running but hasn't been
-// claimed by the queue's worker yet (no step set) — genuinely "pending",
-// not yet doing anything — from one actively being worked on, since
-// jobs.Status itself only has running/done/failed (see
-// specs/features/knowledge-background-queue.md).
-function jobStatusLabel(j) {
-  if (j.status === "running") return j.step ? "active" : "pending";
-  return j.status;
-}
-
-function renderJob(j) {
-  const source = j.source_ref ? `${esc(j.source_kind)}: ${esc(j.source_ref)}` : "";
-  const error = j.error ? `<div class="error">${esc(j.error)}</div>` : "";
-  const label = jobStatusLabel(j);
-  const step = j.step ? `<div class="muted">${esc(j.step)}</div>` : "";
-  const actions =
-    j.status === "failed"
-      ? `<div class="actions">
-           <kb-button onclick="run(() => retryJob('${esc(j.id)}'))">Retry</kb-button>
-           <kb-button variant="danger" onclick="run(() => deleteJob('${esc(j.id)}'))">Delete</kb-button>
-         </div>`
-      : j.status !== "running"
-        ? `<div class="actions">
-             <kb-button variant="danger" onclick="run(() => deleteJob('${esc(j.id)}'))">Delete</kb-button>
-           </div>`
-        : "";
-
-  return `
-    <div class="item">
-      <b>${esc(j.kind)} <span class="job-status job-status-${label}">${label}</span></b>
-      <div class="muted">${source}</div>
-      ${step}
-      ${error}
-      <div class="muted">Updated ${new Date(j.updated_at).toLocaleString()}</div>
-      ${actions}
-    </div>
-  `;
+// Refreshes both Ingest sub-workspaces at once — mirrors showTab("ingest")'s
+// own reset-and-reload behavior above, and (per the spec's "(or both)"
+// allowance) is a smaller, simpler diff than tracking which pill is active
+// just for the Refresh button; it also keeps a currently-hidden pill's
+// count current, not just the visible list.
+async function refreshIngestLists() {
+  await loadDrafts();
+  await loadJobs();
 }
 
 async function retryJob(id) {

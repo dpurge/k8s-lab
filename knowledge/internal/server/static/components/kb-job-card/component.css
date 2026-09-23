@@ -1,0 +1,46 @@
+/* Migrated from app.css's .item and .job-status* blocks (see
+   specs/features/knowledge-workspace-redesign.md Step 2) and rescoped from
+   those classes to the kb-job-card element and its own internal structure.
+   Unlike kb-card, this deliberately has no cursor:pointer/hover affordance
+   — a job row has no detail view, only its own Retry/Delete buttons. */
+
+kb-job-card {
+  display: block;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  padding: 0.7rem;
+  margin: 0.5rem 0;
+}
+
+#jobs kb-job-card {
+  margin: 0;
+}
+
+kb-job-card .kb-job-card-status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.05rem 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+kb-job-card .kb-job-card-status-pending {
+  background: var(--tag-bg);
+  color: var(--muted);
+}
+
+kb-job-card .kb-job-card-status-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+kb-job-card .kb-job-card-status-done {
+  background: var(--success);
+  color: #fff;
+}
+
+kb-job-card .kb-job-card-status-failed {
+  background: var(--danger);
+  color: #fff;
+}

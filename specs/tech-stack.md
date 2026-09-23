@@ -1,7 +1,7 @@
 ---
-version: 4
+version: 5
 status: approved
-updated: 2026-09-22
+updated: 2026-09-23
 ---
 
 ## Languages & runtimes
@@ -52,6 +52,18 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
   - Path-triggered runs: only build when that app's directory changes
   - Test step present in the knowledge app only; dictionary and phraseforge do not run tests in CI
   - Draft releases with manual publish required
+
+### Artifacts
+
+| Artifact | Root | Changelog | Versioning | Roadmap |
+| --- | --- | --- | --- | --- |
+| `dictionary` | `dictionary` | `dictionary/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/dictionary/roadmap.md` |
+| `phraseforge` | `phraseforge` | `phraseforge/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/phraseforge/roadmap.md` |
+| `knowledge` | `knowledge` | `knowledge/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/knowledge/roadmap.md` |
+| `environment` | `.` | `CHANGELOG.md` | none | |
+
+Built from: `shared/llm` and `shared/postgres` are consumed by phraseforge and
+knowledge; a change under `shared/` needs entries in both.
 
 ## Key conventions
 

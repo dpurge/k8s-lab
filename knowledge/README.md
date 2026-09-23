@@ -36,7 +36,7 @@ knowledge/
 ├── internal/server/static/signup.html # sign-up page
 ├── internal/server/static/theme.js    # shared dark/light theme toggle + localStorage persistence
 ├── internal/server/static/vendor/     # vendored (no CDN) markdown-it + DOMPurify for chat rendering
-├── internal/server/static/components/ # kb-* Web Components (kb-button, kb-nav); component.test.js per one, Node+jsdom
+├── internal/server/static/components/ # kb-* Web Components (kb-button, kb-nav, kb-card, kb-field, kb-dialog, kb-status-bar, kb-message, kb-job-card); component.test.js per one, Node+jsdom
 └── k8s/
     ├── configmap.yaml                 # mounted config (models, prompts, thresholds)
     ├── deployment.yaml                # Deployment, Service, Ingress

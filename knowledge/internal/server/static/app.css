@@ -88,25 +88,16 @@ main {
   overflow: auto;
 }
 
-/* #list/#drafts move from a cramped single-column sidebar stack into
+/* #list/#drafts/#jobs move from a cramped single-column sidebar stack into
    the roomier main workspace, laid out as a responsive card grid.
-   kb-card (see its own component.css) provides the card styling that
-   .item/.chat used to for those two. */
+   kb-card/kb-job-card (see their own component.css) provide the card
+   styling that .item/.chat used to for these. */
 #list,
-#drafts {
+#drafts,
+#jobs {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
   gap: 1rem;
-}
-
-/* Jobs rows (renderJob) keep this plain, non-interactive box style —
-   unlike kb-card, they have their own nested Retry/Delete buttons and
-   no whole-row click behavior, so they're deliberately not kb-card. */
-.item {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.7rem;
-  margin: 0.5rem 0;
 }
 
 .view {
@@ -114,6 +105,18 @@ main {
 }
 
 .view.active {
+  display: block;
+}
+
+#ingestSubNav {
+  margin-bottom: 0.75rem;
+}
+
+.subview {
+  display: none;
+}
+
+.subview.active {
   display: block;
 }
 
@@ -132,31 +135,6 @@ main {
 .muted {
   color: var(--muted);
   font-size: 0.85rem;
-}
-
-.job-status {
-  display: inline-block;
-  border-radius: 999px;
-  padding: 0.05rem 0.6rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-.job-status-pending {
-  background: var(--tag-bg);
-  color: var(--muted);
-}
-.job-status-active {
-  background: var(--accent);
-  color: #fff;
-}
-.job-status-done {
-  background: var(--success);
-  color: #fff;
-}
-.job-status-failed {
-  background: var(--danger);
-  color: #fff;
 }
 
 .tag {
@@ -192,62 +170,4 @@ main {
   border-radius: 8px;
   padding: 1rem;
   min-height: 45vh;
-}
-
-.msg {
-  margin: 0.7rem 0;
-}
-
-.msg pre {
-  background: var(--tag-bg);
-  border-radius: 6px;
-  padding: 0.6rem;
-  overflow-x: auto;
-}
-
-.msg code {
-  font-family: ui-monospace, monospace;
-  background: var(--tag-bg);
-  border-radius: 3px;
-  padding: 0.1rem 0.3rem;
-}
-
-.msg pre code {
-  background: none;
-  padding: 0;
-}
-
-.msg table {
-  border-collapse: collapse;
-  margin: 0.4rem 0;
-}
-
-.msg th,
-.msg td {
-  border: 1px solid var(--border);
-  padding: 0.3rem 0.6rem;
-}
-
-.msg blockquote {
-  margin: 0.4rem 0;
-  padding-left: 0.8rem;
-  border-left: 3px solid var(--border);
-  color: var(--muted);
-}
-
-.msg ul,
-.msg ol {
-  margin: 0.4rem 0;
-  padding-left: 1.5rem;
-}
-
-.role {
-  font-weight: 700;
-}
-
-.sources {
-  font-size: 0.9rem;
-  background: var(--sources-bg);
-  padding: 0.5rem;
-  border-radius: 6px;
 }

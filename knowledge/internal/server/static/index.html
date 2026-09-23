@@ -10,6 +10,8 @@
     <script src="/components/kb-dialog/component.js"></script>
     <script src="/components/kb-card/component.js"></script>
     <script src="/components/kb-field/component.js"></script>
+    <script src="/components/kb-message/component.js"></script>
+    <script src="/components/kb-job-card/component.js"></script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Knowledge</title>
@@ -139,15 +141,19 @@
           />
         </div>
         <div class="actions">
-          <kb-button onclick="run(loadDrafts)">Refresh</kb-button>
+          <kb-button onclick="run(refreshIngestLists)">Refresh</kb-button>
         </div>
       </aside>
 
       <main>
         <div id="ingestListView" class="view active">
-          <div id="drafts"></div>
-          <h2>Jobs</h2>
-          <div id="jobs"></div>
+          <kb-nav id="ingestSubNav"></kb-nav>
+          <div class="subview active" id="ingestDraftsSection">
+            <div id="drafts"></div>
+          </div>
+          <div class="subview" id="ingestJobsSection">
+            <div id="jobs"></div>
+          </div>
         </div>
 
         <div id="ingestDetailView" class="view">

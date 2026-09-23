@@ -30,7 +30,7 @@ vars:
   # ambiguity: it always wins, so this repo never touches ~/.kube/config.
   KUBECTL: 'kubectl --kubeconfig={{.KUBECONFIG_PATH}}'
   # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
-  CORP_CA_BUNDLE: /usr/local/munki/thd_certs.pem
+  CORP_CA_BUNDLE: /usr/local/munki/certs.pem
   ARGO_WORKFLOWS_VERSION: v4.1.3
   HEADLAMP_VERSION: v0.45.0
   HEADLAMP_IMAGE: 'ghcr.io/headlamp-k8s/headlamp:{{.HEADLAMP_VERSION}}'

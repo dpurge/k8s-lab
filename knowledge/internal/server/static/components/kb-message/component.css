@@ -1,0 +1,82 @@
+/* Migrated from app.css's .msg/.role/.sources block (see
+   specs/features/knowledge-workspace-redesign.md Step 1) and rescoped from
+   those classes to the kb-message element and its own internal structure. */
+
+kb-message {
+  display: block;
+  margin: 0.7rem 0;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+}
+
+/* Minimal visual distinction between the two data-role values (see
+   component.js) — a background tint plus an accent-colored left border,
+   reusing variables already used elsewhere in this file rather than
+   introducing new ones. */
+kb-message[data-role="assistant"] {
+  background: var(--sources-bg);
+  border-left: 3px solid var(--accent);
+}
+
+kb-message[data-role="user"] {
+  background: var(--tag-bg);
+  border-left: 3px solid var(--border);
+}
+
+kb-message .kb-message-role {
+  font-weight: 700;
+}
+
+kb-message .kb-message-content pre {
+  background: var(--tag-bg);
+  border-radius: 6px;
+  padding: 0.6rem;
+  overflow-x: auto;
+}
+
+kb-message .kb-message-content code {
+  font-family: ui-monospace, monospace;
+  background: var(--tag-bg);
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+}
+
+kb-message .kb-message-content pre code {
+  background: none;
+  padding: 0;
+}
+
+kb-message .kb-message-content table {
+  border-collapse: collapse;
+  margin: 0.4rem 0;
+}
+
+kb-message .kb-message-content th,
+kb-message .kb-message-content td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.6rem;
+}
+
+kb-message .kb-message-content blockquote {
+  margin: 0.4rem 0;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+kb-message .kb-message-content ul,
+kb-message .kb-message-content ol {
+  margin: 0.4rem 0;
+  padding-left: 1.5rem;
+}
+
+kb-message .kb-message-sources {
+  font-size: 0.9rem;
+  background: var(--sources-bg);
+  padding: 0.5rem;
+  border-radius: 6px;
+}
+
+kb-message .kb-message-source-score {
+  color: var(--muted);
+}
