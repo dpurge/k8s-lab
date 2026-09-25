@@ -46,3 +46,21 @@ func (s *Store) Set(ctx context.Context, resourceType string, resourceID int64, 
 		resourceType, resourceID, locale, body)
 	return err
 }
+
+// SetIfAbsent inserts resourceID's translation for locale only if one
+// doesn't already exist — used by a background generate job's completion
+// (background-generate-title-transcription-translation) so it never
+// clobbers a translation a user already saved. Unlike Set, ON CONFLICT DO
+// NOTHING makes this a single guarded statement rather than a check-then-
+// write, so a concurrent Set can never be silently overwritten. applied is
+// false (not an error) when a translation for this locale already existed.
+func (s *Store) SetIfAbsent(ctx context.Context, resourceType string, resourceID int64, locale, body string) (applied bool, err error) {
+	tag, err := s.db.Exec(ctx, `
+		INSERT INTO resource_translation (resource_type, resource_id, locale, body) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (resource_type, resource_id, locale) DO NOTHING`,
+		resourceType, resourceID, locale, body)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}

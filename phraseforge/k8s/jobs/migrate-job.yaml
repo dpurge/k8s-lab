@@ -21,6 +21,12 @@ spec:
           env:
             - name: CONFIG_FILE
               value: /etc/phraseforge/config.yaml
+            - name: PGHOST
+              value: postgres.data.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: phraseforge
             - name: PGUSER
               valueFrom:
                 secretKeyRef:

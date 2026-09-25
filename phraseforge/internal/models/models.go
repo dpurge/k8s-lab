@@ -3,10 +3,13 @@ package models
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"phraseforge/internal/pagination"
 )
 
 // ErrItemNotFound is returned by UpdateItem/DeleteItem when position doesn't
@@ -83,6 +86,57 @@ func (s *Store) ListAll(ctx context.Context, languages []string, all bool) ([]Li
 	return out, rows.Err()
 }
 
+// ListAllPage mirrors texts.Store.ListPage exactly, for models_lists — see
+// that method's doc comment.
+func (s *Store) ListAllPage(ctx context.Context, languages []string, all bool, tagIDs []int64, cursor *pagination.Cursor, limit int) (items []List, hasMore bool, err error) {
+	if !all && len(languages) == 0 {
+		return nil, false, nil
+	}
+	var cursorCreatedAt any
+	var cursorID any
+	if cursor != nil {
+		cursorCreatedAt, cursorID = cursor.CreatedAt, cursor.ID
+	}
+	var rows pgxRows
+	if all {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+listCols+` FROM models_lists
+			WHERE ($1::bigint[] IS NULL OR id = ANY($1))
+			  AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $4`, tagIDs, cursorCreatedAt, cursorID, limit+1)
+	} else {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+listCols+` FROM models_lists
+			WHERE language = ANY($1)
+			  AND ($2::bigint[] IS NULL OR id = ANY($2))
+			  AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $5`, languages, tagIDs, cursorCreatedAt, cursorID, limit+1)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var out []List
+	for rows.Next() {
+		var l List
+		if err := scanList(rows, &l); err != nil {
+			return nil, false, err
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		hasMore = true
+	}
+	return out, hasMore, nil
+}
+
 // Get fetches one list by id, regardless of language — callers check
 // CanView(list.Language) themselves before showing it.
 func (s *Store) Get(ctx context.Context, id int64) (List, error) {
@@ -114,6 +168,30 @@ func (s *Store) CreateFromText(ctx context.Context, userID int64, title, languag
 // method's doc comment.
 func (s *Store) GetBySourceTextID(ctx context.Context, textID int64) (id int64, found bool, err error) {
 	err = s.db.QueryRow(ctx, `SELECT id FROM models_lists WHERE source_text_id = $1`, textID).Scan(&id)
+	switch {
+	case err == nil:
+		return id, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, false, nil
+	default:
+		return 0, false, err
+	}
+}
+
+// CreateFromDialog mirrors CreateFromText — see that method's doc comment
+// (dialog-vocabulary-models-generation extends generation to Dialogs).
+func (s *Store) CreateFromDialog(ctx context.Context, userID int64, title, language, script string, sourceDialogID int64) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO models_lists (user_id, title, language, script, source_dialog_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		userID, title, language, script, sourceDialogID).Scan(&id)
+	return id, err
+}
+
+// GetBySourceDialogID mirrors GetBySourceTextID — see that method's doc
+// comment.
+func (s *Store) GetBySourceDialogID(ctx context.Context, dialogID int64) (id int64, found bool, err error) {
+	err = s.db.QueryRow(ctx, `SELECT id FROM models_lists WHERE source_dialog_id = $1`, dialogID).Scan(&id)
 	switch {
 	case err == nil:
 		return id, true, nil
@@ -216,27 +294,46 @@ func (s *Store) UpdateItem(ctx context.Context, listID int64, position int, phra
 // the item at that position may have moved or been replaced by the time the
 // job runs. If phrase no longer matches (or position no longer exists), this
 // is ErrItemNotFound, not a silent no-op.
-func (s *Store) SetItemTranscription(ctx context.Context, listID int64, position int, phrase, transcription string) error {
-	tag, err := s.db.Exec(ctx,
-		`UPDATE models_items SET transcription = $1 WHERE list_id = $2 AND position = $3 AND phrase = $4`,
-		nullIfEmpty(transcription), listID, position, phrase)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrItemNotFound
-	}
-	return nil
-}
-
-// SetItemTranslationGuarded upserts one item's translation at (listID,
-// position), but only if the item still has the given phrase — mirrors
-// vocabulary.Store.SetItemTranslationGuarded's doc comment (B3 fix). Returns
-// ErrItemNotFound if phrase no longer matches (or position is gone).
-func (s *Store) SetItemTranslationGuarded(ctx context.Context, listID int64, position int, phrase, locale, translation string) error {
+// SetItemTranscriptionIfBlank mirrors
+// vocabulary.Store.SetItemTranscriptionIfBlank — see that method's doc
+// comment.
+func (s *Store) SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (applied bool, err error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
+
+	var storedPhrase, storedTranscription string
+	err = tx.QueryRow(ctx, `SELECT phrase, coalesce(transcription, '') FROM models_items WHERE list_id = $1 AND position = $2 FOR UPDATE`, listID, position).Scan(&storedPhrase, &storedTranscription)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrItemNotFound
+		}
+		return false, err
+	}
+	if storedPhrase != phrase {
+		return false, ErrItemNotFound
+	}
+	if strings.TrimSpace(storedTranscription) != "" {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE models_items SET transcription = $1 WHERE list_id = $2 AND position = $3`, nullIfEmpty(transcription), listID, position); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SetItemTranslationIfAbsent mirrors
+// vocabulary.Store.SetItemTranslationIfAbsent — see that method's doc
+// comment (models_items has no notes field, unlike vocabulary_items).
+func (s *Store) SetItemTranslationIfAbsent(ctx context.Context, listID int64, position int, phrase, locale, translation string) (applied bool, err error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 
@@ -244,19 +341,31 @@ func (s *Store) SetItemTranslationGuarded(ctx context.Context, listID int64, pos
 	err = tx.QueryRow(ctx, `SELECT phrase FROM models_items WHERE list_id = $1 AND position = $2 FOR UPDATE`, listID, position).Scan(&storedPhrase)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrItemNotFound
+			return false, ErrItemNotFound
 		}
-		return err
+		return false, err
 	}
 	if storedPhrase != phrase {
-		return ErrItemNotFound
+		return false, ErrItemNotFound
+	}
+
+	var existingTranslation string
+	err = tx.QueryRow(ctx, `SELECT coalesce(translation, '') FROM models_item_translation WHERE list_id = $1 AND position = $2 AND locale = $3 FOR UPDATE`, listID, position, locale).Scan(&existingTranslation)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	if strings.TrimSpace(existingTranslation) != "" {
+		return false, nil
 	}
 
 	if translation == "" {
 		if _, err := tx.Exec(ctx, `DELETE FROM models_item_translation WHERE list_id = $1 AND position = $2 AND locale = $3`, listID, position, locale); err != nil {
-			return err
+			return false, err
 		}
-		return tx.Commit(ctx)
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO models_item_translation (list_id, position, locale, translation)
@@ -264,9 +373,12 @@ func (s *Store) SetItemTranslationGuarded(ctx context.Context, listID int64, pos
 		ON CONFLICT (list_id, position, locale) DO UPDATE SET
 			translation = EXCLUDED.translation, updated_at = now()`,
 		listID, position, locale, translation); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // DeleteItem removes the item at position and shifts every later item (and

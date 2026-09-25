@@ -4,12 +4,17 @@ metadata:
   name: phraseforge-config
   namespace: app
 data:
+  # Every purpose's provider/model/timeoutSeconds/prompt is declared
+  # explicitly here (matching config.go's defaultFileConfig() values
+  # verbatim) rather than left to the Go binary's own compiled-in
+  # defaults — that's the whole point of llm-purpose-timeout-and-prompt-
+  # config: an operator edits the prompt/timeout text actually running in
+  # the cluster (kubectl edit configmap/phraseforge-config, or edit this
+  # file and re-apply) without a rebuild. Per-(kind, source_language,
+  # target_language) overrides still live in the DB via Admin > LLM;
+  # this is the purpose-wide default every override falls back to.
   config.yaml: |
     bindAddr: 0.0.0.0:8090
-    postgres:
-      host: postgres.data.svc.cluster.local
-      port: "5432"
-      database: phraseforge
     providers:
       ollama:
         baseURL: http://host.docker.internal:11434
@@ -18,6 +23,40 @@ data:
     transcription:
       provider: ollama
       model: gemma4:12b
+      timeoutSeconds: 120
+      prompt: "Create a romanized transcription for the source language content. Return only the transcription, preserving line breaks and structure. Do not add explanations."
     translation:
       provider: ollama
       model: gemma4:12b
+      timeoutSeconds: 120
+      prompt: "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations."
+    title:
+      provider: ollama
+      model: gemma4:12b
+      numCtx: 8192
+      timeoutSeconds: 120
+      prompt: "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble."
+    processText:
+      provider: ollama
+      model: gemma4:12b
+      numCtx: 8192
+      timeoutSeconds: 300
+      prompt: "You reformat raw extracted text into clean Markdown prose suitable as a language-learning reading text. Remove navigation menus, ads, boilerplate, and unrelated content. Preserve the actual article/passage content and its paragraph structure. Do not translate or summarize. Respond with only the cleaned Markdown."
+    processDialog:
+      provider: ollama
+      model: gemma4:12b
+      numCtx: 8192
+      timeoutSeconds: 300
+      prompt: "You reformat raw extracted text into a clean dialog transcript in Markdown. Identify distinct speakers/turns and format each turn on its own line. Remove navigation, ads, and unrelated content. Respond with only the cleaned dialog content."
+    generateVocabulary:
+      provider: ollama
+      model: gemma4:12b
+      numCtx: 8192
+      timeoutSeconds: 600
+      prompt: "You extract vocabulary and grammar items from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase {grammar} [transcription] = translation — where {grammar} is a short grammar tag (e.g. part of speech), [transcription] is a romanized reading, and = translation is the item's translation; each of {grammar}, [transcription], and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves."
+    generateModels:
+      provider: ollama
+      model: gemma4:12b
+      numCtx: 8192
+      timeoutSeconds: 600
+      prompt: "You extract short grammar/sentence-pattern models from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase [transcription] = translation — where [transcription] is a romanized reading and = translation is the item's translation; each of [transcription] and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves."

@@ -116,6 +116,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- the migrate command (and serve) now read PGHost/PGPort/PGDatabase and
+  QdrantURL from environment variables (PGHOST/PGPORT/PGDATABASE/QDRANT_URL)
+  instead of the mounted config file, so a chart's pre-install/pre-upgrade
+  migrate hook no longer needs the app's ConfigMap to exist first.
 - retrying a URL-sourced ingest job now reuses the content
   already fetched on the failed attempt instead of re-fetching the URL,
   matching how text/file-upload retries already behaved.

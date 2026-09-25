@@ -14,6 +14,12 @@
   const root = document.getElementById("dialogs-app");
   const statusBar = document.getElementById("statusBar");
 
+  // Keyset pagination state — see texts-app.js's showList for the full
+  // rationale (phraseforge-spa-pagination).
+  let pageCursors = [null];
+  let pageIndex = 0;
+  let latestNextCursor = null;
+
   function esc(s) {
     return String(s == null ? "" : s).replace(
       /[&<>"']/g,
@@ -59,8 +65,35 @@
   // own copies exactly — see that file for the inline reasoning comments
   // this codebase's "deliberate duplication, not a shared abstraction"
   // convention (specs/tech-stack.md) keeps out of a shared module.
-  function buildExportURL(endpoint, languageFilter) {
-    return languageFilter ? `${endpoint}?language=${encodeURIComponent(languageFilter)}` : endpoint;
+  function buildExportURL(endpoint, language, script, tagsInput) {
+    const q = new URLSearchParams({ language, script });
+    const tags = (tagsInput || "").trim();
+    if (tags) q.set("tags", tags);
+    return `${endpoint}?${q.toString()}`;
+  }
+
+  // showExportDialog mirrors texts-app.js's own copy exactly — see that
+  // file for the inline reasoning comments.
+  async function showExportDialog(endpoint, languageFilter) {
+    const confirmDialog = document.getElementById("confirmDialog");
+    const container = document.createElement("div");
+    container.innerHTML = `
+      <pf-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
+        <select id="dlgExportLanguage">${languageOptions(languageFilter)}</select>
+      </pf-field>
+      <pf-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
+        <select id="dlgExportScript">${scriptOptions()}</select>
+      </pf-field>
+      <pf-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
+        <input type="text" id="dlgExportTags" placeholder="${esc(T("texts.field_tags_hint"))}">
+      </pf-field>
+    `;
+    const languageSelect = container.querySelector("#dlgExportLanguage");
+    const scriptSelect = container.querySelector("#dlgExportScript");
+    const tagsInput = container.querySelector("#dlgExportTags");
+    const ok = await confirmDialog.showContent(container, { okLabel: T("texts.export"), wide: true });
+    if (!ok) return;
+    window.location.href = buildExportURL(endpoint, languageSelect.value, scriptSelect.value, tagsInput.value);
   }
 
   function handleImportFile(input, endpoint, tagFilter) {
@@ -100,8 +133,17 @@
     }
   }
 
-  async function showList(tagFilter) {
+  async function showList(tagFilter, pageDirection) {
     statusBar.setMessage("");
+    if (pageDirection === "next") {
+      pageCursors[pageIndex + 1] = latestNextCursor;
+      pageIndex++;
+    } else if (pageDirection === "prev") {
+      pageIndex--;
+    } else {
+      pageCursors = [null];
+      pageIndex = 0;
+    }
     const languageFilter = window.pfGetLanguageFilter();
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -111,7 +153,7 @@
             ? `<div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                 <pf-button variant="primary" id="newDialogBtn">${esc(T("texts.new"))}</pf-button>
                 <pf-button variant="secondary" id="ingestDialogBtn">${esc(T("texts.ingest"))}</pf-button>
-                <a class="btn" id="exportDialogsLink" href="${esc(buildExportURL("/api/v1/dialogs/export", languageFilter))}">${esc(T("texts.export"))}</a>
+                <pf-button variant="secondary" id="exportDialogsBtn">${esc(T("texts.export"))}</pf-button>
                 <pf-button variant="secondary" id="importDialogsBtn">${esc(T("texts.import"))}</pf-button>
                 <input type="file" id="importDialogsFile" accept=".yaml,.yml" style="display:none;">
               </div>`
@@ -129,6 +171,10 @@
     if (newBtn) newBtn.addEventListener("click", () => showNew());
     const ingestBtn = document.getElementById("ingestDialogBtn");
     if (ingestBtn) ingestBtn.addEventListener("click", () => showIngest());
+    const exportBtn = document.getElementById("exportDialogsBtn");
+    if (exportBtn) {
+      exportBtn.addEventListener("click", () => showExportDialog("/api/v1/dialogs/export", languageFilter));
+    }
     const importBtn = document.getElementById("importDialogsBtn");
     const importFile = document.getElementById("importDialogsFile");
     if (importBtn && importFile) {
@@ -141,10 +187,13 @@
     const query = new URLSearchParams();
     if (languageFilter) query.set("language", languageFilter);
     if (tagFilter) query.set("tag", tagFilter);
+    const cursor = pageCursors[pageIndex];
+    if (cursor) query.set("cursor", cursor);
     let items;
     try {
       const data = await apiFetch("/api/v1/dialogs?" + query.toString());
       items = data.items;
+      latestNextCursor = data.nextCursor || null;
     } catch (e) {
       statusBar.setMessage(e.message, true);
       return;
@@ -174,6 +223,26 @@
         showList(a.dataset.tagFilter);
       });
     });
+
+    if (pageIndex > 0 || latestNextCursor) {
+      const pager = document.createElement("div");
+      pager.style.cssText = "display:flex; justify-content:center; gap:0.75rem; margin-top:1.5rem;";
+      if (pageIndex > 0) {
+        const prevBtn = document.createElement("pf-button");
+        prevBtn.setAttribute("variant", "secondary");
+        prevBtn.textContent = T("texts.pagination_previous");
+        prevBtn.addEventListener("click", () => showList(tagFilter, "prev"));
+        pager.appendChild(prevBtn);
+      }
+      if (latestNextCursor) {
+        const nextBtn = document.createElement("pf-button");
+        nextBtn.setAttribute("variant", "secondary");
+        nextBtn.textContent = T("texts.pagination_next");
+        nextBtn.addEventListener("click", () => showList(tagFilter, "next"));
+        pager.appendChild(nextBtn);
+      }
+      container.appendChild(pager);
+    }
   }
 
   function languageOptions(selected) {
@@ -191,7 +260,7 @@
     statusBar.setMessage("");
     const isEdit = !!existing;
     root.innerHTML = `
-      ${isEdit ? `<a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>` : ""}
+      <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <h1>${esc(T(isEdit ? "dialogs.edit_title" : "dialogs.new_title"))}</h1>
       <div class="form-card" style="max-width: none;">
         <form id="dialogForm">
@@ -223,25 +292,15 @@
           </div>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("texts.save"))}</pf-button>
-            <pf-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</pf-button>
-            <pf-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</pf-button>
-            <select id="translation-target" aria-label="Translation target language">
-              <option value="en">English</option>
-              <option value="pl">Polish</option>
-            </select>
           </div>
         </form>
       </div>
     `;
 
-    const backLink = document.getElementById("backLink");
-    if (backLink) backLink.addEventListener("click", (e) => { e.preventDefault(); showView(existing.id); });
-
-    document.getElementById("transcribeBtn").addEventListener("click", (e) => {
-      phraseforgeGenerate("transcription", "field-source", "field-transcription", "dialog", e.currentTarget.querySelector("button"));
-    });
-    document.getElementById("translateBtn").addEventListener("click", (e) => {
-      phraseforgeGenerate("translation", "field-source", "field-translation", "dialog", e.currentTarget.querySelector("button"));
+    document.getElementById("backLink").addEventListener("click", (e) => {
+      e.preventDefault();
+      if (isEdit) showView(existing.id);
+      else showList();
     });
 
     pfInitEditor();
@@ -396,6 +455,32 @@
     return `<article class="prose${extraClass || ""}">${renderedHtml || ""}</article>`;
   }
 
+  // generateFromDialog mirrors texts-app.js's generateFromText — see that
+  // function's doc comment (dialog-vocabulary-models-generation).
+  async function generateFromDialog(id, endpoint, startedKey) {
+    try {
+      await apiFetch(`/api/v1/dialogs/${id}/${endpoint}`, { method: "POST" });
+      statusBar.setMessage(T(startedKey));
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+    }
+  }
+
+  // generateFieldFromDialog mirrors texts-app.js's generateFieldFromText —
+  // see that function's doc comment (background-generate-title-
+  // transcription-translation).
+  async function generateFieldFromDialog(id, endpoint, startedKey, locale) {
+    try {
+      await apiFetch(`/api/v1/dialogs/${id}/${endpoint}`, {
+        method: "POST",
+        body: locale ? JSON.stringify({ locale }) : undefined,
+      });
+      statusBar.setMessage(T(startedKey));
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+    }
+  }
+
   async function showView(id) {
     statusBar.setMessage("");
     let dialog;
@@ -409,6 +494,10 @@
       .map((t) => `<a class="badge tag-link" href="#" data-tag-filter="${esc(t)}">${esc(t)}</a>`)
       .join("");
     const hasTabs = !!dialog.transcription || dialog.hasTranslation;
+    const linkedLists = [
+      dialog.vocabularyListId != null ? `<a href="#" class="linked-list-link" data-goto-vocab="${dialog.vocabularyListId}">${esc(T("texts.linked_vocabulary"))}</a>` : "",
+      dialog.modelsListId != null ? `<a href="#" class="linked-list-link" data-goto-models="${dialog.modelsListId}">${esc(T("texts.linked_models"))}</a>` : "",
+    ].filter(Boolean).join("");
     root.innerHTML = `
       <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -419,6 +508,10 @@
         </div>
         <div class="resource-actions">
           <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
+          ${dialog.canEdit && !dialog.title ? `<pf-button variant="secondary" type="button" id="generateTitleBtn">${esc(T("texts.generate_title"))}</pf-button>` : ""}
+          ${dialog.canEdit && dialog.needsTranscription && !dialog.transcription ? `<pf-button variant="secondary" type="button" id="generateTranscriptionBtn">${esc(T("texts.generate_transcription"))}</pf-button>` : ""}
+          ${dialog.canEdit && !dialog.hasTranslation ? `<pf-button variant="secondary" type="button" id="generateTranslationBtn">${esc(T("texts.generate_translation"))}</pf-button>` : ""}
+          ${dialog.canEdit ? `<pf-button variant="secondary" type="button" id="generateVocabBtn">${esc(T("texts.generate_vocabulary"))}</pf-button><pf-button variant="secondary" type="button" id="generateModelsBtn">${esc(T("texts.generate_models"))}</pf-button>` : ""}
           ${dialog.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
         </div>
       </div>
@@ -426,11 +519,18 @@
       ${dialog.transcription ? `<textarea id="copy-transcription-markdown" class="copy-source" readonly>${esc(dialog.transcriptionMarkdown)}</textarea>` : ""}
       ${dialog.hasTranslation ? `<textarea id="copy-translation-markdown" class="copy-source" readonly>${esc(dialog.translationMarkdown)}</textarea>` : ""}
       ${
-        hasTabs
-          ? `<div class="editor-tabs">
-              <button type="button" class="editor-tab-btn active" data-tab="source">${esc(T("texts.tab_source"))}</button>
-              ${dialog.transcription ? `<button type="button" class="editor-tab-btn" data-tab="transcription">${esc(T("texts.tab_transcription"))}</button>` : ""}
-              ${dialog.hasTranslation ? `<button type="button" class="editor-tab-btn" data-tab="translation">${esc(T("texts.tab_translation"))}</button>` : ""}
+        hasTabs || linkedLists
+          ? `<div class="editor-tabs-row">
+              ${
+                hasTabs
+                  ? `<div class="editor-tabs">
+                      <button type="button" class="editor-tab-btn active" data-tab="source">${esc(T("texts.tab_source"))}</button>
+                      ${dialog.transcription ? `<button type="button" class="editor-tab-btn" data-tab="transcription">${esc(T("texts.tab_transcription"))}</button>` : ""}
+                      ${dialog.hasTranslation ? `<button type="button" class="editor-tab-btn" data-tab="translation">${esc(T("texts.tab_translation"))}</button>` : ""}
+                    </div>`
+                  : ""
+              }
+              ${linkedLists ? `<div class="linked-lists">${linkedLists}</div>` : ""}
             </div>`
           : ""
       }
@@ -461,6 +561,26 @@
     });
     const editBtn = document.getElementById("editBtn");
     if (editBtn) editBtn.addEventListener("click", () => showForm(dialog));
+    const generateTitleBtn = document.getElementById("generateTitleBtn");
+    if (generateTitleBtn) {
+      generateTitleBtn.addEventListener("click", () => generateFieldFromDialog(id, "generate-title", "texts.generate_title_started"));
+    }
+    const generateTranscriptionBtn = document.getElementById("generateTranscriptionBtn");
+    if (generateTranscriptionBtn) {
+      generateTranscriptionBtn.addEventListener("click", () => generateFieldFromDialog(id, "generate-transcription", "texts.generate_transcription_started"));
+    }
+    const generateTranslationBtn = document.getElementById("generateTranslationBtn");
+    if (generateTranslationBtn) {
+      generateTranslationBtn.addEventListener("click", () => generateFieldFromDialog(id, "generate-translation", "texts.generate_translation_started", BOOT.locale));
+    }
+    const generateVocabBtn = document.getElementById("generateVocabBtn");
+    if (generateVocabBtn) {
+      generateVocabBtn.addEventListener("click", () => generateFromDialog(id, "generate-vocabulary", "texts.generate_vocabulary_started"));
+    }
+    const generateModelsBtn = document.getElementById("generateModelsBtn");
+    if (generateModelsBtn) {
+      generateModelsBtn.addEventListener("click", () => generateFromDialog(id, "generate-models", "texts.generate_models_started"));
+    }
     const deleteBtn = document.getElementById("deleteBtn");
     if (deleteBtn) {
       deleteBtn.addEventListener("click", async () => {
@@ -480,6 +600,18 @@
       a.addEventListener("click", (e) => {
         e.preventDefault();
         showList(a.dataset.tagFilter);
+      });
+    });
+    document.querySelectorAll("[data-goto-vocab]").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.pfShowSection("vocabulary", { viewId: Number(a.dataset.gotoVocab) });
+      });
+    });
+    document.querySelectorAll("[data-goto-models]").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.pfShowSection("models", { viewId: Number(a.dataset.gotoModels) });
       });
     });
   }

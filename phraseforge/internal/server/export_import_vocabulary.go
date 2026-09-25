@@ -149,17 +149,30 @@ func vocabItemsUnchanged(existing, incoming []vocabItemFields) bool {
 // comment), applied to vocabulary lists plus their ordered items and
 // per-item, per-site-locale translations.
 func (s *Server) apiExportVocabulary(w http.ResponseWriter, r *http.Request) {
+	filter, ok := requireExportFilter(w, r)
+	if !ok {
+		return
+	}
 	u := currentUser(r)
 	editLangs, editAll, err := s.roles.EditableLanguages(r.Context(), u.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	langs, all := exportScopeLanguages(editLangs, editAll, r.URL.Query().Get("language"))
+	langs, all := exportScopeLanguages(editLangs, editAll, filter.Language)
 	list, err := s.vocab.ListAll(r.Context(), langs, all)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	list = filterByScript(list, filter.Script, func(l vocabulary.List) string { return l.Script })
+	if len(filter.Tags) > 0 {
+		matching, err := s.tags.ResourceIDsWithAllTags(r.Context(), resourceTypeVocab, filter.Tags)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		list = filterByID(list, matching, func(l vocabulary.List) int64 { return l.ID })
 	}
 	ids := make([]int64, len(list))
 	for i, l := range list {

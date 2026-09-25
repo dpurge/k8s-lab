@@ -16,10 +16,13 @@ import (
 // adminAppI18nKeys), which reuse texts.edit/texts.delete instead of
 // declaring admin-specific equivalents.
 var jobsAppI18nKeys = []string{
-	"jobs.title", "jobs.refresh",
+	"jobs.title", "jobs.refresh", "jobs.clear", "jobs.clear_confirm", "jobs.clear_done",
 	"jobs.col_kind", "jobs.col_priority", "jobs.col_status", "jobs.col_created", "jobs.col_error",
 	"jobs.view", "jobs.retry", "texts.delete",
-	"jobs.view_close", "jobs.delete_confirm", "jobs.empty",
+	"jobs.view_close", "jobs.view_id", "jobs.view_updated", "jobs.view_step",
+	"jobs.view_payload", "jobs.view_result",
+	"jobs.cancel", "jobs.cancel_confirm",
+	"jobs.retry_confirm", "jobs.delete_confirm", "jobs.empty",
 }
 
 func jobsAppI18n(loc string) map[string]string {
@@ -100,6 +103,31 @@ func (s *Server) apiRetryAdminJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiDeleteAdminJob(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := s.jobs.Delete(r.Context(), id); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// apiClearAdminJobs bulk-deletes every done job — see
+// jobs.Service.DeleteAllDone's own doc comment on why only 'done' (not
+// pending/running/failed/cancelled) is safe to clear without per-row review.
+func (s *Server) apiClearAdminJobs(w http.ResponseWriter, r *http.Request) {
+	count, err := s.jobs.DeleteAllDone(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": count})
+}
+
+// apiCancelAdminJob is jobs.Service.Cancel's exact logic — same
+// error-is-a-client-mistake reasoning as apiRetryAdminJob/apiDeleteAdminJob
+// above (the Jobs page only offers Cancel on rows it already knows are
+// pending/running).
+func (s *Server) apiCancelAdminJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.jobs.Cancel(r.Context(), id); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}

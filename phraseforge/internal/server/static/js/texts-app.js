@@ -12,6 +12,18 @@
   const root = document.getElementById("texts-app");
   const statusBar = document.getElementById("statusBar");
 
+  // Keyset pagination state (phraseforge-spa-pagination) — module-level so
+  // it survives across the Previous/Next clicks that re-invoke showList,
+  // but reset to page 1 on every "fresh" call (no explicit pageDirection):
+  // initial section load, a sidebar language-filter change, or a tag-filter
+  // link/clear click all already call showList() this way. pageCursors[i]
+  // is the cursor used to fetch page i; latestNextCursor is the most
+  // recently fetched page's own nextCursor (undefined once there is no
+  // further page).
+  let pageCursors = [null];
+  let pageIndex = 0;
+  let latestNextCursor = null;
+
   function esc(s) {
     return String(s == null ? "" : s).replace(
       /[&<>"']/g,
@@ -53,13 +65,44 @@
     return card;
   }
 
-  // buildExportURL appends the current language filter (if any) to an
-  // export endpoint, mirroring the same ?language= convention showList's own
-  // list-fetch query already applies — export always respects "whatever the
-  // current filtered view would show" (see
-  // specs/features/phraseforge-export-import.md).
-  function buildExportURL(endpoint, languageFilter) {
-    return languageFilter ? `${endpoint}?language=${encodeURIComponent(languageFilter)}` : endpoint;
+  // buildExportURL builds an export request's query string — language and
+  // script are both required by the server now (requireExportFilter; see
+  // specs/features/export-filter-language-script-tags.md), tags is
+  // optional and passed through as-is (the server parses/normalizes it via
+  // tags.Parse, same as every other tag input in this app).
+  function buildExportURL(endpoint, language, script, tagsInput) {
+    const q = new URLSearchParams({ language, script });
+    const tags = (tagsInput || "").trim();
+    if (tags) q.set("tags", tags);
+    return `${endpoint}?${q.toString()}`;
+  }
+
+  // showExportDialog opens #confirmDialog with a small language/script/tags
+  // form (properly styled via pf-field, matching the New/Edit form's own
+  // fields — never bare <select>/<input> sitting loose in the toolbar,
+  // which is unreadable and looks broken). Confirming navigates to the
+  // built export URL (triggering the browser's normal download handling
+  // for the YAML response); cancelling does nothing at all.
+  async function showExportDialog(endpoint, languageFilter) {
+    const confirmDialog = document.getElementById("confirmDialog");
+    const container = document.createElement("div");
+    container.innerHTML = `
+      <pf-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
+        <select id="dlgExportLanguage">${languageOptions(languageFilter)}</select>
+      </pf-field>
+      <pf-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
+        <select id="dlgExportScript">${scriptOptions()}</select>
+      </pf-field>
+      <pf-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
+        <input type="text" id="dlgExportTags" placeholder="${esc(T("texts.field_tags_hint"))}">
+      </pf-field>
+    `;
+    const languageSelect = container.querySelector("#dlgExportLanguage");
+    const scriptSelect = container.querySelector("#dlgExportScript");
+    const tagsInput = container.querySelector("#dlgExportTags");
+    const ok = await confirmDialog.showContent(container, { okLabel: T("texts.export"), wide: true });
+    if (!ok) return;
+    window.location.href = buildExportURL(endpoint, languageSelect.value, scriptSelect.value, tagsInput.value);
   }
 
   // handleImportFile reads the chosen file client-side (FileReader), same
@@ -113,11 +156,22 @@
     }
   }
 
-  async function showList(tagFilter) {
+  async function showList(tagFilter, pageDirection) {
     statusBar.setMessage("");
+    if (pageDirection === "next") {
+      pageCursors[pageIndex + 1] = latestNextCursor;
+      pageIndex++;
+    } else if (pageDirection === "prev") {
+      pageIndex--;
+    } else {
+      pageCursors = [null];
+      pageIndex = 0;
+    }
     // Read fresh on every call (not just at initial load) — same reasoning
-    // as the fetch query below, but needed earlier here too since the
-    // Export link's href is built from it.
+    // as the fetch query below, but needed earlier here too since it's the
+    // export language select's default (the caller can still change it —
+    // export's own language/script are independent of this list-view
+    // filter, see buildExportURL).
     const languageFilter = window.pfGetLanguageFilter();
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -127,7 +181,7 @@
             ? `<div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                 <pf-button variant="primary" id="newTextBtn">${esc(T("texts.new"))}</pf-button>
                 <pf-button variant="secondary" id="ingestTextBtn">${esc(T("texts.ingest"))}</pf-button>
-                <a class="btn" id="exportTextsLink" href="${esc(buildExportURL("/api/v1/texts/export", languageFilter))}">${esc(T("texts.export"))}</a>
+                <pf-button variant="secondary" id="exportTextsBtn">${esc(T("texts.export"))}</pf-button>
                 <pf-button variant="secondary" id="importTextsBtn">${esc(T("texts.import"))}</pf-button>
                 <input type="file" id="importTextsFile" accept=".yaml,.yml" style="display:none;">
               </div>`
@@ -145,6 +199,10 @@
     if (newBtn) newBtn.addEventListener("click", () => showNew());
     const ingestBtn = document.getElementById("ingestTextBtn");
     if (ingestBtn) ingestBtn.addEventListener("click", () => showIngest());
+    const exportBtn = document.getElementById("exportTextsBtn");
+    if (exportBtn) {
+      exportBtn.addEventListener("click", () => showExportDialog("/api/v1/texts/export", languageFilter));
+    }
     const importBtn = document.getElementById("importTextsBtn");
     const importFile = document.getElementById("importTextsFile");
     if (importBtn && importFile) {
@@ -157,10 +215,13 @@
     const query = new URLSearchParams();
     if (languageFilter) query.set("language", languageFilter);
     if (tagFilter) query.set("tag", tagFilter);
+    const cursor = pageCursors[pageIndex];
+    if (cursor) query.set("cursor", cursor);
     let items;
     try {
       const data = await apiFetch("/api/v1/texts?" + query.toString());
       items = data.items;
+      latestNextCursor = data.nextCursor || null;
     } catch (e) {
       statusBar.setMessage(e.message, true);
       return;
@@ -190,6 +251,26 @@
         showList(a.dataset.tagFilter);
       });
     });
+
+    if (pageIndex > 0 || latestNextCursor) {
+      const pager = document.createElement("div");
+      pager.style.cssText = "display:flex; justify-content:center; gap:0.75rem; margin-top:1.5rem;";
+      if (pageIndex > 0) {
+        const prevBtn = document.createElement("pf-button");
+        prevBtn.setAttribute("variant", "secondary");
+        prevBtn.textContent = T("texts.pagination_previous");
+        prevBtn.addEventListener("click", () => showList(tagFilter, "prev"));
+        pager.appendChild(prevBtn);
+      }
+      if (latestNextCursor) {
+        const nextBtn = document.createElement("pf-button");
+        nextBtn.setAttribute("variant", "secondary");
+        nextBtn.textContent = T("texts.pagination_next");
+        nextBtn.addEventListener("click", () => showList(tagFilter, "next"));
+        pager.appendChild(nextBtn);
+      }
+      container.appendChild(pager);
+    }
   }
 
   function languageOptions(selected) {
@@ -210,7 +291,7 @@
     statusBar.setMessage("");
     const isEdit = !!existing;
     root.innerHTML = `
-      ${isEdit ? `<a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>` : ""}
+      <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <h1>${esc(T(isEdit ? "texts.edit_title" : "texts.new_title"))}</h1>
       <div class="form-card" style="max-width: none;">
         <form id="textForm">
@@ -242,25 +323,15 @@
           </div>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("texts.save"))}</pf-button>
-            <pf-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</pf-button>
-            <pf-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</pf-button>
-            <select id="translation-target" aria-label="Translation target language">
-              <option value="en">English</option>
-              <option value="pl">Polish</option>
-            </select>
           </div>
         </form>
       </div>
     `;
 
-    const backLink = document.getElementById("backLink");
-    if (backLink) backLink.addEventListener("click", (e) => { e.preventDefault(); showView(existing.id); });
-
-    document.getElementById("transcribeBtn").addEventListener("click", (e) => {
-      phraseforgeGenerate("transcription", "field-source", "field-transcription", "text", e.currentTarget.querySelector("button"));
-    });
-    document.getElementById("translateBtn").addEventListener("click", (e) => {
-      phraseforgeGenerate("translation", "field-source", "field-translation", "text", e.currentTarget.querySelector("button"));
+    document.getElementById("backLink").addEventListener("click", (e) => {
+      e.preventDefault();
+      if (isEdit) showView(existing.id);
+      else showList();
     });
 
     // Re-wires #language/#script change listeners and runs the initial
@@ -437,6 +508,24 @@
     }
   }
 
+  // generateFieldFromText mirrors generateFromText for the Generate
+  // Title/Transcription/Translation buttons (background-generate-title-
+  // transcription-translation) — Translation is the only one with a body,
+  // always targeting the viewer's own site locale (BOOT.locale), matching
+  // the Translation tab's own single-locale scope; no locale select (see
+  // this feature's spec, resolved during B2).
+  async function generateFieldFromText(id, endpoint, startedKey, locale) {
+    try {
+      await apiFetch(`/api/v1/texts/${id}/${endpoint}`, {
+        method: "POST",
+        body: locale ? JSON.stringify({ locale }) : undefined,
+      });
+      statusBar.setMessage(T(startedKey));
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+    }
+  }
+
   async function showView(id) {
     statusBar.setMessage("");
     let text;
@@ -450,6 +539,10 @@
       .map((t) => `<a class="badge tag-link" href="#" data-tag-filter="${esc(t)}">${esc(t)}</a>`)
       .join("");
     const hasTabs = !!text.transcription || text.hasTranslation;
+    const linkedLists = [
+      text.vocabularyListId != null ? `<a href="#" class="linked-list-link" data-goto-vocab="${text.vocabularyListId}">${esc(T("texts.linked_vocabulary"))}</a>` : "",
+      text.modelsListId != null ? `<a href="#" class="linked-list-link" data-goto-models="${text.modelsListId}">${esc(T("texts.linked_models"))}</a>` : "",
+    ].filter(Boolean).join("");
     root.innerHTML = `
       <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -460,6 +553,9 @@
         </div>
         <div class="resource-actions">
           <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
+          ${text.canEdit && !text.title ? `<pf-button variant="secondary" type="button" id="generateTitleBtn">${esc(T("texts.generate_title"))}</pf-button>` : ""}
+          ${text.canEdit && text.needsTranscription && !text.transcription ? `<pf-button variant="secondary" type="button" id="generateTranscriptionBtn">${esc(T("texts.generate_transcription"))}</pf-button>` : ""}
+          ${text.canEdit && !text.hasTranslation ? `<pf-button variant="secondary" type="button" id="generateTranslationBtn">${esc(T("texts.generate_translation"))}</pf-button>` : ""}
           ${text.canEdit ? `<pf-button variant="secondary" type="button" id="generateVocabBtn">${esc(T("texts.generate_vocabulary"))}</pf-button><pf-button variant="secondary" type="button" id="generateModelsBtn">${esc(T("texts.generate_models"))}</pf-button>` : ""}
           ${text.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
         </div>
@@ -468,11 +564,18 @@
       ${text.transcription ? `<textarea id="copy-transcription-markdown" class="copy-source" readonly>${esc(text.transcriptionMarkdown)}</textarea>` : ""}
       ${text.hasTranslation ? `<textarea id="copy-translation-markdown" class="copy-source" readonly>${esc(text.translationMarkdown)}</textarea>` : ""}
       ${
-        hasTabs
-          ? `<div class="editor-tabs">
-              <button type="button" class="editor-tab-btn active" data-tab="source">${esc(T("texts.tab_source"))}</button>
-              ${text.transcription ? `<button type="button" class="editor-tab-btn" data-tab="transcription">${esc(T("texts.tab_transcription"))}</button>` : ""}
-              ${text.hasTranslation ? `<button type="button" class="editor-tab-btn" data-tab="translation">${esc(T("texts.tab_translation"))}</button>` : ""}
+        hasTabs || linkedLists
+          ? `<div class="editor-tabs-row">
+              ${
+                hasTabs
+                  ? `<div class="editor-tabs">
+                      <button type="button" class="editor-tab-btn active" data-tab="source">${esc(T("texts.tab_source"))}</button>
+                      ${text.transcription ? `<button type="button" class="editor-tab-btn" data-tab="transcription">${esc(T("texts.tab_transcription"))}</button>` : ""}
+                      ${text.hasTranslation ? `<button type="button" class="editor-tab-btn" data-tab="translation">${esc(T("texts.tab_translation"))}</button>` : ""}
+                    </div>`
+                  : ""
+              }
+              ${linkedLists ? `<div class="linked-lists">${linkedLists}</div>` : ""}
             </div>`
           : ""
       }
@@ -499,6 +602,18 @@
     });
     const editBtn = document.getElementById("editBtn");
     if (editBtn) editBtn.addEventListener("click", () => showForm(text));
+    const generateTitleBtn = document.getElementById("generateTitleBtn");
+    if (generateTitleBtn) {
+      generateTitleBtn.addEventListener("click", () => generateFieldFromText(id, "generate-title", "texts.generate_title_started"));
+    }
+    const generateTranscriptionBtn = document.getElementById("generateTranscriptionBtn");
+    if (generateTranscriptionBtn) {
+      generateTranscriptionBtn.addEventListener("click", () => generateFieldFromText(id, "generate-transcription", "texts.generate_transcription_started"));
+    }
+    const generateTranslationBtn = document.getElementById("generateTranslationBtn");
+    if (generateTranslationBtn) {
+      generateTranslationBtn.addEventListener("click", () => generateFieldFromText(id, "generate-translation", "texts.generate_translation_started", BOOT.locale));
+    }
     const generateVocabBtn = document.getElementById("generateVocabBtn");
     if (generateVocabBtn) {
       generateVocabBtn.addEventListener("click", () => generateFromText(id, "generate-vocabulary", "texts.generate_vocabulary_started"));
@@ -526,6 +641,18 @@
       a.addEventListener("click", (e) => {
         e.preventDefault();
         showList(a.dataset.tagFilter);
+      });
+    });
+    document.querySelectorAll("[data-goto-vocab]").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.pfShowSection("vocabulary", { viewId: Number(a.dataset.gotoVocab) });
+      });
+    });
+    document.querySelectorAll("[data-goto-models]").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.pfShowSection("models", { viewId: Number(a.dataset.gotoModels) });
       });
     });
   }

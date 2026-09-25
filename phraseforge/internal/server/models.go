@@ -11,6 +11,7 @@ import (
 	"phraseforge/internal/catalog"
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/models"
+	"phraseforge/internal/pagination"
 	"phraseforge/internal/tags"
 )
 
@@ -28,6 +29,8 @@ var modelsAppI18nKeys = []string{
 	"texts.export", "texts.import",
 	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
 	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
+	"texts.generate_transcription_started", "texts.generate_translation_started",
+	"texts.pagination_previous", "texts.pagination_next",
 }
 
 func modelsAppI18n(loc string) map[string]string {
@@ -98,19 +101,18 @@ func (s *Server) apiListModelsLists(w http.ResponseWriter, r *http.Request) {
 	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
 		langs, all = []string{languageFilter}, false
 	}
-	list, err := s.models.ListAll(r.Context(), langs, all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-	tagFilter := r.URL.Query().Get("tag")
-	if tagFilter != "" {
-		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeModels, tagFilter)
+	var tagIDs []int64
+	if tagFilter := r.URL.Query().Get("tag"); tagFilter != "" {
+		tagIDs, err = s.tags.ResourceIDsWithTag(r.Context(), resourceTypeModels, tagFilter)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		list = filterByID(list, ids, func(l models.List) int64 { return l.ID })
+	}
+	list, hasMore, err := s.models.ListAllPage(r.Context(), langs, all, tagIDs, decodeCursorParam(r), pagination.DefaultLimit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 	ids := make([]int64, len(list))
 	for i, l := range list {
@@ -133,7 +135,12 @@ func (s *Server) apiListModelsLists(w http.ResponseWriter, r *http.Request) {
 			Tags: tagsByID[l.ID], ItemCount: len(items), CreatedAt: l.CreatedAt.Format("Jan 2, 2006 · 15:04"),
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	resp := map[string]any{"items": out}
+	if hasMore && len(list) > 0 {
+		last := list[len(list)-1]
+		resp["nextCursor"] = pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // apiCreateModelsList is handleModelsCreate's exact logic.

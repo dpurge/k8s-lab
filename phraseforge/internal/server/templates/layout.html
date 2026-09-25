@@ -156,10 +156,19 @@
 
     /* forms */
     .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.6rem; padding: 2rem; max-width: 40rem; }
-    textarea, input[type=text], input[type=password], select {
+    textarea, input[type=text], input[type=password], input[type=url], input[type=number], input[type=file], select {
       width: 100%; padding: 0.65rem 0.75rem; margin-bottom: 1rem; border: 1px solid var(--border);
       border-radius: 0.4rem; font-size: 1.05rem; font-family: inherit; background: var(--surface); color: var(--text);
     }
+    /* input[type=file]'s own browse button is a separate pseudo-element,
+       untouched by the shared rule above (which only styles the input's
+       own box) — styled to match pf-button's secondary variant so it
+       doesn't look like a bare, unstyled OS-native button. */
+    input[type=file]::file-selector-button {
+      padding: 0.45rem 0.9rem; margin-right: 0.75rem; border: 1px solid var(--border); border-radius: 0.4rem;
+      font-size: 0.95rem; font-family: inherit; background: var(--surface-alt); color: var(--text); cursor: pointer;
+    }
+    input[type=file]::file-selector-button:hover { background: var(--border); }
     .field-row { display: flex; gap: 1rem; }
     .field-row > * { flex: 1; }
     .form-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
@@ -221,6 +230,14 @@
     /* reading view: big, comfortable, fills the column (no artificial narrow cap) */
     article.prose { font-size: 1.15rem; line-height: 1.7; }
     .prose-enlarged { font-size: 1.4rem; line-height: 1.9; } /* CJK/Arabic/Hebrew/Syriac read poorly at Latin body size; not scoped to article so it also works on table cells (vocabulary view) */
+    /* article.prose (one element + one class) outranks .prose-enlarged (one
+       class alone) on specificity, so the two rules above silently produce
+       1.15rem — not 1.4rem — wherever both classes land on the same
+       <article> (every View-page tab). This compound rule wins there
+       specifically, without touching .prose-enlarged's own lower-specificity
+       use on table cells, which has no competing element+class rule to lose
+       against. */
+    article.prose.prose-enlarged { font-size: 1.4rem; line-height: 1.9; }
     article.prose[dir="rtl"] .vocabulary-item { flex-direction: row-reverse; text-align: right; }
     article.prose h1 { font-size: 1.8em; }
     article.prose h2 { font-size: 1.5em; margin-top: 1.5em; }
@@ -265,6 +282,19 @@
       font-size: 0.95rem; color: var(--muted); cursor: pointer;
     }
     .editor-tab-btn.active { color: var(--link); border-bottom-color: var(--link); font-weight: 600; }
+
+    /* dialog-vocabulary-models-generation: a Text/Dialog view's row of
+       links to its linked Vocabulary/Models list, right-aligned next to
+       the tab strip (visually separated, not interleaved with the tabs
+       themselves) — shown even when there are no tabs to show. When
+       .editor-tabs is absent, .linked-lists is this row's only flex child,
+       and margin-left:auto still pushes it flush right against the empty
+       remaining space. */
+    .editor-tabs-row { display: flex; align-items: flex-end; gap: 1rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+    .editor-tabs-row .editor-tabs { margin-bottom: 0; border-bottom: none; }
+    .linked-lists { display: flex; gap: 0.75rem; margin-left: auto; padding-bottom: 0.5rem; }
+    .linked-lists a { font-size: 0.85rem; }
+
     .editor-tab-pane textarea { height: 18rem; }
     .editor-tab-pane textarea.editor-enlarged { font-size: 1.4rem; } /* CJK/Arabic/Hebrew/Syriac need a bigger base size to read while typing */
   </style>
@@ -360,44 +390,6 @@
       var active = document.querySelector('.editor-tab-btn.active');
       var tab = active ? active.getAttribute('data-tab') : 'source';
       phraseforgeCopyMarkdown('copy-' + tab + '-markdown', button);
-    }
-    function phraseforgeSetFieldValue(field, text) {
-      field.value = text;
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-      field.focus();
-    }
-    async function phraseforgeGenerate(kind, sourceID, targetID, contentType, button) {
-      var source = document.getElementById(sourceID);
-      var target = document.getElementById(targetID);
-      if (!source || !target) { return; }
-      var original = button.textContent;
-      button.disabled = true;
-      button.textContent = 'Working...';
-      try {
-        if (!String(source.value || source.textContent || '').trim()) {
-          alert('Enter source text first.');
-          return;
-        }
-        var response = await fetch('/llm/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            kind: kind,
-            source_language: document.getElementById('language').value,
-            target_language: kind === 'transcription' ? 'transcription' : (document.getElementById('translation-target')?.value || document.documentElement.lang),
-            content_type: contentType,
-            content: source.value || source.textContent || ''
-          })
-        });
-        if (!response.ok) { throw new Error((await response.text()).trim()); }
-        var data = await response.json();
-        phraseforgeSetFieldValue(target, data.text || '');
-      } catch (error) {
-        alert(error.message || String(error));
-      } finally {
-        button.disabled = false;
-        button.textContent = original;
-      }
     }
     // The language filter is now built and driven entirely by shell.js
     // (phraseforge-spa-unified-shell) — no page-reload mechanism left here.

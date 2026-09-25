@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"phraseforge/internal/auth"
+	"phraseforge/internal/dialogs"
 )
 
 // apiDialogExportItem mirrors apiTextExportItem exactly — see that type's
@@ -57,17 +58,30 @@ type apiDialogImportRequest struct {
 // apiExportDialogs handles GET /api/v1/dialogs/export — mirrors
 // apiExportTexts exactly, see that function's doc comment.
 func (s *Server) apiExportDialogs(w http.ResponseWriter, r *http.Request) {
+	filter, ok := requireExportFilter(w, r)
+	if !ok {
+		return
+	}
 	u := currentUser(r)
 	editLangs, editAll, err := s.roles.EditableLanguages(r.Context(), u.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	langs, all := exportScopeLanguages(editLangs, editAll, r.URL.Query().Get("language"))
+	langs, all := exportScopeLanguages(editLangs, editAll, filter.Language)
 	list, err := s.dialogs.List(r.Context(), langs, all)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	list = filterByScript(list, filter.Script, func(d dialogs.Dialog) string { return d.Script })
+	if len(filter.Tags) > 0 {
+		matching, err := s.tags.ResourceIDsWithAllTags(r.Context(), resourceTypeDialog, filter.Tags)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		list = filterByID(list, matching, func(d dialogs.Dialog) int64 { return d.ID })
 	}
 	ids := make([]int64, len(list))
 	for i, d := range list {

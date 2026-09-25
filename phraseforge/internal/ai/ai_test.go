@@ -39,6 +39,55 @@ func TestPurposeDefault(t *testing.T) {
 	}
 }
 
+// TestJobKind covers the field-to-job-kind mapping used by every enqueue
+// call site (export/import backfill, the View-page Generate buttons,
+// item-level generation) so the Jobs page shows what a "generic LLM call"
+// job actually did instead of one bucket for all of them.
+func TestJobKind(t *testing.T) {
+	cases := []struct {
+		payloadKind string
+		want        string
+	}{
+		{"title", KindGenerateTitle},
+		{"transcription", KindGenerateTranscription},
+		{"translation", KindGenerateTranslation},
+		{"something_unrecognized", KindLLMGenerate},
+	}
+	for _, c := range cases {
+		if got := JobKind(c.payloadKind); got != c.want {
+			t.Errorf("JobKind(%q) = %q, want %q", c.payloadKind, got, c.want)
+		}
+	}
+}
+
+// TestResolveTimeoutSeconds covers the three-tier fallback (llm-purpose-
+// timeout-and-prompt-config): an admin override wins when set; otherwise
+// the purpose default; a purpose default of 0 (no config.yaml value) is
+// itself a valid "no purpose-level override" signal, resolving to 0 —
+// llm.New's own doc comment covers the last fallback tier (0 means apply
+// shared/llm's built-in default), so this function needs no third
+// parameter for it.
+func TestResolveTimeoutSeconds(t *testing.T) {
+	ptr := func(v int) *int { return &v }
+	cases := []struct {
+		name           string
+		override       *int
+		purposeDefault int
+		want           int
+	}{
+		{"override wins over purpose default", ptr(45), 120, 45},
+		{"no override falls through to purpose default", nil, 120, 120},
+		{"no override, no purpose default falls through to 0 (llm.New's own default)", nil, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveTimeoutSeconds(c.override, c.purposeDefault); got != c.want {
+				t.Errorf("resolveTimeoutSeconds(%v, %d) = %d, want %d", c.override, c.purposeDefault, got, c.want)
+			}
+		})
+	}
+}
+
 // TestTextWriteback covers HandleGenerate's resource_type -> store dispatch.
 func TestTextWriteback(t *testing.T) {
 	texts := &fakeTextWriteback{}
@@ -61,17 +110,29 @@ type fakeTextWriteback struct {
 	calls         int
 	title         string
 	titleCalls    int
+	// blank gates whether the guarded setters report applied=true — mirrors
+	// the real stores' "already non-blank" skip case (background-generate-
+	// title-transcription-translation). Default false means every call
+	// applies, matching every pre-existing test's expectations.
+	alreadyHasTitle         bool
+	alreadyHasTranscription bool
 }
 
-func (f *fakeTextWriteback) SetTitle(ctx context.Context, id int64, title string) error {
+func (f *fakeTextWriteback) SetTitleIfBlank(ctx context.Context, id int64, title string) (bool, error) {
+	if f.alreadyHasTitle {
+		return false, nil
+	}
 	f.titleCalls++
 	f.title = title
-	return nil
+	return true, nil
 }
-func (f *fakeTextWriteback) SetTranscription(ctx context.Context, id int64, transcription string) error {
+func (f *fakeTextWriteback) SetTranscriptionIfBlank(ctx context.Context, id int64, transcription string) (bool, error) {
+	if f.alreadyHasTranscription {
+		return false, nil
+	}
 	f.calls++
 	f.transcription = transcription
-	return nil
+	return true, nil
 }
 
 // fakeItemTranscriptionWriteback is a fake ItemTranscriptionWriteback,
@@ -84,24 +145,28 @@ func (f *fakeTextWriteback) SetTranscription(ctx context.Context, id int64, tran
 // replaced since the job was enqueued (see B3 in
 // specs/features/phraseforge-export-import.md).
 type fakeItemTranscriptionWriteback struct {
-	listID        int64
-	position      int
-	phrase        string
-	transcription string
-	calls         int
-	wantPhrase    string
+	listID            int64
+	position          int
+	phrase            string
+	transcription     string
+	calls             int
+	wantPhrase        string
+	alreadyHasContent bool // when false (default), every non-mismatched call applies
 }
 
-func (f *fakeItemTranscriptionWriteback) SetItemTranscription(ctx context.Context, listID int64, position int, phrase, transcription string) error {
+func (f *fakeItemTranscriptionWriteback) SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (bool, error) {
 	if f.wantPhrase != "" && phrase != f.wantPhrase {
-		return errPhraseMismatch
+		return false, errPhraseMismatch
+	}
+	if f.alreadyHasContent {
+		return false, nil
 	}
 	f.calls++
 	f.listID = listID
 	f.position = position
 	f.phrase = phrase
 	f.transcription = transcription
-	return nil
+	return true, nil
 }
 
 // fakeItemTranslationWriteback is a fake ItemTranslationWriteback, standing
@@ -109,19 +174,23 @@ func (f *fakeItemTranscriptionWriteback) SetItemTranscription(ctx context.Contex
 // item-translation writeback dispatch tests. Mirrors
 // fakeItemTranscriptionWriteback's wantPhrase/errPhraseMismatch simulation.
 type fakeItemTranslationWriteback struct {
-	resourceType string
-	listID       int64
-	position     int
-	phrase       string
-	locale       string
-	translation  string
-	calls        int
-	wantPhrase   string
+	resourceType      string
+	listID            int64
+	position          int
+	phrase            string
+	locale            string
+	translation       string
+	calls             int
+	wantPhrase        string
+	alreadyHasContent bool // when false (default), every non-mismatched call applies
 }
 
-func (f *fakeItemTranslationWriteback) SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) error {
+func (f *fakeItemTranslationWriteback) SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (bool, error) {
 	if f.wantPhrase != "" && phrase != f.wantPhrase {
-		return errPhraseMismatch
+		return false, errPhraseMismatch
+	}
+	if f.alreadyHasContent {
+		return false, nil
 	}
 	f.calls++
 	f.resourceType = resourceType
@@ -130,7 +199,7 @@ func (f *fakeItemTranslationWriteback) SetItemTranslation(ctx context.Context, r
 	f.phrase = phrase
 	f.locale = locale
 	f.translation = translation
-	return nil
+	return true, nil
 }
 
 // errPhraseMismatch stands in for vocabulary.ErrItemNotFound/
@@ -144,12 +213,16 @@ var errPhraseMismatch = errors.New("item phrase mismatch: item has moved or been
 // non-item resource path) — used to confirm an item resource type never
 // falls through to it.
 type fakeTranslationWriteback struct {
-	calls int
+	calls             int
+	alreadyHasContent bool // when false (default), every call applies
 }
 
-func (f *fakeTranslationWriteback) Set(ctx context.Context, resourceType string, resourceID int64, locale, text string) error {
+func (f *fakeTranslationWriteback) SetIfAbsent(ctx context.Context, resourceType string, resourceID int64, locale, text string) (bool, error) {
+	if f.alreadyHasContent {
+		return false, nil
+	}
 	f.calls++
-	return nil
+	return true, nil
 }
 
 // TestWritebackTitle covers HandleGenerate's newly-wired "title" dispatch:
@@ -161,8 +234,8 @@ func TestWritebackTitle(t *testing.T) {
 	dialogs := &fakeTextWriteback{}
 	svc := &Service{texts: texts, dialogs: dialogs}
 
-	if err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "text", ResourceID: 1}, "  A Title  "); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "text", ResourceID: 1}, "  A Title  "); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if texts.titleCalls != 1 || texts.title != "A Title" {
 		t.Errorf("texts.{titleCalls,title} = %d,%q, want 1,%q", texts.titleCalls, texts.title, "A Title")
@@ -171,16 +244,36 @@ func TestWritebackTitle(t *testing.T) {
 		t.Errorf("dialogs.titleCalls = %d, want 0", dialogs.titleCalls)
 	}
 
-	if err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "dialog", ResourceID: 1}, "Dialog Title"); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "dialog", ResourceID: 1}, "Dialog Title"); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if dialogs.titleCalls != 1 || dialogs.title != "Dialog Title" {
 		t.Errorf("dialogs.{titleCalls,title} = %d,%q, want 1,%q", dialogs.titleCalls, dialogs.title, "Dialog Title")
 	}
 
-	err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "vocabulary_item", ResourceID: 1}, "x")
+	_, err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "vocabulary_item", ResourceID: 1}, "x")
 	if err == nil {
 		t.Fatal("writeback(title, vocabulary_item) = nil error, want an error — vocabulary items have no title")
+	}
+}
+
+// TestWritebackTitleSkipsWhenAlreadyBlank covers the universal blank-check
+// rule: a target field that already has content is a job success (applied
+// false, no error), not a failure — background-generate-title-
+// transcription-translation.
+func TestWritebackTitleSkipsWhenAlreadyBlank(t *testing.T) {
+	texts := &fakeTextWriteback{alreadyHasTitle: true}
+	svc := &Service{texts: texts}
+
+	applied, err := svc.writeback(context.Background(), generatePayload{Kind: "title", ResourceType: "text", ResourceID: 1}, "A Title")
+	if err != nil {
+		t.Fatalf("writeback: %v, want nil error (a skip is still job success)", err)
+	}
+	if applied {
+		t.Error("applied = true, want false — the title already had content")
+	}
+	if texts.titleCalls != 0 {
+		t.Errorf("titleCalls = %d, want 0 — a skip must never write", texts.titleCalls)
 	}
 }
 
@@ -196,8 +289,8 @@ func TestWritebackItemTranscription(t *testing.T) {
 	svc := &Service{vocabItems: vocab, modelsItems: modelsW}
 
 	p := generatePayload{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 3, Content: "phrase-a"}
-	if err := svc.writeback(context.Background(), p, "  trxn  "); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), p, "  trxn  "); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if vocab.calls != 1 || vocab.listID != 42 || vocab.position != 3 || vocab.phrase != "phrase-a" || vocab.transcription != "trxn" {
 		t.Errorf("vocab writeback = %+v, want calls=1 listID=42 position=3 phrase=phrase-a transcription=%q", vocab, "trxn")
@@ -207,8 +300,8 @@ func TestWritebackItemTranscription(t *testing.T) {
 	}
 
 	p2 := generatePayload{Kind: "transcription", ResourceType: "models_item", ResourceID: 7, ItemPosition: 0, Content: "phrase-b"}
-	if err := svc.writeback(context.Background(), p2, "zero-position"); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), p2, "zero-position"); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if modelsW.calls != 1 || modelsW.listID != 7 || modelsW.position != 0 || modelsW.phrase != "phrase-b" {
 		t.Errorf("modelsW writeback = %+v, want calls=1 listID=7 position=0 phrase=phrase-b — position 0 must dispatch, not be treated as unset", modelsW)
@@ -227,12 +320,31 @@ func TestWritebackItemTranscriptionPhraseMismatchFailsJob(t *testing.T) {
 	svc := &Service{vocabItems: vocab}
 
 	p := generatePayload{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 3, Content: "a-different-phrase"}
-	err := svc.writeback(context.Background(), p, "trxn")
+	_, err := svc.writeback(context.Background(), p, "trxn")
 	if err == nil {
 		t.Fatal("writeback with a stale phrase = nil error, want an error — the job must fail, not silently succeed")
 	}
 	if vocab.calls != 0 {
 		t.Errorf("vocab.calls = %d, want 0 — a phrase mismatch must never be recorded as an applied write", vocab.calls)
+	}
+}
+
+// TestWritebackItemTranscriptionSkipsWhenAlreadyBlank mirrors
+// TestWritebackTitleSkipsWhenAlreadyBlank for the item-transcription path.
+func TestWritebackItemTranscriptionSkipsWhenAlreadyBlank(t *testing.T) {
+	vocab := &fakeItemTranscriptionWriteback{alreadyHasContent: true}
+	svc := &Service{vocabItems: vocab}
+
+	p := generatePayload{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 3, Content: "phrase-a"}
+	applied, err := svc.writeback(context.Background(), p, "trxn")
+	if err != nil {
+		t.Fatalf("writeback: %v, want nil error (a skip is still job success)", err)
+	}
+	if applied {
+		t.Error("applied = true, want false — the item's transcription already had content")
+	}
+	if vocab.calls != 0 {
+		t.Errorf("vocab.calls = %d, want 0 — a skip must never write", vocab.calls)
 	}
 }
 
@@ -247,8 +359,8 @@ func TestWritebackItemTranslation(t *testing.T) {
 	svc := &Service{itemTranslations: items, translations: plain}
 
 	p := generatePayload{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 2, Locale: "pl", Content: "phrase-a"}
-	if err := svc.writeback(context.Background(), p, "  przetlumaczone  "); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), p, "  przetlumaczone  "); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if items.calls != 1 || items.resourceType != "vocabulary_item" || items.listID != 42 || items.position != 2 || items.phrase != "phrase-a" || items.locale != "pl" || items.translation != "przetlumaczone" {
 		t.Errorf("items writeback = %+v, want the vocabulary_item dispatch fields", items)
@@ -258,8 +370,8 @@ func TestWritebackItemTranslation(t *testing.T) {
 	}
 
 	p2 := generatePayload{Kind: "translation", ResourceType: "text", ResourceID: 5, Locale: "en"}
-	if err := svc.writeback(context.Background(), p2, "translated"); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), p2, "translated"); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if plain.calls != 1 {
 		t.Errorf("plain.calls = %d, want 1 — a text resource type must still use the plain TranslationWriteback path", plain.calls)
@@ -274,12 +386,31 @@ func TestWritebackItemTranslationPhraseMismatchFailsJob(t *testing.T) {
 	svc := &Service{itemTranslations: items}
 
 	p := generatePayload{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 2, Locale: "pl", Content: "a-different-phrase"}
-	err := svc.writeback(context.Background(), p, "przetlumaczone")
+	_, err := svc.writeback(context.Background(), p, "przetlumaczone")
 	if err == nil {
 		t.Fatal("writeback with a stale phrase = nil error, want an error — the job must fail, not silently succeed")
 	}
 	if items.calls != 0 {
 		t.Errorf("items.calls = %d, want 0 — a phrase mismatch must never be recorded as an applied write", items.calls)
+	}
+}
+
+// TestWritebackItemTranslationSkipsWhenAlreadyBlank mirrors
+// TestWritebackTitleSkipsWhenAlreadyBlank for the item-translation path.
+func TestWritebackItemTranslationSkipsWhenAlreadyBlank(t *testing.T) {
+	items := &fakeItemTranslationWriteback{alreadyHasContent: true}
+	svc := &Service{itemTranslations: items}
+
+	p := generatePayload{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 2, Locale: "pl", Content: "phrase-a"}
+	applied, err := svc.writeback(context.Background(), p, "przetlumaczone")
+	if err != nil {
+		t.Fatalf("writeback: %v, want nil error (a skip is still job success)", err)
+	}
+	if applied {
+		t.Error("applied = true, want false — the item already had a translation for this locale")
+	}
+	if items.calls != 0 {
+		t.Errorf("items.calls = %d, want 0 — a skip must never write", items.calls)
 	}
 }
 
@@ -299,7 +430,7 @@ func TestWritebackRejectsEmptyResultForNewPaths(t *testing.T) {
 		{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 1, ItemPosition: 0, Locale: "en"},
 	}
 	for _, p := range cases {
-		if err := svc.writeback(context.Background(), p, "   \n\t  "); err == nil {
+		if _, err := svc.writeback(context.Background(), p, "   \n\t  "); err == nil {
 			t.Errorf("writeback(kind=%q, empty result) = nil error, want an error", p.Kind)
 		}
 	}
@@ -318,7 +449,7 @@ func TestWritebackRejectsEmptyResult(t *testing.T) {
 	svc := &Service{texts: texts}
 	p := generatePayload{Kind: "transcription", ResourceType: "text", ResourceID: 1}
 
-	err := svc.writeback(context.Background(), p, "   \n\t  ")
+	_, err := svc.writeback(context.Background(), p, "   \n\t  ")
 	if err == nil {
 		t.Fatal("writeback(empty result) = nil error, want an error")
 	}
@@ -335,8 +466,8 @@ func TestWritebackTrimsResult(t *testing.T) {
 	svc := &Service{texts: texts}
 	p := generatePayload{Kind: "transcription", ResourceType: "text", ResourceID: 1}
 
-	if err := svc.writeback(context.Background(), p, "  hello  \n"); err != nil {
-		t.Fatalf("writeback: %v", err)
+	if applied, err := svc.writeback(context.Background(), p, "  hello  \n"); err != nil || !applied {
+		t.Fatalf("writeback: applied=%v err=%v", applied, err)
 	}
 	if texts.transcription != "hello" {
 		t.Errorf("SetTranscription called with %q, want trimmed %q", texts.transcription, "hello")

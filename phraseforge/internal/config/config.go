@@ -51,18 +51,26 @@ type PurposeConfig struct {
 	Model    string
 	NumCtx   int
 	Think    bool
+	// TimeoutSeconds is this purpose's default LLM call timeout — 0 means
+	// "no purpose-level override", falling through to shared/llm's own
+	// built-in default. An admin llm_prompts.timeout_seconds override (see
+	// ai.go's resolveTimeout) takes precedence over this when set.
+	TimeoutSeconds int
+	// Prompt is this purpose's default system prompt — used when no
+	// admin-configured llm_prompts row exists, or its own prompt is blank.
+	// Previously hardcoded in ai.go's prompt() switch; moved here so it's
+	// inspectable/editable without a rebuild (see
+	// specs/features/llm-purpose-timeout-and-prompt-config.md).
+	Prompt string
 }
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
-// (PGUser/PGPassword, the provider API keys) are deliberately absent here —
-// they stay plain/Secret-sourced env vars, never read from this file.
+// (PGUser/PGPassword, the provider API keys) and Postgres connection fields
+// (PGHost/PGPort/PGDatabase) are deliberately absent here — they stay
+// plain/Secret-sourced env vars, never read from this file, so `migrate`
+// works before the ConfigMap exists (it's a pre-install/pre-upgrade hook).
 type fileConfig struct {
-	BindAddr string `yaml:"bindAddr"`
-	Postgres struct {
-		Host     string `yaml:"host"`
-		Port     string `yaml:"port"`
-		Database string `yaml:"database"`
-	} `yaml:"postgres"`
+	BindAddr  string `yaml:"bindAddr"`
 	Providers struct {
 		Ollama struct {
 			BaseURL string `yaml:"baseURL"`
@@ -81,27 +89,53 @@ type fileConfig struct {
 }
 
 type purposeFileConfig struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
-	NumCtx   int    `yaml:"numCtx"`
-	Think    bool   `yaml:"think"`
+	Provider       string `yaml:"provider"`
+	Model          string `yaml:"model"`
+	NumCtx         int    `yaml:"numCtx"`
+	Think          bool   `yaml:"think"`
+	TimeoutSeconds int    `yaml:"timeoutSeconds"`
+	Prompt         string `yaml:"prompt"`
 }
 
 func defaultFileConfig() fileConfig {
 	var f fileConfig
 	f.BindAddr = "0.0.0.0:8090"
-	f.Postgres.Host = "localhost"
-	f.Postgres.Port = "5432"
-	f.Postgres.Database = "phraseforge"
 	f.Providers.Ollama.BaseURL = "http://host.docker.internal:11434"
 	f.Providers.OpenRouter.BaseURL = "https://openrouter.ai/api/v1"
-	f.Transcription = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", Think: false}
-	f.Translation = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", Think: false}
-	f.Title = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false}
-	f.ProcessText = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false}
-	f.ProcessDialog = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false}
-	f.GenerateVocabulary = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false}
-	f.GenerateModels = purposeFileConfig{Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false}
+	// TimeoutSeconds: 120s for transcription/translation/title, 300s for
+	// process_text/process_dialog, 600s for generate_vocabulary/
+	// generate_models — the latter two are the ones observed exceeding the
+	// old fixed 2-minute client timeout (see this feature's Problem/
+	// Motivation). Prompt text is copied verbatim from ai.go's former
+	// hardcoded switch so upgrading doesn't change any existing behavior.
+	f.Transcription = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 120,
+		Prompt: "Create a romanized transcription for the source language content. Return only the transcription, preserving line breaks and structure. Do not add explanations.",
+	}
+	f.Translation = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 120,
+		Prompt: "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations.",
+	}
+	f.Title = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 120,
+		Prompt: "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble.",
+	}
+	f.ProcessText = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 300,
+		Prompt: "You reformat raw extracted text into clean Markdown prose suitable as a language-learning reading text. Remove navigation menus, ads, boilerplate, and unrelated content. Preserve the actual article/passage content and its paragraph structure. Do not translate or summarize. Respond with only the cleaned Markdown.",
+	}
+	f.ProcessDialog = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 300,
+		Prompt: "You reformat raw extracted text into a clean dialog transcript in Markdown. Identify distinct speakers/turns and format each turn on its own line. Remove navigation, ads, and unrelated content. Respond with only the cleaned dialog content.",
+	}
+	f.GenerateVocabulary = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 600,
+		Prompt: "You extract vocabulary and grammar items from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase {grammar} [transcription] = translation — where {grammar} is a short grammar tag (e.g. part of speech), [transcription] is a romanized reading, and = translation is the item's translation; each of {grammar}, [transcription], and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves.",
+	}
+	f.GenerateModels = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 600,
+		Prompt: "You extract short grammar/sentence-pattern models from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase [transcription] = translation — where [transcription] is a romanized reading and = translation is the item's translation; each of [transcription] and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves.",
+	}
 	return f
 }
 
@@ -134,9 +168,9 @@ func Load() (Config, error) {
 	return Config{
 		BindAddr: fc.BindAddr,
 
-		PGHost:     fc.Postgres.Host,
-		PGPort:     fc.Postgres.Port,
-		PGDatabase: fc.Postgres.Database,
+		PGHost:     env("PGHOST", "localhost"),
+		PGPort:     env("PGPORT", "5432"),
+		PGDatabase: env("PGDATABASE", "phraseforge"),
 		PGUser:     env("PGUSER", "phraseforge"),
 		PGPassword: env("PGPASSWORD", ""),
 

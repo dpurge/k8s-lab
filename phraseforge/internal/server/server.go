@@ -22,6 +22,7 @@ import (
 	"phraseforge/internal/ime"
 	"phraseforge/internal/jobs"
 	"phraseforge/internal/models"
+	"phraseforge/internal/pagination"
 	"phraseforge/internal/roles"
 	"phraseforge/internal/tags"
 	"phraseforge/internal/texts"
@@ -126,7 +127,6 @@ func (s *Server) Router() http.Handler {
 		r.Get("/models", redirectToApp)
 
 		r.Get("/ime-config", s.handleIMEConfig)
-		r.Post("/llm/generate", s.handleLLMGenerate)
 
 		// phraseforge's first JSON API — see phraseforge-spa-shell-texts.
 		// Texts' own old HTML routes/templates have already been removed
@@ -152,6 +152,11 @@ func (s *Server) Router() http.Handler {
 			// CanEdit authorization as create/update above.
 			r.Post("/texts/{id}/generate-vocabulary", s.apiGenerateVocabularyFromText)
 			r.Post("/texts/{id}/generate-models", s.apiGenerateModelsFromText)
+			// background-generate-title-transcription-translation: same
+			// requireAuth/CanEdit authorization as create/update above.
+			r.Post("/texts/{id}/generate-title", s.apiGenerateTitleFromText)
+			r.Post("/texts/{id}/generate-transcription", s.apiGenerateTranscriptionFromText)
+			r.Post("/texts/{id}/generate-translation", s.apiGenerateTranslationFromText)
 
 			// Coexists with the old /dialogs/* HTML routes above temporarily
 			// (phraseforge-spa-dialogs) — removed once the SPA replacement
@@ -164,6 +169,15 @@ func (s *Server) Router() http.Handler {
 			r.Get("/dialogs/{id}", s.apiGetDialog)
 			r.Put("/dialogs/{id}", s.apiUpdateDialog)
 			r.Delete("/dialogs/{id}", s.apiDeleteDialog)
+			// dialog-vocabulary-models-generation: same requireAuth/CanEdit
+			// authorization as create/update above.
+			r.Post("/dialogs/{id}/generate-vocabulary", s.apiGenerateVocabularyFromDialog)
+			r.Post("/dialogs/{id}/generate-models", s.apiGenerateModelsFromDialog)
+			// background-generate-title-transcription-translation: same
+			// requireAuth/CanEdit authorization as create/update above.
+			r.Post("/dialogs/{id}/generate-title", s.apiGenerateTitleFromDialog)
+			r.Post("/dialogs/{id}/generate-transcription", s.apiGenerateTranscriptionFromDialog)
+			r.Post("/dialogs/{id}/generate-translation", s.apiGenerateTranslationFromDialog)
 
 			// Coexists with the old /vocabulary/* HTML routes above
 			// temporarily (phraseforge-spa-vocabulary).
@@ -180,6 +194,11 @@ func (s *Server) Router() http.Handler {
 			r.Post("/vocabulary/{id}/items", s.apiAddVocabItem)
 			r.Put("/vocabulary/{id}/items/{position}", s.apiUpdateVocabItem)
 			r.Delete("/vocabulary/{id}/items/{position}", s.apiDeleteVocabItem)
+			// background-generate-title-transcription-translation: same
+			// requireAuth/CanEdit authorization as add/update above.
+			r.Post("/vocabulary/{id}/items/{position}/generate-transcription", s.apiGenerateVocabItemTranscription)
+			r.Post("/vocabulary/{id}/items/{position}/generate-translation", s.apiGenerateVocabItemTranslation)
+			r.Post("/vocabulary/{id}/generate-missing-translations", s.apiGenerateMissingVocabTranslations)
 
 			r.Get("/models", s.apiListModelsLists)
 			r.Post("/models", s.apiCreateModelsList)
@@ -191,6 +210,10 @@ func (s *Server) Router() http.Handler {
 			r.Post("/models/{id}/items", s.apiAddModelsItem)
 			r.Put("/models/{id}/items/{position}", s.apiUpdateModelsItem)
 			r.Delete("/models/{id}/items/{position}", s.apiDeleteModelsItem)
+			// background-generate-title-transcription-translation: same
+			// requireAuth/CanEdit authorization as add/update above.
+			r.Post("/models/{id}/items/{position}/generate-transcription", s.apiGenerateModelsItemTranscription)
+			r.Post("/models/{id}/items/{position}/generate-translation", s.apiGenerateModelsItemTranslation)
 
 			r.Get("/profile", s.apiGetProfile)
 			r.Post("/profile/locale", s.apiSetProfileLocale)
@@ -219,8 +242,10 @@ func (s *Server) Router() http.Handler {
 				r.Delete("/llm-prompts/{kind}/{sourceLanguage}/{targetLanguage}", s.apiDeleteAdminLLMPrompt)
 				r.Post("/config/import", s.apiImportAdminConfig)
 				r.Get("/jobs", s.apiListAdminJobs)
+				r.Post("/jobs/clear", s.apiClearAdminJobs)
 				r.Get("/jobs/{id}", s.apiGetAdminJob)
 				r.Post("/jobs/{id}/retry", s.apiRetryAdminJob)
+				r.Post("/jobs/{id}/cancel", s.apiCancelAdminJob)
 				r.Delete("/jobs/{id}", s.apiDeleteAdminJob)
 			})
 		})
@@ -429,6 +454,10 @@ var textsAppI18nKeys = []string{
 	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
 	"texts.generate_vocabulary", "texts.generate_models",
 	"texts.generate_vocabulary_started", "texts.generate_models_started",
+	"texts.linked_vocabulary", "texts.linked_models",
+	"texts.generate_title", "texts.generate_transcription", "texts.generate_translation",
+	"texts.generate_title_started", "texts.generate_transcription_started", "texts.generate_translation_started",
+	"texts.pagination_previous", "texts.pagination_next",
 }
 
 func textsAppI18n(loc string) map[string]string {
@@ -440,7 +469,9 @@ func textsAppI18n(loc string) map[string]string {
 }
 
 // filterByID keeps only the items whose id (extracted via idOf) is in keep —
-// shared by the texts and dialogs list handlers' tag-filter step.
+// shared by the texts and dialogs list handlers' tag-filter step, and (with
+// tags.ResourceIDsWithAllTags) by all four export handlers' own ALL-match
+// tags= filter.
 func filterByID[T any](list []T, keep []int64, idOf func(T) int64) []T {
 	keepSet := make(map[int64]bool, len(keep))
 	for _, id := range keep {
@@ -449,6 +480,19 @@ func filterByID[T any](list []T, keep []int64, idOf func(T) int64) []T {
 	out := make([]T, 0, len(list))
 	for _, item := range list {
 		if keepSet[idOf(item)] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// filterByScript keeps only the items whose script (extracted via
+// scriptOf) equals script exactly — shared by all four export handlers'
+// required script= filter.
+func filterByScript[T any](list []T, script string, scriptOf func(T) string) []T {
+	out := make([]T, 0, len(list))
+	for _, item := range list {
+		if scriptOf(item) == script {
 			out = append(out, item)
 		}
 	}
@@ -563,6 +607,15 @@ type apiTextDetail struct {
 	SourceMarkdown        string   `json:"sourceMarkdown"`
 	TranscriptionMarkdown string   `json:"transcriptionMarkdown,omitempty"`
 	TranslationMarkdown   string   `json:"translationMarkdown,omitempty"`
+	VocabularyListID      *int64   `json:"vocabularyListId,omitempty"`
+	ModelsListID          *int64   `json:"modelsListId,omitempty"`
+	// NeedsTranscription mirrors ime.NeedsTranscriptionForLanguage's own
+	// query (background-generate-title-transcription-translation) — the
+	// View page has no live language/script selects to derive this
+	// client-side the way editor.js's /ime-config fetch does for the
+	// New/Edit form, so it's resolved server-side instead, gating the
+	// Generate Transcription button's visibility.
+	NeedsTranscription bool `json:"needsTranscription"`
 }
 
 // apiTextRequest is the JSON body shape for both create (POST) and update
@@ -580,6 +633,22 @@ type apiTextRequest struct {
 
 // apiListTexts is handleList's exact logic (language/tag filtering,
 // per-viewer visibility), JSON-encoded instead of rendered.
+// decodeCursorParam decodes ?cursor= for every paginated list handler — a
+// missing/invalid value is "first page", never a 400 (matches this app's
+// existing lenient-query-param conventions, e.g. this same handler's own
+// ?language= handling below).
+func decodeCursorParam(r *http.Request) *pagination.Cursor {
+	token := r.URL.Query().Get("cursor")
+	if token == "" {
+		return nil
+	}
+	c, err := pagination.Decode(token)
+	if err != nil {
+		return nil
+	}
+	return &c
+}
+
 func (s *Server) apiListTexts(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	langs, all, err := s.roles.ViewableLanguages(r.Context(), u.ID)
@@ -591,19 +660,18 @@ func (s *Server) apiListTexts(w http.ResponseWriter, r *http.Request) {
 	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
 		langs, all = []string{languageFilter}, false
 	}
-	list, err := s.texts.List(r.Context(), langs, all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-	tagFilter := r.URL.Query().Get("tag")
-	if tagFilter != "" {
-		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeText, tagFilter)
+	var tagIDs []int64
+	if tagFilter := r.URL.Query().Get("tag"); tagFilter != "" {
+		tagIDs, err = s.tags.ResourceIDsWithTag(r.Context(), resourceTypeText, tagFilter)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		list = filterByID(list, ids, func(t texts.Text) int64 { return t.ID })
+	}
+	list, hasMore, err := s.texts.ListPage(r.Context(), langs, all, tagIDs, decodeCursorParam(r), pagination.DefaultLimit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 	ids := make([]int64, len(list))
 	for i, t := range list {
@@ -621,7 +689,12 @@ func (s *Server) apiListTexts(w http.ResponseWriter, r *http.Request) {
 			Tags: tagsByID[t.ID], CreatedAt: t.CreatedAt.Format("Jan 2, 2006 · 15:04"),
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	resp := map[string]any{"items": out}
+	if hasMore && len(list) > 0 {
+		last := list[len(list)-1]
+		resp["nextCursor"] = pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // apiCreateText is handleCreate's exact logic — same authorization check,
@@ -691,6 +764,11 @@ func (s *Server) apiGetText(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	needsTranscription, err := ime.NeedsTranscriptionForLanguage(r.Context(), s.db, t.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	rendered, err := texts.RenderHTML(t.Body)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -719,6 +797,19 @@ func (s *Server) apiGetText(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var vocabularyListID, modelsListID *int64
+	if vid, found, err := s.vocab.GetBySourceTextID(r.Context(), t.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	} else if found {
+		vocabularyListID = &vid
+	}
+	if mid, found, err := s.models.GetBySourceTextID(r.Context(), t.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	} else if found {
+		modelsListID = &mid
+	}
 	writeJSON(w, http.StatusOK, apiTextDetail{
 		ID: t.ID, Title: t.Title, Language: t.Language, Script: t.Script,
 		Body: t.Body, Transcription: t.Transcription, Translation: translationBody,
@@ -729,6 +820,9 @@ func (s *Server) apiGetText(w http.ResponseWriter, r *http.Request) {
 		SourceMarkdown:        textBlockMarkdown(t.Body, "source", t.Language, t.Script),
 		TranscriptionMarkdown: textBlockMarkdown(t.Transcription, "transcription", t.Language, "latn"),
 		TranslationMarkdown:   textBlockMarkdown(translationBody, "translation", u.Locale, "latn"),
+		VocabularyListID:      vocabularyListID,
+		ModelsListID:          modelsListID,
+		NeedsTranscription:    needsTranscription,
 	})
 }
 

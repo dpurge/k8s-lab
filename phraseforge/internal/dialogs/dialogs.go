@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"phraseforge/internal/pagination"
 )
 
 // Dialog is one PhraseForge markdown dialog.
@@ -65,6 +67,57 @@ func (s *Store) List(ctx context.Context, languages []string, all bool) ([]Dialo
 	return out, rows.Err()
 }
 
+// ListPage mirrors texts.Store.ListPage exactly — see that method's doc
+// comment.
+func (s *Store) ListPage(ctx context.Context, languages []string, all bool, tagIDs []int64, cursor *pagination.Cursor, limit int) (items []Dialog, hasMore bool, err error) {
+	if !all && len(languages) == 0 {
+		return nil, false, nil
+	}
+	var cursorCreatedAt any
+	var cursorID any
+	if cursor != nil {
+		cursorCreatedAt, cursorID = cursor.CreatedAt, cursor.ID
+	}
+	var rows pgxRows
+	if all {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+selectCols+` FROM dialogs
+			WHERE ($1::bigint[] IS NULL OR id = ANY($1))
+			  AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $4`, tagIDs, cursorCreatedAt, cursorID, limit+1)
+	} else {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+selectCols+` FROM dialogs
+			WHERE language = ANY($1)
+			  AND ($2::bigint[] IS NULL OR id = ANY($2))
+			  AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $5`, languages, tagIDs, cursorCreatedAt, cursorID, limit+1)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var out []Dialog
+	for rows.Next() {
+		var d Dialog
+		if err := scanDialog(rows, &d); err != nil {
+			return nil, false, err
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		hasMore = true
+	}
+	return out, hasMore, nil
+}
+
 // Get fetches one dialog by id, regardless of language — callers check
 // CanView(dialog.Language) themselves before showing it.
 func (s *Store) Get(ctx context.Context, id int64) (Dialog, error) {
@@ -109,19 +162,27 @@ func (s *Store) GetBody(ctx context.Context, id int64) (string, error) {
 	return d.Body, err
 }
 
-// SetTitle overwrites only a dialog's title — used by a background job's
-// completion so it never clobbers a field it didn't touch, even if jobs
-// complete out of order.
-func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
-	_, err := s.db.Exec(ctx, `UPDATE dialogs SET title = $1, updated_at = now() WHERE id = $2`, title, id)
-	return err
+// SetTitleIfBlank mirrors texts.Store.SetTitleIfBlank — see that method's
+// doc comment.
+func (s *Store) SetTitleIfBlank(ctx context.Context, id int64, title string) (applied bool, err error) {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE dialogs SET title = $1, updated_at = now() WHERE id = $2 AND coalesce(trim(title), '') = ''`,
+		title, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
-// SetTranscription overwrites only a dialog's transcription — same
-// out-of-order-safety rationale as SetTitle.
-func (s *Store) SetTranscription(ctx context.Context, id int64, transcription string) error {
-	_, err := s.db.Exec(ctx, `UPDATE dialogs SET transcription = $1, updated_at = now() WHERE id = $2`, nullIfEmpty(transcription), id)
-	return err
+// SetTranscriptionIfBlank mirrors texts.Store.SetTranscriptionIfBlank.
+func (s *Store) SetTranscriptionIfBlank(ctx context.Context, id int64, transcription string) (applied bool, err error) {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE dialogs SET transcription = $1, updated_at = now() WHERE id = $2 AND coalesce(trim(transcription), '') = ''`,
+		nullIfEmpty(transcription), id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func nullIfEmpty(s string) any {

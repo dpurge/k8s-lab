@@ -2,6 +2,35 @@ package generate
 
 import "testing"
 
+// TestPayloadResourceBackCompat covers dialog-vocabulary-models-generation's
+// backward-compatibility requirement: a pending/failed job row created
+// before this change (payload {"text_id":N,"user_id":M}, no resource_type
+// field) must still decode and retry correctly — resourceType()/
+// resourceID() treat an absent/empty ResourceType as "text" with TextID as
+// the id.
+func TestPayloadResourceBackCompat(t *testing.T) {
+	tests := []struct {
+		name     string
+		p        payload
+		wantType string
+		wantID   int64
+	}{
+		{"pre-existing text_id-only shape", payload{TextID: 7}, resourceTypeText, 7},
+		{"current text shape", payload{ResourceType: "text", ResourceID: 9}, resourceTypeText, 9},
+		{"current dialog shape", payload{ResourceType: "dialog", ResourceID: 11}, resourceTypeDialog, 11},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.resourceType(); got != tt.wantType {
+				t.Errorf("resourceType() = %q, want %q", got, tt.wantType)
+			}
+			if got := tt.p.resourceID(); got != tt.wantID {
+				t.Errorf("resourceID() = %d, want %d", got, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestDecideTargetList(t *testing.T) {
 	tests := []struct {
 		name       string

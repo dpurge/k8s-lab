@@ -22,6 +22,12 @@ type Config struct {
 	// existing caller. No effect on the openAI path, which has no
 	// equivalent per-request knob.
 	Think bool
+	// Timeout overrides the HTTP client's request timeout. Zero preserves
+	// every existing caller's prior behavior — New falls back to the
+	// original 2-minute default (see llm-purpose-timeout-and-prompt-config:
+	// a real generate_vocab_from_text call against gemma4:12b with a large
+	// NumCtx legitimately took longer than 2 minutes).
+	Timeout time.Duration
 }
 type Message struct {
 	Role, Content, ToolName string
@@ -42,10 +48,18 @@ type Client struct {
 	http *http.Client
 }
 
+// defaultTimeout is applied when Config.Timeout is zero — every existing
+// caller's behavior before Timeout existed.
+const defaultTimeout = 2 * time.Minute
+
 // New creates an LLM client. The timeout covers provider queueing and
-// response-body transfer while enforcing a two-minute maximum.
+// response-body transfer; Config.Timeout overrides it when non-zero.
 func New(c Config) *Client {
-	return &Client{cfg: c, http: &http.Client{Timeout: 2 * time.Minute}}
+	timeout := c.Timeout
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+	return &Client{cfg: c, http: &http.Client{Timeout: timeout}}
 }
 
 func (c *Client) Complete(ctx context.Context, messages []Message) (string, error) {

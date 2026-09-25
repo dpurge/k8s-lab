@@ -109,15 +109,10 @@ file omits keeps its default — the file doesn't need to be complete.
 ```yaml
 bindAddr: 0.0.0.0:8300
 qdrant:
-  url: http://localhost:6333
   collection: knowledge
   searchMinScore: 0.4          # min Qdrant cosine-similarity score to keep a semantic search
                                 # result; 0 (or negative) disables filtering. Applies to general
                                 # search and chat retrieval alike.
-postgres:
-  host: localhost
-  port: "5432"
-  database: knowledge
 embeddings:
   provider: ollama              # ollama, openai, or fake
   baseURL: http://localhost:11434
@@ -162,10 +157,11 @@ prompts:
     only the resulting text — no preamble, no explanation.
 ```
 
-**Credentials are never in this file** — they stay as plain (or Kubernetes-Secret-sourced) env
-vars, exactly as before: `PGUSER`/`PGPASSWORD` (from the `postgres-credentials` Secret in k8s),
-and `EMBEDDINGS_API_KEY`/`CHAT_API_KEY`/`GENERATE_API_KEY` (empty by default; needed for
-OpenAI/OpenRouter).
+**Credentials and connection settings are never in this file** — they stay as plain (or
+Kubernetes-Secret-sourced) env vars: `PGUSER`/`PGPASSWORD` (from the `postgres-credentials`
+Secret in k8s), `PGHOST`/`PGPORT`/`PGDATABASE`, `QDRANT_URL`, and
+`EMBEDDINGS_API_KEY`/`CHAT_API_KEY`/`GENERATE_API_KEY` (empty by default; needed for
+OpenAI/OpenRouter) — this is what lets the migrate Job run before the ConfigMap exists.
 
 The migration validates collection vector size. If the collection already exists with a different
 size, migration fails; use a matching model/dimension or recreate the collection.

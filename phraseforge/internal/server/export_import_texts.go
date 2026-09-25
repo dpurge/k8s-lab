@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"phraseforge/internal/auth"
+	"phraseforge/internal/texts"
 )
 
 // apiTextExportItem is one exported text row — full round-trippable
@@ -58,23 +59,37 @@ type apiTextImportRequest struct {
 	Items []apiTextImportItem `json:"items" yaml:"items"`
 }
 
-// apiExportTexts handles GET /api/v1/texts/export: same ?language=
-// filtering convention as apiListTexts, scoped to languages the caller may
-// edit (not merely view) — export's purpose is round-tripping content for
-// hand-editing and re-import, the same authorization boundary create/update
-// already enforce.
+// apiExportTexts handles GET /api/v1/texts/export: language and script are
+// both required (requireExportFilter), narrowed further by an optional
+// ALL-match tags= filter; language scoping still respects the caller's
+// EditableLanguages the same way it always has — export's purpose is
+// round-tripping content for hand-editing and re-import, the same
+// authorization boundary create/update already enforce.
 func (s *Server) apiExportTexts(w http.ResponseWriter, r *http.Request) {
+	filter, ok := requireExportFilter(w, r)
+	if !ok {
+		return
+	}
 	u := currentUser(r)
 	editLangs, editAll, err := s.roles.EditableLanguages(r.Context(), u.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	langs, all := exportScopeLanguages(editLangs, editAll, r.URL.Query().Get("language"))
+	langs, all := exportScopeLanguages(editLangs, editAll, filter.Language)
 	list, err := s.texts.List(r.Context(), langs, all)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	list = filterByScript(list, filter.Script, func(t texts.Text) string { return t.Script })
+	if len(filter.Tags) > 0 {
+		matching, err := s.tags.ResourceIDsWithAllTags(r.Context(), resourceTypeText, filter.Tags)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		list = filterByID(list, matching, func(t texts.Text) int64 { return t.ID })
 	}
 	ids := make([]int64, len(list))
 	for i, t := range list {

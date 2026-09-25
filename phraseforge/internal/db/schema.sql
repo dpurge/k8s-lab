@@ -463,6 +463,17 @@ ALTER TABLE llm_prompts DROP CONSTRAINT IF EXISTS llm_prompts_kind_check;
 ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_kind_check
     CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models'));
 
+-- llm-purpose-timeout-and-prompt-config: an optional per-(kind, source,
+-- target) admin override of that call's timeout. NULL (the default, and
+-- what every pre-existing row has) means "inherit" — fall through to the
+-- purpose's own config.yaml default, then shared/llm's built-in 2-minute
+-- default — deliberately different from `think`, which takes the row's
+-- value unconditionally whenever a row exists at all.
+ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS timeout_seconds integer;
+ALTER TABLE llm_prompts DROP CONSTRAINT IF EXISTS llm_prompts_timeout_seconds_check;
+ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_timeout_seconds_check
+    CHECK (timeout_seconds IS NULL OR (timeout_seconds > 0 AND timeout_seconds <= 3600));
+
 -- phraseforge-generate-vocab-models-from-text: links a vocabulary/models
 -- list to the text it was generated from, so a rerun of "Generate
 -- Vocabulary"/"Generate Models" on that same text can find and
@@ -473,6 +484,34 @@ ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_kind_check
 -- still want to keep studying.
 ALTER TABLE vocabulary_lists ADD COLUMN IF NOT EXISTS source_text_id bigint REFERENCES texts(id) ON DELETE SET NULL;
 ALTER TABLE models_lists ADD COLUMN IF NOT EXISTS source_text_id bigint REFERENCES texts(id) ON DELETE SET NULL;
+
+-- dialog-vocabulary-models-generation: "Dialog is just a specialized text" —
+-- Generate Vocabulary/Generate Models extend to Dialogs, mirroring
+-- source_text_id above exactly (same ON DELETE SET NULL rationale).
+ALTER TABLE vocabulary_lists ADD COLUMN IF NOT EXISTS source_dialog_id bigint REFERENCES dialogs(id) ON DELETE SET NULL;
+ALTER TABLE models_lists ADD COLUMN IF NOT EXISTS source_dialog_id bigint REFERENCES dialogs(id) ON DELETE SET NULL;
+
+-- Confirmed against a live DB (no existing duplicates) before adding these:
+-- nothing previously stopped two lists linking to the same source text (a
+-- race between two enqueued generate jobs, or a Retry, could otherwise
+-- produce two lists with an arbitrary "winner" thereafter). One partial
+-- unique index per (table x source column) — partial, since most rows have
+-- a NULL source and NULLs must stay unconstrained.
+CREATE UNIQUE INDEX IF NOT EXISTS vocabulary_lists_source_text_id_idx ON vocabulary_lists (source_text_id) WHERE source_text_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS vocabulary_lists_source_dialog_id_idx ON vocabulary_lists (source_dialog_id) WHERE source_dialog_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS models_lists_source_text_id_idx ON models_lists (source_text_id) WHERE source_text_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS models_lists_source_dialog_id_idx ON models_lists (source_dialog_id) WHERE source_dialog_id IS NOT NULL;
+
+-- A hand-edited import could otherwise set both source_text_id and
+-- source_dialog_id on the same list, which makes no sense (a list has at
+-- most one source). Same drop-and-recreate pattern as
+-- llm_prompts_kind_check above.
+ALTER TABLE vocabulary_lists DROP CONSTRAINT IF EXISTS vocabulary_lists_single_source_check;
+ALTER TABLE vocabulary_lists ADD CONSTRAINT vocabulary_lists_single_source_check
+    CHECK (source_text_id IS NULL OR source_dialog_id IS NULL);
+ALTER TABLE models_lists DROP CONSTRAINT IF EXISTS models_lists_single_source_check;
+ALTER TABLE models_lists ADD CONSTRAINT models_lists_single_source_check
+    CHECK (source_text_id IS NULL OR source_dialog_id IS NULL);
 
 -- ── Jobs ─────────────────────────────────────────────────────────────────────
 -- Ported from knowledge/internal/queue's "operations" table (see
@@ -487,7 +526,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id         uuid PRIMARY KEY,
     kind       text NOT NULL,
     priority   text NOT NULL CHECK (priority IN ('interactive', 'background')),
-    status     text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
+    status     text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed', 'cancelled')),
     payload    jsonb NOT NULL DEFAULT '{}',
     result     jsonb,
     error      text,
@@ -500,3 +539,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- starving the k3d node).
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_running_idx ON jobs ((true)) WHERE status = 'running';
 CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (created_at ASC) WHERE status = 'pending';
+
+-- jobs-cancel-pending-running: a job an admin deliberately stopped reads
+-- differently in the Status column than one that genuinely failed. Same
+-- drop-and-recreate pattern as llm_prompts_kind_check above — confirmed
+-- against a live DB that the auto-generated constraint name really is
+-- jobs_status_check (Postgres names an unnamed column CHECK
+-- <table>_<column>_check).
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
+ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
+    CHECK (status IN ('pending', 'running', 'done', 'failed', 'cancelled'));

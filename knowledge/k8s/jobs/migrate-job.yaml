@@ -19,6 +19,14 @@ spec:
           imagePullPolicy: Always
           command: ["/knowledge", "migrate"]
           env:
+            - name: PGHOST
+              value: postgres.data.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: knowledge
+            - name: QDRANT_URL
+              value: http://qdrant.data.svc.cluster.local:6333
             - name: PGUSER
               valueFrom:
                 secretKeyRef:

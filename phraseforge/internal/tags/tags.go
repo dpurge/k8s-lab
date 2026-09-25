@@ -161,6 +161,35 @@ func (s *Store) ResourceIDsWithTag(ctx context.Context, resourceType, tagName st
 	return out, rows.Err()
 }
 
+// ResourceIDsWithAllTags returns the resource ids of resourceType that carry
+// every one of names (ALL-match) — the basis for export's optional tags=
+// filter. names must already be normalized (Parse) and non-empty: an empty
+// names slice would make the HAVING count meaningless (every resource_id
+// with at least one tagging would satisfy COUNT(...) >= 0), which is not
+// "no filter" — callers must skip calling this when there's nothing to
+// filter by, matching ResourceIDsWithTag's own single-tag precedent.
+func (s *Store) ResourceIDsWithAllTags(ctx context.Context, resourceType string, names []string) ([]int64, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT tg.resource_id FROM tagging tg JOIN tag t ON t.id = tg.tag_id
+		WHERE tg.resource_type = $1 AND t.name = ANY($2)
+		GROUP BY tg.resource_id
+		HAVING COUNT(DISTINCT t.name) = $3`, resourceType, names, len(names))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // AllNames returns every declared tag name, for a datalist autocomplete on
 // the tag input field. Tags are shared/global across resource types — a
 // "travel" tag means the same thing whether it's on a text or a future dialog.

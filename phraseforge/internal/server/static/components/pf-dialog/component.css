@@ -24,9 +24,74 @@ pf-dialog .pf-dialog-box {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
+/* Used only by showContent() callers (e.g. the Jobs page's View action)
+   that need room for structured content instead of one short message.
+   Width starts noticeably wider than the default confirm box; height is
+   left to hug its actual content (no forced height) instead of always
+   opening at a fixed tall size regardless of how little content there is.
+   Either dimension is user-resizable (drag the bottom-right corner) up to
+   max-width/max-height — `resize` needs `overflow` on both axes, hence
+   `overflow: auto` here instead of the default box's `overflow-y: auto`.
+   Inline width/height from a prior drag are reset on every _open() so
+   reusing the one page instance never leaks a previous resize into an
+   unrelated dialog. */
+pf-dialog .pf-dialog-box.wide {
+  width: min(64rem, 92vw);
+  min-width: 24rem;
+  max-width: 92vw;
+  min-height: 16rem;
+  max-height: 92vh;
+  overflow: auto;
+  resize: both;
+}
+
 pf-dialog .pf-dialog-message {
   margin: 0 0 1rem;
   white-space: pre-wrap;
+}
+
+/* Uniform vertical rhythm between the metadata list and each Payload/Result
+   block, regardless of element type — simpler and more robust than styling
+   h3/dl/pre margins individually. */
+pf-dialog .pf-dialog-content > * + * {
+  margin-top: 1.25rem;
+}
+
+pf-dialog .pf-dialog-content {
+  margin-bottom: 1rem;
+}
+
+pf-dialog .pf-dialog-content h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+pf-dialog .pf-dialog-content dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem 0.75rem;
+  margin: 0;
+}
+
+pf-dialog .pf-dialog-content dt {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+pf-dialog .pf-dialog-content dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+pf-dialog .pf-dialog-content pre {
+  margin: 0;
+  padding: 0.6rem;
+  background: var(--surface-alt);
+  border-radius: 0.4rem;
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 pf-dialog .pf-dialog-actions {

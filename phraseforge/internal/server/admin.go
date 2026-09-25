@@ -33,7 +33,8 @@ var adminAppI18nKeys = []string{
 	"admin.llm_kind_title", "admin.llm_kind_process_text", "admin.llm_kind_process_dialog",
 	"admin.llm_source_language", "admin.llm_target_language", "admin.llm_target_not_applicable",
 	"admin.llm_provider", "admin.llm_model", "admin.llm_model_placeholder", "admin.llm_model_default",
-	"admin.llm_think", "admin.llm_prompt", "admin.llm_prompt_placeholder", "admin.llm_save",
+	"admin.llm_think", "admin.llm_timeout_seconds", "admin.llm_timeout_default", "admin.llm_timeout_placeholder",
+	"admin.llm_prompt", "admin.llm_prompt_placeholder", "admin.llm_save",
 	"admin.llm_configs_heading", "admin.llm_delete_confirm", "admin.llm_no_configs",
 	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_config",
 	"texts.edit", "texts.delete", "vocabulary.cancel_edit",
@@ -218,6 +219,18 @@ type apiAdminLLMPromptRequest struct {
 	Model          string `json:"model"`
 	Think          bool   `json:"think"`
 	Prompt         string `json:"prompt"`
+	// TimeoutSeconds nil means "inherit the purpose default" — see
+	// ai.Prompt.TimeoutSeconds's own doc comment.
+	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
+}
+
+// validTimeoutSeconds mirrors the llm_prompts_timeout_seconds_check DB
+// constraint exactly (schema.sql) — validated here too so a bad value is
+// rejected at the API boundary with a clear message, not an opaque DB
+// error, and so apiImportAdminConfig (which never reaches SetPrompt for an
+// invalid row without this) can't silently accept one either.
+func validTimeoutSeconds(t *int) bool {
+	return t == nil || (*t > 0 && *t <= 3600)
 }
 
 // apiSetAdminLLMPrompt is handleAdminLLMPrompt's exact logic.
@@ -230,6 +243,7 @@ func (s *Server) apiSetAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
 	p := ai.Prompt{
 		Kind: req.Kind, SourceLanguage: req.SourceLanguage, TargetLanguage: req.TargetLanguage,
 		Provider: req.Provider, Model: req.Model, Think: req.Think, Prompt: req.Prompt,
+		TimeoutSeconds: req.TimeoutSeconds,
 	}
 	if p.Kind == "" || p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
 		writeErr(w, http.StatusBadRequest, "validation_error", "kind, source language, target language, and prompt are required")
@@ -241,6 +255,10 @@ func (s *Server) apiSetAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	if !slices.Contains(s.ai.Providers(), p.Provider) {
 		writeErr(w, http.StatusBadRequest, "validation_error", "provider must be one of the configured providers")
+		return
+	}
+	if !validTimeoutSeconds(p.TimeoutSeconds) {
+		writeErr(w, http.StatusBadRequest, "validation_error", "timeout seconds must be between 1 and 3600")
 		return
 	}
 	if err := s.ai.SetPrompt(r.Context(), p); err != nil {
@@ -349,6 +367,10 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM prompt's provider must be one of the configured providers")
 			return
 		}
+		if !validTimeoutSeconds(p.TimeoutSeconds) {
+			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM prompt's timeout seconds must be between 1 and 3600")
+			return
+		}
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -377,7 +399,7 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, p := range cfg.LLMPrompts {
-		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, provider, model, think, prompt) VALUES($1,$2,$3,$4,$5,$6,$7)`, p.Kind, p.SourceLanguage, p.TargetLanguage, p.Provider, strings.TrimSpace(p.Model), p.Think, p.Prompt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, provider, model, think, prompt, timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.Kind, p.SourceLanguage, p.TargetLanguage, p.Provider, strings.TrimSpace(p.Model), p.Think, p.Prompt, p.TimeoutSeconds); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}

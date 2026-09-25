@@ -6,13 +6,8 @@ metadata:
 data:
   config.yaml: |
     qdrant:
-      url: http://qdrant.data.svc.cluster.local:6333
       collection: knowledge
       searchMinScore: 0.4
-    postgres:
-      host: postgres.data.svc.cluster.local
-      port: "5432"
-      database: knowledge
     embeddings:
       provider: ollama
       baseURL: http://host.docker.internal:11434

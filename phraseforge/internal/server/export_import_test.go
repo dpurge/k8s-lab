@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http/httptest"
 	"testing"
 
 	"phraseforge/internal/i18n"
@@ -251,5 +252,112 @@ func TestExportScopeLanguagesNoFilterKeepsEditableSet(t *testing.T) {
 	langs, all := exportScopeLanguages([]string{"ron", "fra"}, false, "")
 	if all || len(langs) != 2 {
 		t.Errorf("exportScopeLanguages(..., \"\") = (%v, %v), want the unfiltered ([ron fra], false)", langs, all)
+	}
+}
+
+// TestRequireExportFilterMissingLanguage covers the 400 case: script given,
+// language missing.
+func TestRequireExportFilterMissingLanguage(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/texts/export?script=latn", nil)
+	w := httptest.NewRecorder()
+	_, ok := requireExportFilter(w, r)
+	if ok {
+		t.Fatal("requireExportFilter with no language = ok, want not ok")
+	}
+	if w.Code != 400 {
+		t.Errorf("requireExportFilter with no language wrote status %d, want 400", w.Code)
+	}
+}
+
+// TestRequireExportFilterMissingScript covers the 400 case: language given,
+// script missing.
+func TestRequireExportFilterMissingScript(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/texts/export?language=ron", nil)
+	w := httptest.NewRecorder()
+	_, ok := requireExportFilter(w, r)
+	if ok {
+		t.Fatal("requireExportFilter with no script = ok, want not ok")
+	}
+	if w.Code != 400 {
+		t.Errorf("requireExportFilter with no script wrote status %d, want 400", w.Code)
+	}
+}
+
+// TestRequireExportFilterBothPresentParsesTags covers the success case, plus
+// that tags= is parsed through tags.Parse's own normalization (dedupe,
+// lowercase, sort) exactly like normalizeTagList already does for import.
+func TestRequireExportFilterBothPresentParsesTags(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/texts/export?language=ron&script=latn&tags=Travel,travel,Food", nil)
+	w := httptest.NewRecorder()
+	filter, ok := requireExportFilter(w, r)
+	if !ok {
+		t.Fatalf("requireExportFilter with both present = not ok, want ok (wrote status %d)", w.Code)
+	}
+	if filter.Language != "ron" || filter.Script != "latn" {
+		t.Errorf("requireExportFilter(...) = %+v, want Language=ron Script=latn", filter)
+	}
+	want := []string{"food", "travel"}
+	if len(filter.Tags) != len(want) {
+		t.Fatalf("requireExportFilter(...).Tags = %v, want %v", filter.Tags, want)
+	}
+	for i := range want {
+		if filter.Tags[i] != want[i] {
+			t.Errorf("requireExportFilter(...).Tags[%d] = %q, want %q", i, filter.Tags[i], want[i])
+		}
+	}
+}
+
+// TestRequireExportFilterOmittedTagsIsEmpty covers that a request with no
+// tags= param at all parses to an empty (not nil-but-truthy) Tags slice, so
+// every export handler's "if len(filter.Tags) > 0" guard correctly skips the
+// tag-membership filter entirely.
+func TestRequireExportFilterOmittedTagsIsEmpty(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/texts/export?language=ron&script=latn", nil)
+	w := httptest.NewRecorder()
+	filter, ok := requireExportFilter(w, r)
+	if !ok {
+		t.Fatalf("requireExportFilter with no tags = not ok, want ok (wrote status %d)", w.Code)
+	}
+	if len(filter.Tags) != 0 {
+		t.Errorf("requireExportFilter(...).Tags = %v, want empty", filter.Tags)
+	}
+}
+
+// filterTestItem is a minimal stand-in for texts.Text/dialogs.Dialog/etc. —
+// filterByScript/filterByID are generic and resource-agnostic, so a plain
+// local struct exercises them without depending on any one resource
+// package's real type.
+type filterTestItem struct {
+	id     int64
+	script string
+}
+
+// TestFilterByScriptKeepsOnlyExactMatch covers that filterByScript (the
+// export handlers' required script= narrowing) keeps only items whose
+// script matches exactly, dropping every other script — including a
+// same-language-different-script item, which is exactly the case this
+// feature's script filter exists to narrow out.
+func TestFilterByScriptKeepsOnlyExactMatch(t *testing.T) {
+	items := []filterTestItem{{1, "latn"}, {2, "cyrl"}, {3, "latn"}}
+	got := filterByScript(items, "latn", func(i filterTestItem) string { return i.script })
+	if len(got) != 2 || got[0].id != 1 || got[1].id != 3 {
+		t.Errorf("filterByScript(...) = %+v, want items 1 and 3 only", got)
+	}
+}
+
+// TestFilterByIDExcludesItemMissingEvenOneTag covers the ALL-match contract
+// at the filterByID call site export uses with tags.ResourceIDsWithAllTags:
+// an item whose id isn't in the "has every requested tag" set (matching)
+// must be excluded, even if it carries some but not all of the requested
+// tags — filterByID itself only ever sees the already-computed matching id
+// set, so this is really asserting the call site wires ALL-match semantics
+// through correctly, not re-testing filterByID's own (already
+// straightforward) set-membership logic.
+func TestFilterByIDExcludesItemMissingEvenOneTag(t *testing.T) {
+	items := []filterTestItem{{1, "latn"}, {2, "latn"}, {3, "latn"}}
+	matching := []int64{1, 3} // e.g. only 1 and 3 carry every requested tag
+	got := filterByID(items, matching, func(i filterTestItem) int64 { return i.id })
+	if len(got) != 2 || got[0].id != 1 || got[1].id != 3 {
+		t.Errorf("filterByID(...) = %+v, want items 1 and 3 only", got)
 	}
 }

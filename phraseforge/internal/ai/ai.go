@@ -18,10 +18,44 @@ import (
 	"phraseforge/internal/config"
 )
 
-// KindLLMGenerate is the jobs.Service kind registered for HandleGenerate.
-// Exported so main.go can call jobsSvc.Register(ai.KindLLMGenerate,
-// aiSvc.HandleGenerate).
+// KindLLMGenerate is the historical jobs.Service kind for HandleGenerate —
+// still registered (see main.go) so a pre-existing pending/failed row (or
+// a Retry of one) keeps working. New callers use JobKind's field-specific
+// kinds instead — all four are registered against the exact same
+// HandleGenerate handler; only the job's own Kind column differs, giving
+// the Jobs page real per-field traceability instead of one generic
+// bucket, matching the same "same handler, several kind values" pattern
+// generate.Service's own KindGenerateVocabFromText/FromDialog pair already
+// established.
 const KindLLMGenerate = "llm_generate"
+
+// KindGenerateTitle/KindGenerateTranscription/KindGenerateTranslation are
+// JobKind's three field-specific kinds — see KindLLMGenerate's doc comment.
+const (
+	KindGenerateTitle         = "generate_title"
+	KindGenerateTranscription = "generate_transcription"
+	KindGenerateTranslation   = "generate_translation"
+)
+
+// JobKind maps a generatePayload.Kind value ("title"/"transcription"/
+// "translation") to the jobs.Service kind a caller should enqueue it
+// under — the single place this mapping lives, so every enqueue call site
+// (export/import backfill, the View-page Generate buttons, item-level
+// generation) stays in sync. Falls back to KindLLMGenerate for anything
+// else, preserving this package's existing lenient-unrecognized-kind
+// behavior (see purposeDefault's own doc comment).
+func JobKind(payloadKind string) string {
+	switch payloadKind {
+	case "title":
+		return KindGenerateTitle
+	case "transcription":
+		return KindGenerateTranscription
+	case "translation":
+		return KindGenerateTranslation
+	default:
+		return KindLLMGenerate
+	}
+}
 
 // ValidKinds lists every kind Generate supports — the single authoritative
 // source for what the llm_prompts.kind CHECK constraint (schema.sql), the
@@ -45,38 +79,49 @@ type Prompt struct {
 	Model          string `json:"model"`
 	Think          bool   `json:"think"`
 	Prompt         string `json:"prompt"`
+	// TimeoutSeconds is nil when this row has no override (the default for
+	// every pre-existing row) — "inherit the purpose default", not "no
+	// timeout". See resolveTimeoutSeconds.
+	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
 }
 
 // TextWriteback is the consumer-side interface HandleGenerate writes a
-// completed transcription back through — satisfied structurally by both
-// *texts.Store and *dialogs.Store (their SetTranscription methods already
-// match this signature), so ai never imports either package directly.
+// completed title/transcription back through — satisfied structurally by
+// both *texts.Store and *dialogs.Store (their SetTitleIfBlank/
+// SetTranscriptionIfBlank methods already match this signature), so ai
+// never imports either package directly. applied is false (not an error)
+// when the target field already had content — background-generate-title-
+// transcription-translation's universal blank-check rule.
 type TextWriteback interface {
-	SetTitle(ctx context.Context, id int64, title string) error
-	SetTranscription(ctx context.Context, id int64, transcription string) error
+	SetTitleIfBlank(ctx context.Context, id int64, title string) (applied bool, err error)
+	SetTranscriptionIfBlank(ctx context.Context, id int64, transcription string) (applied bool, err error)
 }
 
 // TranslationWriteback is the consumer-side interface HandleGenerate writes
 // a completed translation back through — satisfied structurally by
-// *translations.Store.
+// *translations.Store (its Set method, used by the interactive edit-form
+// save paths, is untouched and unused here). applied follows
+// TextWriteback's own blank-check convention (a translation already present
+// for that locale is a skip, not a failure).
 type TranslationWriteback interface {
-	Set(ctx context.Context, resourceType string, resourceID int64, locale, text string) error
+	SetIfAbsent(ctx context.Context, resourceType string, resourceID int64, locale, text string) (applied bool, err error)
 }
 
 // ItemTranscriptionWriteback is the consumer-side interface HandleGenerate
 // writes a completed transcription back through for a vocabulary/models
 // item — addressed by (listID, position) rather than its own independent
 // row id. Satisfied structurally by both *vocabulary.Store and
-// *models.Store (their SetItemTranscription methods already match this
-// signature). phrase is the item's phrase as of when the job was enqueued
-// (generatePayload.Content, for an item resource type — see writeback's own
-// doc comment on why no separate field was needed); the underlying store
-// only applies the write if the item at (listID, position) still has that
-// phrase, so a job that outlives a position shift (reorder/delete/re-import)
-// fails instead of silently landing on the wrong item (see B3 in
-// specs/features/phraseforge-export-import.md).
+// *models.Store (their SetItemTranscriptionIfBlank methods already match
+// this signature). phrase is the item's phrase as of when the job was
+// enqueued (generatePayload.Content, for an item resource type — see
+// writeback's own doc comment on why no separate field was needed); the
+// underlying store returns an error if the item at (listID, position) no
+// longer has that phrase, so a job that outlives a position shift
+// (reorder/delete/re-import) fails instead of silently landing on the wrong
+// item (see B3 in specs/features/phraseforge-export-import.md). applied is
+// false (not an error) when the item's transcription already had content.
 type ItemTranscriptionWriteback interface {
-	SetItemTranscription(ctx context.Context, listID int64, position int, phrase, transcription string) error
+	SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (applied bool, err error)
 }
 
 // ItemTranslationWriteback is the consumer-side interface HandleGenerate
@@ -88,9 +133,10 @@ type ItemTranscriptionWriteback interface {
 // and *models.Store are already imported, rather than directly by either
 // store. phrase carries the same stale-target guard as
 // ItemTranscriptionWriteback's own phrase parameter — see that field's doc
-// comment.
+// comment. applied is false (not an error) when the item already had a
+// translation for that locale.
 type ItemTranslationWriteback interface {
-	SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) error
+	SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (applied bool, err error)
 }
 
 type Service struct {
@@ -123,7 +169,7 @@ func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, tran
 }
 
 func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
-	rows, err := s.db.Query(ctx, `SELECT kind, source_language, target_language, coalesce(provider, ''), coalesce(model, ''), think, prompt FROM llm_prompts ORDER BY kind, source_language, target_language`)
+	rows, err := s.db.Query(ctx, `SELECT kind, source_language, target_language, coalesce(provider, ''), coalesce(model, ''), think, prompt, timeout_seconds FROM llm_prompts ORDER BY kind, source_language, target_language`)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +177,7 @@ func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
 	var out []Prompt
 	for rows.Next() {
 		var p Prompt
-		if err := rows.Scan(&p.Kind, &p.SourceLanguage, &p.TargetLanguage, &p.Provider, &p.Model, &p.Think, &p.Prompt); err != nil {
+		if err := rows.Scan(&p.Kind, &p.SourceLanguage, &p.TargetLanguage, &p.Provider, &p.Model, &p.Think, &p.Prompt, &p.TimeoutSeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -139,7 +185,7 @@ func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
 	return out, rows.Err()
 }
 func (s *Service) SetPrompt(ctx context.Context, p Prompt) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO llm_prompts(kind,source_language,target_language,provider,model,think,prompt) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(kind,source_language,target_language) DO UPDATE SET provider=excluded.provider, model=excluded.model, think=excluded.think, prompt=excluded.prompt, updated_at=now()`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Provider), strings.TrimSpace(p.Model), p.Think, p.Prompt)
+	_, err := s.db.Exec(ctx, `INSERT INTO llm_prompts(kind,source_language,target_language,provider,model,think,prompt,timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(kind,source_language,target_language) DO UPDATE SET provider=excluded.provider, model=excluded.model, think=excluded.think, prompt=excluded.prompt, timeout_seconds=excluded.timeout_seconds, updated_at=now()`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Provider), strings.TrimSpace(p.Model), p.Think, p.Prompt, p.TimeoutSeconds)
 	return err
 }
 
@@ -179,7 +225,8 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 	var provider, model string
 	var think bool
 	var promptText string
-	err := s.db.QueryRow(ctx, `SELECT coalesce(provider, ''), coalesce(model, ''), think, prompt FROM llm_prompts WHERE kind=$1 AND source_language=$2 AND target_language=$3`, kind, source, target).Scan(&provider, &model, &think, &promptText)
+	var timeoutSeconds *int
+	err := s.db.QueryRow(ctx, `SELECT coalesce(provider, ''), coalesce(model, ''), think, prompt, timeout_seconds FROM llm_prompts WHERE kind=$1 AND source_language=$2 AND target_language=$3`, kind, source, target).Scan(&provider, &model, &think, &promptText, &timeoutSeconds)
 	switch {
 	case err == nil:
 		if strings.TrimSpace(provider) != "" {
@@ -190,6 +237,7 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 		}
 		p.Think = think
 		p.Prompt = promptText
+		p.TimeoutSeconds = timeoutSeconds
 	case errors.Is(err, pgx.ErrNoRows):
 		// No admin-configured override for this (kind, source, target) —
 		// expected; fall through to config.yaml's defaults below.
@@ -199,27 +247,36 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 		// Generate() doesn't hard-fail on a transient DB problem.
 		log.Printf("ai: lookup llm_prompts override for kind=%s source=%s target=%s: %v", kind, source, target, err)
 	}
-	if strings.TrimSpace(p.Prompt) != "" {
-		return p
-	}
-	switch kind {
-	case "transcription":
-		p.Prompt = "Create a romanized transcription for the source language content. Return only the transcription, preserving line breaks and structure. Do not add explanations."
-	case "title":
-		p.Prompt = "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble."
-	case "process_text":
-		p.Prompt = "You reformat raw extracted text into clean Markdown prose suitable as a language-learning reading text. Remove navigation menus, ads, boilerplate, and unrelated content. Preserve the actual article/passage content and its paragraph structure. Do not translate or summarize. Respond with only the cleaned Markdown."
-	case "process_dialog":
-		p.Prompt = "You reformat raw extracted text into a clean dialog transcript in Markdown. Identify distinct speakers/turns and format each turn on its own line. Remove navigation, ads, and unrelated content. Respond with only the cleaned dialog content."
-	case "generate_vocabulary":
-		p.Prompt = "You extract vocabulary and grammar items from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase {grammar} [transcription] = translation — where {grammar} is a short grammar tag (e.g. part of speech), [transcription] is a romanized reading, and = translation is the item's translation; each of {grammar}, [transcription], and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves."
-	case "generate_models":
-		p.Prompt = "You extract short grammar/sentence-pattern models from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase [transcription] = translation — where [transcription] is a romanized reading and = translation is the item's translation; each of [transcription] and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves."
-	default:
-		p.Prompt = "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations."
+	// def.Prompt (config.yaml, previously a hardcoded switch here — see
+	// llm-purpose-timeout-and-prompt-config) is the fallback whenever no
+	// admin override supplied a non-blank prompt of its own.
+	if strings.TrimSpace(p.Prompt) == "" {
+		p.Prompt = def.Prompt
 	}
 	return p
 }
+
+// resolveTimeoutSeconds picks the effective per-call timeout, in seconds:
+// an admin llm_prompts.timeout_seconds override (if set) beats the
+// purpose's own config.yaml default (if set), which beats shared/llm's own
+// built-in default (signaled by returning 0 here — llm.New treats a zero
+// Config.Timeout as "apply my own default", so no third fallback value
+// needs to be threaded through this function). A pure function, kept next
+// to purposeDefault so both are unit-testable without a database.
+func resolveTimeoutSeconds(override *int, purposeDefaultSeconds int) int {
+	if override != nil {
+		return *override
+	}
+	return purposeDefaultSeconds
+}
+
+// userMessageTemplate wraps Generate's caller-supplied content with the
+// metadata every LLM call needs alongside it. Named placeholders
+// ({{source_language}}, not %s/fmt.Sprintf) — this is prompt text, and the
+// user's own stated preference is for prompt/template text to use named
+// tokens, matching knowledge/internal/translate/translate.go's existing
+// {{language}} convention.
+const userMessageTemplate = "Source language: {{source_language}}\nTarget language: {{target_language}}\nContent type: {{content_type}}\n\n{{content}}"
 
 func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLanguage, contentType, content string) (string, error) {
 	if strings.TrimSpace(content) == "" {
@@ -227,11 +284,17 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 	}
 	def := s.purposeDefault(kind)
 	prompt := s.prompt(ctx, kind, sourceLanguage, targetLanguage)
-	user := fmt.Sprintf("Source language: %s\nTarget language: %s\nContent type: %s\n\n%s", sourceLanguage, targetLanguage, contentType, content)
+	user := strings.NewReplacer(
+		"{{source_language}}", sourceLanguage,
+		"{{target_language}}", targetLanguage,
+		"{{content_type}}", contentType,
+		"{{content}}", content,
+	).Replace(userMessageTemplate)
 	provider, ok := s.cfg.Providers[prompt.Provider]
 	if !ok {
 		return "", fmt.Errorf("llm provider %q is not in the configured provider registry", prompt.Provider)
 	}
+	timeoutSeconds := resolveTimeoutSeconds(prompt.TimeoutSeconds, def.TimeoutSeconds)
 	clientCfg := llm.Config{
 		Provider: prompt.Provider,
 		BaseURL:  provider.BaseURL,
@@ -239,6 +302,7 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 		Model:    prompt.Model,
 		NumCtx:   def.NumCtx,
 		Think:    prompt.Think,
+		Timeout:  time.Duration(timeoutSeconds) * time.Second,
 	}
 	start := time.Now()
 	out, err := llm.New(clientCfg).Complete(ctx, []llm.Message{{Role: "system", Content: prompt.Prompt}, {Role: "user", Content: user}})
@@ -247,7 +311,7 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 		outcome = "error"
 	}
 	// Telemetry only — never log content or the response text.
-	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
 	return out, err
 }
 
@@ -281,6 +345,13 @@ type generatePayload struct {
 
 type generateResult struct {
 	Text string `json:"text"`
+	// Applied is omitted for the interactive (ResourceID == 0) path, where
+	// there's nothing to write back. For a writeback path, false means the
+	// target field already had content and this job's result was
+	// deliberately not written — still job success, not failure (see
+	// writeback's doc comment) — surfaced here so the Jobs page's result
+	// view can distinguish "wrote it" from "skipped, already had a value".
+	Applied *bool `json:"applied,omitempty"`
 }
 
 // HandleGenerate is the jobs.HandlerFunc implementation registered for
@@ -300,68 +371,76 @@ func (s *Service) HandleGenerate(ctx context.Context, id string, payload json.Ra
 	if err != nil {
 		return nil, err
 	}
+	result := generateResult{Text: text}
 	if p.ResourceID != 0 {
-		if err := s.writeback(ctx, p, text); err != nil {
+		applied, err := s.writeback(ctx, p, text)
+		if err != nil {
 			return nil, err
 		}
+		result.Applied = &applied
 	}
-	return json.Marshal(generateResult{Text: text})
+	return json.Marshal(result)
 }
 
 // writeback stores a completed generation against the resource it was
-// generated for. "title" writes back only for a text/dialog resource type
-// (vocabulary/models items have no title); "process_text"/"process_dialog"
-// are still called directly by the ingest package (see
-// phraseforge-ingest-texts-dialogs step 6), not routed through this
-// job-queue path with a resource already in hand.
+// generated for, but only if the target field is still blank/absent
+// (background-generate-title-transcription-translation's universal rule) —
+// "title" writes back only for a text/dialog resource type (vocabulary/
+// models items have no title); "process_text"/"process_dialog" are still
+// called directly by the ingest package (see phraseforge-ingest-texts-
+// dialogs step 6), not routed through this job-queue path with a resource
+// already in hand.
 //
-// translations.Set and the *Store.SetTranscription/SetItemTranscription/
-// SetItemTranslation methods below all treat an empty body as "delete this
-// translation/transcription" (by design, for an editor clearing a field by
-// hand) — so an empty or whitespace-only LLM result reaching any of them
-// here would silently destroy a previously-good value instead of merely
-// failing to update it. Guard against that by treating an empty result as
-// this job's failure instead: the job then correctly shows as
-// failed/retryable, and nothing already stored is touched.
+// applied is false, with a nil error, when the guarded setter found the
+// target field already non-blank — that's job success (a no-op skip), not
+// failure. translations.SetIfAbsent and the *Store.SetTranscriptionIfBlank/
+// SetItemTranscriptionIfBlank/SetItemTranslationIfAbsent methods below all
+// treat an empty body as nothing to write — so an empty or whitespace-only
+// LLM result reaching any of them here would either silently no-op or (worse,
+// for the plain unconditional paths this function no longer uses) destroy a
+// previously-good value. Guard against that by treating an empty result as
+// this job's failure instead, before any writeback call: the job then
+// correctly shows as failed/retryable, and nothing already stored is
+// touched.
 //
 // For a vocabulary_item/models_item resource type, p.Content is already the
 // item's phrase as of when this job was enqueued (see
 // export_import.go's buildBackfillPayload, which sets Content to the item's
 // phrase for every item-level decision) — passed through to
-// SetItemTranscription/SetItemTranslation as their stale-target guard rather
-// than adding a separate payload field for it (see B3 in
+// SetItemTranscriptionIfBlank/SetItemTranslation as their stale-target guard
+// rather than adding a separate payload field for it (see B3 in
 // specs/features/phraseforge-export-import.md).
-func (s *Service) writeback(ctx context.Context, p generatePayload, text string) error {
+func (s *Service) writeback(ctx context.Context, p generatePayload, text string) (applied bool, err error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return fmt.Errorf("llm returned an empty result for kind %q", p.Kind)
+		return false, fmt.Errorf("llm returned an empty result for kind %q", p.Kind)
 	}
 	switch p.Kind {
 	case "title":
 		store := s.textWriteback(p.ResourceType)
 		if store == nil {
-			return fmt.Errorf("ai: unknown resource_type %q for title writeback", p.ResourceType)
+			return false, fmt.Errorf("ai: unknown resource_type %q for title writeback", p.ResourceType)
 		}
-		return store.SetTitle(ctx, p.ResourceID, trimmed)
+		return store.SetTitleIfBlank(ctx, p.ResourceID, trimmed)
 	case "transcription":
 		if store := s.itemTranscriptionWriteback(p.ResourceType); store != nil {
-			return store.SetItemTranscription(ctx, p.ResourceID, p.ItemPosition, p.Content, trimmed)
+			return store.SetItemTranscriptionIfBlank(ctx, p.ResourceID, p.ItemPosition, p.Content, trimmed)
 		}
 		store := s.textWriteback(p.ResourceType)
 		if store == nil {
-			return fmt.Errorf("ai: unknown resource_type %q for transcription writeback", p.ResourceType)
+			return false, fmt.Errorf("ai: unknown resource_type %q for transcription writeback", p.ResourceType)
 		}
-		return store.SetTranscription(ctx, p.ResourceID, trimmed)
+		return store.SetTranscriptionIfBlank(ctx, p.ResourceID, trimmed)
 	case "translation":
 		if p.ResourceType == "vocabulary_item" || p.ResourceType == "models_item" {
 			if s.itemTranslations == nil {
-				return fmt.Errorf("ai: no item translation writeback configured for resource_type %q", p.ResourceType)
+				return false, fmt.Errorf("ai: no item translation writeback configured for resource_type %q", p.ResourceType)
 			}
 			return s.itemTranslations.SetItemTranslation(ctx, p.ResourceType, p.ResourceID, p.ItemPosition, p.Content, p.Locale, trimmed)
 		}
-		return s.translations.Set(ctx, p.ResourceType, p.ResourceID, p.Locale, trimmed)
+		return s.translations.SetIfAbsent(ctx, p.ResourceType, p.ResourceID, p.Locale, trimmed)
 	default:
-		return nil
+		return false, nil
 	}
 }
 

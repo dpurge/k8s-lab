@@ -17,6 +17,12 @@
   const root = document.getElementById("vocabulary-app");
   const statusBar = document.getElementById("statusBar");
 
+  // Keyset pagination state — see texts-app.js's showList for the full
+  // rationale (phraseforge-spa-pagination).
+  let pageCursors = [null];
+  let pageIndex = 0;
+  let latestNextCursor = null;
+
   function esc(s) {
     return String(s == null ? "" : s).replace(
       /[&<>"']/g,
@@ -73,8 +79,35 @@
   // own copies exactly — see that file for the inline reasoning comments
   // this codebase's "deliberate duplication, not a shared abstraction"
   // convention (specs/tech-stack.md) keeps out of a shared module.
-  function buildExportURL(endpoint, languageFilter) {
-    return languageFilter ? `${endpoint}?language=${encodeURIComponent(languageFilter)}` : endpoint;
+  function buildExportURL(endpoint, language, script, tagsInput) {
+    const q = new URLSearchParams({ language, script });
+    const tags = (tagsInput || "").trim();
+    if (tags) q.set("tags", tags);
+    return `${endpoint}?${q.toString()}`;
+  }
+
+  // showExportDialog mirrors texts-app.js's own copy exactly — see that
+  // file for the inline reasoning comments.
+  async function showExportDialog(endpoint, languageFilter) {
+    const confirmDialog = document.getElementById("confirmDialog");
+    const container = document.createElement("div");
+    container.innerHTML = `
+      <pf-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
+        <select id="dlgExportLanguage">${languageOptions(languageFilter)}</select>
+      </pf-field>
+      <pf-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
+        <select id="dlgExportScript">${scriptOptions()}</select>
+      </pf-field>
+      <pf-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
+        <input type="text" id="dlgExportTags" placeholder="${esc(T("texts.field_tags_hint"))}">
+      </pf-field>
+    `;
+    const languageSelect = container.querySelector("#dlgExportLanguage");
+    const scriptSelect = container.querySelector("#dlgExportScript");
+    const tagsInput = container.querySelector("#dlgExportTags");
+    const ok = await confirmDialog.showContent(container, { okLabel: T("texts.export"), wide: true });
+    if (!ok) return;
+    window.location.href = buildExportURL(endpoint, languageSelect.value, scriptSelect.value, tagsInput.value);
   }
 
   function handleImportFile(input, endpoint, tagFilter) {
@@ -114,8 +147,17 @@
     }
   }
 
-  async function showList(tagFilter) {
+  async function showList(tagFilter, pageDirection) {
     statusBar.setMessage("");
+    if (pageDirection === "next") {
+      pageCursors[pageIndex + 1] = latestNextCursor;
+      pageIndex++;
+    } else if (pageDirection === "prev") {
+      pageIndex--;
+    } else {
+      pageCursors = [null];
+      pageIndex = 0;
+    }
     const languageFilter = window.pfGetLanguageFilter();
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -124,7 +166,7 @@
           BOOT.navFlags.canCreateAny
             ? `<div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                 <pf-button variant="primary" id="newListBtn">${esc(T("texts.new"))}</pf-button>
-                <a class="btn" id="exportVocabularyLink" href="${esc(buildExportURL("/api/v1/vocabulary/export", languageFilter))}">${esc(T("texts.export"))}</a>
+                <pf-button variant="secondary" id="exportVocabularyBtn">${esc(T("texts.export"))}</pf-button>
                 <pf-button variant="secondary" id="importVocabularyBtn">${esc(T("texts.import"))}</pf-button>
                 <input type="file" id="importVocabularyFile" accept=".yaml,.yml" style="display:none;">
               </div>`
@@ -140,6 +182,10 @@
     `;
     const newBtn = document.getElementById("newListBtn");
     if (newBtn) newBtn.addEventListener("click", () => showNew());
+    const exportBtn = document.getElementById("exportVocabularyBtn");
+    if (exportBtn) {
+      exportBtn.addEventListener("click", () => showExportDialog("/api/v1/vocabulary/export", languageFilter));
+    }
     const importBtn = document.getElementById("importVocabularyBtn");
     const importFile = document.getElementById("importVocabularyFile");
     if (importBtn && importFile) {
@@ -152,10 +198,13 @@
     const query = new URLSearchParams();
     if (languageFilter) query.set("language", languageFilter);
     if (tagFilter) query.set("tag", tagFilter);
+    const cursor = pageCursors[pageIndex];
+    if (cursor) query.set("cursor", cursor);
     let items;
     try {
       const data = await apiFetch("/api/v1/vocabulary?" + query.toString());
       items = data.items;
+      latestNextCursor = data.nextCursor || null;
     } catch (e) {
       statusBar.setMessage(e.message, true);
       return;
@@ -185,11 +234,32 @@
         showList(a.dataset.tagFilter);
       });
     });
+
+    if (pageIndex > 0 || latestNextCursor) {
+      const pager = document.createElement("div");
+      pager.style.cssText = "display:flex; justify-content:center; gap:0.75rem; margin-top:1.5rem;";
+      if (pageIndex > 0) {
+        const prevBtn = document.createElement("pf-button");
+        prevBtn.setAttribute("variant", "secondary");
+        prevBtn.textContent = T("texts.pagination_previous");
+        prevBtn.addEventListener("click", () => showList(tagFilter, "prev"));
+        pager.appendChild(prevBtn);
+      }
+      if (latestNextCursor) {
+        const nextBtn = document.createElement("pf-button");
+        nextBtn.setAttribute("variant", "secondary");
+        nextBtn.textContent = T("texts.pagination_next");
+        nextBtn.addEventListener("click", () => showList(tagFilter, "next"));
+        pager.appendChild(nextBtn);
+      }
+      container.appendChild(pager);
+    }
   }
 
   function showNew() {
     statusBar.setMessage("");
     root.innerHTML = `
+      <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <h1>${esc(T("vocabulary.new_title"))}</h1>
       <div class="form-card">
         <form id="newListForm">
@@ -210,6 +280,7 @@
       </div>
       <p class="meta" style="margin-top:1rem;">${esc(T("vocabulary.new_hint"))}</p>
     `;
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
     document.getElementById("newListForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const payload = {
@@ -251,6 +322,7 @@
         </div>
         <div class="resource-actions">
           <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
+          ${list.canEdit ? `<pf-button variant="secondary" type="button" id="generateMissingTranslationsBtn">${esc(T("vocabulary.generate_missing_translations"))}</pf-button>` : ""}
           ${list.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
         </div>
       </div>
@@ -261,6 +333,17 @@
     document.getElementById("copyBtn").addEventListener("click", (e) => {
       phraseforgeCopyMarkdown("copy-vocabulary-markdown", e.currentTarget.querySelector("button"));
     });
+    const generateMissingTranslationsBtn = document.getElementById("generateMissingTranslationsBtn");
+    if (generateMissingTranslationsBtn) {
+      generateMissingTranslationsBtn.addEventListener("click", async () => {
+        try {
+          const result = await apiFetch(`/api/v1/vocabulary/${id}/generate-missing-translations`, { method: "POST" });
+          statusBar.setMessage(result.enqueued > 0 ? T("vocabulary.generate_missing_translations_started") : T("vocabulary.generate_missing_translations_none"));
+        } catch (e) {
+          statusBar.setMessage(e.message, true);
+        }
+      });
+    }
     const editBtn = document.getElementById("editBtn");
     if (editBtn) editBtn.addEventListener("click", () => showManage(id, null));
     const deleteBtn = document.getElementById("deleteBtn");
@@ -392,12 +475,8 @@
           </pf-field>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T(isEdit ? "vocabulary.save_item" : "vocabulary.add_item"))}</pf-button>
-            <pf-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</pf-button>
-            <pf-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</pf-button>
-            <select id="translation-target" aria-label="Translation target language">
-              <option value="en">English</option>
-              <option value="pl">Polish</option>
-            </select>
+            ${isEdit && !editingItem.transcription ? `<pf-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</pf-button>` : ""}
+            ${isEdit && !editingItem.translation ? `<pf-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</pf-button>` : ""}
           </div>
           ${isEdit ? `<a href="#" id="cancelEditLink" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
         </form>
@@ -425,12 +504,38 @@
       }
     });
 
-    document.getElementById("transcribeBtn").addEventListener("click", (e) => {
-      phraseforgeGenerate("transcription", "field-source", "field-transcription", "vocabulary item", e.currentTarget.querySelector("button"));
-    });
-    document.getElementById("translateBtn").addEventListener("click", (e) => {
-      phraseforgeGenerate("translation", "field-source", "translation", "vocabulary item", e.currentTarget.querySelector("button"));
-    });
+    // background-generate-title-transcription-translation: background jobs
+    // instead of phraseforgeGenerate's blocking call — a "started"
+    // status-bar acknowledgment, matching generateFromText's own shape, no
+    // live field update (the job's writeback fills field-transcription/
+    // translation once it completes; reopening this item's edit form
+    // afterward shows it). Translate targets only the viewer's own site
+    // locale (BOOT.locale), same decision as the Text/Dialog View page.
+    const transcribeBtn = document.getElementById("transcribeBtn");
+    if (transcribeBtn) {
+      transcribeBtn.addEventListener("click", async () => {
+        try {
+          await apiFetch(`/api/v1/vocabulary/${id}/items/${editingPosition}/generate-transcription`, { method: "POST" });
+          statusBar.setMessage(T("texts.generate_transcription_started"));
+        } catch (e) {
+          statusBar.setMessage(e.message, true);
+        }
+      });
+    }
+    const translateBtn = document.getElementById("translateBtn");
+    if (translateBtn) {
+      translateBtn.addEventListener("click", async () => {
+        try {
+          await apiFetch(`/api/v1/vocabulary/${id}/items/${editingPosition}/generate-translation`, {
+            method: "POST",
+            body: JSON.stringify({ locale: BOOT.locale }),
+          });
+          statusBar.setMessage(T("texts.generate_translation_started"));
+        } catch (e) {
+          statusBar.setMessage(e.message, true);
+        }
+      });
+    }
     pfInitEditor();
 
     const cancelLink = document.getElementById("cancelEditLink");
@@ -487,6 +592,12 @@
 
   window.pfSections.vocabulary = {
     setBootstrap(b) { BOOT = b; },
-    show: showList,
+    // opts.viewId (dialog-vocabulary-models-generation's linked-list
+    // navigation) opens straight to that list's view instead of the list —
+    // every existing bare show() call is unaffected (opts is undefined).
+    show(opts) {
+      if (opts && opts.viewId != null) return showView(opts.viewId);
+      return showList();
+    },
   };
 })();

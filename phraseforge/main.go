@@ -60,9 +60,9 @@ func main() {
 // ai.ItemTranslationWriteback: HandleGenerate's item-level translation
 // writeback needs one interface that dispatches to whichever store owns
 // resourceType's rows, since vocabulary and models expose differently-shaped
-// guarded translation setters — vocabulary.Store.SetItemTranslationGuarded
+// guarded translation setters — vocabulary.Store.SetItemTranslationIfAbsent
 // also carries a notes field (fetched and preserved here, see below),
-// models.Store.SetItemTranslationGuarded has none. This is the one place
+// models.Store.SetItemTranslationIfAbsent has none. This is the one place
 // that imports both stores just to switch between them, mirroring this
 // codebase's "define a small interface, satisfy it with an adapter built
 // where both concrete types are already imported" convention.
@@ -71,27 +71,27 @@ type itemTranslationWriteback struct {
 	models *models.Store
 }
 
-func (w *itemTranslationWriteback) SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) error {
+func (w *itemTranslationWriteback) SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (applied bool, err error) {
 	switch resourceType {
 	case "vocabulary_item":
 		// Vocabulary's guarded setter upserts translation AND notes together
 		// (its normal caller is a full edit-form submission that always has
 		// both) — a translation-only writeback must preserve whatever notes
 		// are already stored at this position/locale rather than blanking
-		// them, so fetch them first. SetItemTranslationGuarded (not the
+		// them, so fetch them first. SetItemTranslationIfAbsent (not the
 		// plain SetTranslations) applies phrase as a stale-target guard: a
 		// job generated for this (listID, position, phrase) triple must not
 		// silently overwrite a different item that has since taken that
 		// position (see ai.ItemTranslationWriteback's doc comment, B3 fix).
 		existing, err := w.vocab.Translations(ctx, listID, locale)
 		if err != nil {
-			return err
+			return false, err
 		}
-		return w.vocab.SetItemTranslationGuarded(ctx, listID, position, phrase, locale, translation, existing[position].Notes)
+		return w.vocab.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation, existing[position].Notes)
 	case "models_item":
-		return w.models.SetItemTranslationGuarded(ctx, listID, position, phrase, locale, translation)
+		return w.models.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation)
 	default:
-		return fmt.Errorf("phraseforge: unknown resource_type %q for item translation writeback", resourceType)
+		return false, fmt.Errorf("phraseforge: unknown resource_type %q for item translation writeback", resourceType)
 	}
 }
 
@@ -130,7 +130,13 @@ func runServe(ctx context.Context, cfg config.Config) {
 	if err := jobsSvc.FailStale(ctx); err != nil {
 		log.Fatalf("fail stale jobs: %v", err)
 	}
+	// KindLLMGenerate is kept registered for historical rows; new callers
+	// enqueue under ai.JobKind's field-specific kinds instead (see that
+	// function's doc comment) — all four run the exact same handler.
 	jobsSvc.Register(ai.KindLLMGenerate, aiSvc.HandleGenerate)
+	jobsSvc.Register(ai.KindGenerateTitle, aiSvc.HandleGenerate)
+	jobsSvc.Register(ai.KindGenerateTranscription, aiSvc.HandleGenerate)
+	jobsSvc.Register(ai.KindGenerateTranslation, aiSvc.HandleGenerate)
 
 	// ingestSvc's two job kinds turn an ingest HTTP endpoint's staged raw
 	// content (a later pass — see specs/features/phraseforge-ingest-texts-dialogs.md)
@@ -140,13 +146,19 @@ func runServe(ctx context.Context, cfg config.Config) {
 	jobsSvc.Register(ingest.KindProcessText, ingestSvc.HandleProcessText)
 	jobsSvc.Register(ingest.KindProcessDialog, ingestSvc.HandleProcessDialog)
 
-	// generateSvc's two job kinds back the Texts view page's "Generate
+	// generateSvc's job kinds back the Texts/Dialogs view pages' "Generate
 	// Vocabulary"/"Generate Models" buttons (see specs/features/
-	// phraseforge-generate-vocab-models-from-text.md); registered here
-	// alongside the other job kinds, before the worker goroutine starts.
-	generateSvc := generate.New(textStore, vocabStore, modelsStore, aiSvc)
-	jobsSvc.Register(generate.KindGenerateVocabFromText, generateSvc.HandleGenerateVocabFromText)
-	jobsSvc.Register(generate.KindGenerateModelsFromText, generateSvc.HandleGenerateModelsFromText)
+	// phraseforge-generate-vocab-models-from-text.md and
+	// dialog-vocabulary-models-generation.md); registered here alongside the
+	// other job kinds, before the worker goroutine starts. The Text/Dialog
+	// kind pair for each of Vocab/Models shares one handler (dispatched on
+	// the payload's resource_type) but keeps four distinct kind values so
+	// the Jobs page and Retry still show/route on what actually ran.
+	generateSvc := generate.New(textStore, dialogStore, vocabStore, modelsStore, aiSvc, jobsSvc, pool)
+	jobsSvc.Register(generate.KindGenerateVocabFromText, generateSvc.HandleGenerateVocab)
+	jobsSvc.Register(generate.KindGenerateVocabFromDialog, generateSvc.HandleGenerateVocab)
+	jobsSvc.Register(generate.KindGenerateModelsFromText, generateSvc.HandleGenerateModels)
+	jobsSvc.Register(generate.KindGenerateModelsFromDialog, generateSvc.HandleGenerateModels)
 
 	go jobsSvc.Run(ctx)
 

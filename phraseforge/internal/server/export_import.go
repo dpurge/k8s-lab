@@ -277,6 +277,34 @@ func buildBackfillPayload(d backfillDecision, resourceType string, resourceID in
 	return p
 }
 
+// exportFilter is the required language+script and optional tags parsed
+// from an export request's query string — shared by all four export
+// handlers (see requireExportFilter's doc comment and this feature's own
+// Acceptance Criteria: "one shared helper/pattern, not four
+// independently-diverging implementations").
+type exportFilter struct {
+	Language string
+	Script   string
+	Tags     []string
+}
+
+// requireExportFilter validates that an export request's language and
+// script query params are both present, writing a 400 and reporting
+// ok=false if either is missing — every export handler must check ok and
+// return immediately when false, matching readImportBody's own ok-return
+// convention. Tags is parsed (trimmed, lowercased, deduped, sorted) via
+// tags.Parse, the same normalization already used for the create/edit
+// form's tag input, so "Travel, travel ,ROMANIAN" behaves identically here.
+func requireExportFilter(w http.ResponseWriter, r *http.Request) (exportFilter, bool) {
+	language := strings.TrimSpace(r.URL.Query().Get("language"))
+	script := strings.TrimSpace(r.URL.Query().Get("script"))
+	if language == "" || script == "" {
+		writeErr(w, http.StatusBadRequest, "validation_error", "language and script query parameters are both required")
+		return exportFilter{}, false
+	}
+	return exportFilter{Language: language, Script: script, Tags: tags.Parse(r.URL.Query().Get("tags"))}, true
+}
+
 // exportScopeLanguages mirrors apiListTexts'/apiListDialogs' own ?language=
 // filtering exactly (see apiListTexts), but applied to the languages the
 // caller already resolved (editable, for export/import, rather than
@@ -345,7 +373,7 @@ func (s *Server) enqueueBackfill(ctx context.Context, resourceType string, resou
 		if err != nil {
 			return fmt.Errorf("marshal %s backfill payload: %w", payload.Kind, err)
 		}
-		if _, err := s.jobs.Enqueue(ctx, ai.KindLLMGenerate, jobs.PriorityBackground, raw); err != nil {
+		if _, err := s.jobs.Enqueue(ctx, ai.JobKind(payload.Kind), jobs.PriorityBackground, raw); err != nil {
 			return fmt.Errorf("enqueue %s backfill job: %w", payload.Kind, err)
 		}
 	}
@@ -401,7 +429,7 @@ func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, l
 		if err != nil {
 			return fmt.Errorf("marshal %s backfill payload: %w", payload.Kind, err)
 		}
-		if _, err := s.jobs.Enqueue(ctx, ai.KindLLMGenerate, jobs.PriorityBackground, raw); err != nil {
+		if _, err := s.jobs.Enqueue(ctx, ai.JobKind(payload.Kind), jobs.PriorityBackground, raw); err != nil {
 			return fmt.Errorf("enqueue %s backfill job: %w", payload.Kind, err)
 		}
 	}

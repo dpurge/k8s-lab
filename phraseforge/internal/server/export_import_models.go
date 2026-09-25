@@ -114,17 +114,30 @@ func modelsItemsUnchanged(existing, incoming []modelsItemFields) bool {
 // apiExportModels handles GET /api/v1/models/export — mirrors
 // apiExportVocabulary exactly, see that function's doc comment.
 func (s *Server) apiExportModels(w http.ResponseWriter, r *http.Request) {
+	filter, ok := requireExportFilter(w, r)
+	if !ok {
+		return
+	}
 	u := currentUser(r)
 	editLangs, editAll, err := s.roles.EditableLanguages(r.Context(), u.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	langs, all := exportScopeLanguages(editLangs, editAll, r.URL.Query().Get("language"))
+	langs, all := exportScopeLanguages(editLangs, editAll, filter.Language)
 	list, err := s.models.ListAll(r.Context(), langs, all)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	list = filterByScript(list, filter.Script, func(l models.List) string { return l.Script })
+	if len(filter.Tags) > 0 {
+		matching, err := s.tags.ResourceIDsWithAllTags(r.Context(), resourceTypeModels, filter.Tags)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		list = filterByID(list, matching, func(l models.List) int64 { return l.ID })
 	}
 	ids := make([]int64, len(list))
 	for i, l := range list {

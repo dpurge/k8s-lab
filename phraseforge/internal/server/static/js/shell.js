@@ -46,7 +46,12 @@
     return isKnownSection(stored) ? stored : "texts";
   }
 
-  function showSection(id) {
+  // opts (optional) is forwarded verbatim to the target section's own
+  // show(opts) — added for dialog-vocabulary-models-generation's linked-list
+  // navigation ({viewId}, opening straight to that item's view instead of
+  // the list). Every existing bare showSection(id) call keeps working
+  // unchanged, since opts is simply undefined for those.
+  function showSection(id, opts) {
     if (!isKnownSection(id)) id = "texts";
     if (activeSection && activeSection !== id) {
       const prevEl = document.getElementById(activeSection + "-app");
@@ -60,7 +65,7 @@
     }
     if (sidebarTabs) sidebarTabs.active = NAV_SECTIONS.includes(id) ? id : "";
     const mod = window.pfSections[id];
-    if (mod && mod.show) mod.show();
+    if (mod && mod.show) mod.show(opts);
   }
   window.pfShowSection = showSection;
   window.pfGetLanguageFilter = () => languageFilter;

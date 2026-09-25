@@ -12,8 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"phraseforge/internal/catalog"
-	"phraseforge/internal/dialogs"
 	"phraseforge/internal/i18n"
+	"phraseforge/internal/ime"
+	"phraseforge/internal/pagination"
 	"phraseforge/internal/tags"
 	"phraseforge/internal/texts"
 )
@@ -39,6 +40,12 @@ var dialogsAppI18nKeys = []string{
 	"texts.export", "texts.import",
 	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
 	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
+	"texts.generate_vocabulary", "texts.generate_models",
+	"texts.generate_vocabulary_started", "texts.generate_models_started",
+	"texts.linked_vocabulary", "texts.linked_models",
+	"texts.generate_title", "texts.generate_transcription", "texts.generate_translation",
+	"texts.generate_title_started", "texts.generate_transcription_started", "texts.generate_translation_started",
+	"texts.pagination_previous", "texts.pagination_next",
 }
 
 func dialogsAppI18n(loc string) map[string]string {
@@ -82,6 +89,12 @@ type apiDialogDetail struct {
 	SourceMarkdown        string   `json:"sourceMarkdown"`
 	TranscriptionMarkdown string   `json:"transcriptionMarkdown,omitempty"`
 	TranslationMarkdown   string   `json:"translationMarkdown,omitempty"`
+	VocabularyListID      *int64   `json:"vocabularyListId,omitempty"`
+	ModelsListID          *int64   `json:"modelsListId,omitempty"`
+	// NeedsTranscription mirrors apiTextDetail's own field of the same name
+	// (background-generate-title-transcription-translation) — see that
+	// field's doc comment (server.go).
+	NeedsTranscription bool `json:"needsTranscription"`
 }
 
 // apiDialogRequest is the JSON body shape for both create and update — the
@@ -111,19 +124,18 @@ func (s *Server) apiListDialogs(w http.ResponseWriter, r *http.Request) {
 	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
 		langs, all = []string{languageFilter}, false
 	}
-	list, err := s.dialogs.List(r.Context(), langs, all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-	tagFilter := r.URL.Query().Get("tag")
-	if tagFilter != "" {
-		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeDialog, tagFilter)
+	var tagIDs []int64
+	if tagFilter := r.URL.Query().Get("tag"); tagFilter != "" {
+		tagIDs, err = s.tags.ResourceIDsWithTag(r.Context(), resourceTypeDialog, tagFilter)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		list = filterByID(list, ids, func(d dialogs.Dialog) int64 { return d.ID })
+	}
+	list, hasMore, err := s.dialogs.ListPage(r.Context(), langs, all, tagIDs, decodeCursorParam(r), pagination.DefaultLimit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 	ids := make([]int64, len(list))
 	for i, d := range list {
@@ -141,7 +153,12 @@ func (s *Server) apiListDialogs(w http.ResponseWriter, r *http.Request) {
 			Tags: tagsByID[d.ID], CreatedAt: d.CreatedAt.Format("Jan 2, 2006 · 15:04"),
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	resp := map[string]any{"items": out}
+	if hasMore && len(list) > 0 {
+		last := list[len(list)-1]
+		resp["nextCursor"] = pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // apiCreateDialog is handleDialogCreate's exact logic — stores the raw
@@ -212,6 +229,11 @@ func (s *Server) apiGetDialog(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	needsTranscription, err := ime.NeedsTranscriptionForLanguage(r.Context(), s.db, d.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	dialogTags, err := s.tags.For(r.Context(), resourceTypeDialog, d.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -233,6 +255,19 @@ func (s *Server) apiGetDialog(w http.ResponseWriter, r *http.Request) {
 		renderedTranslation, translationErr = texts.RenderHTML(wrapDialogBody(translationBody, d.Language, "latn"))
 	}
 
+	var vocabularyListID, modelsListID *int64
+	if vid, found, err := s.vocab.GetBySourceDialogID(r.Context(), d.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	} else if found {
+		vocabularyListID = &vid
+	}
+	if mid, found, err := s.models.GetBySourceDialogID(r.Context(), d.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	} else if found {
+		modelsListID = &mid
+	}
 	writeJSON(w, http.StatusOK, apiDialogDetail{
 		ID: d.ID, Title: d.Title, Language: d.Language, Script: d.Script,
 		Body: d.Body, Transcription: d.Transcription, Translation: translationBody,
@@ -244,6 +279,9 @@ func (s *Server) apiGetDialog(w http.ResponseWriter, r *http.Request) {
 		SourceMarkdown:        wrapDialogBody(d.Body, d.Language, d.Script),
 		TranscriptionMarkdown: wrapDialogBody(d.Transcription, d.Language, "latn"),
 		TranslationMarkdown:   wrapDialogBody(translationBody, u.Locale, "latn"),
+		VocabularyListID:      vocabularyListID,
+		ModelsListID:          modelsListID,
+		NeedsTranscription:    needsTranscription,
 	})
 }
 

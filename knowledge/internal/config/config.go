@@ -53,20 +53,17 @@ type Config struct {
 }
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
-// (PGUser/PGPassword, the *APIKey fields) are deliberately absent here —
-// they stay plain/Secret-sourced env vars, never read from this file.
+// (PGUser/PGPassword, the *APIKey fields), Postgres connection fields
+// (PGHost/PGPort/PGDatabase), and QdrantURL are deliberately absent here —
+// they stay plain/Secret-sourced env vars, never read from this file, so
+// `migrate` works before the ConfigMap exists (it's a
+// pre-install/pre-upgrade hook).
 type fileConfig struct {
 	BindAddr string `yaml:"bindAddr"`
 	Qdrant   struct {
-		URL            string  `yaml:"url"`
 		Collection     string  `yaml:"collection"`
 		SearchMinScore float64 `yaml:"searchMinScore"`
 	} `yaml:"qdrant"`
-	Postgres struct {
-		Host     string `yaml:"host"`
-		Port     string `yaml:"port"`
-		Database string `yaml:"database"`
-	} `yaml:"postgres"`
 	Embeddings struct {
 		Provider  string `yaml:"provider"`
 		BaseURL   string `yaml:"baseURL"`
@@ -103,12 +100,8 @@ type fileConfig struct {
 func defaultFileConfig() fileConfig {
 	var f fileConfig
 	f.BindAddr = "0.0.0.0:8300"
-	f.Qdrant.URL = "http://localhost:6333"
 	f.Qdrant.Collection = "knowledge"
 	f.Qdrant.SearchMinScore = 0.4
-	f.Postgres.Host = "localhost"
-	f.Postgres.Port = "5432"
-	f.Postgres.Database = "knowledge"
 	f.Embeddings.Provider = "ollama"
 	f.Embeddings.BaseURL = "http://localhost:11434"
 	f.Embeddings.Model = "bge-m3"
@@ -160,13 +153,13 @@ func Load() (Config, error) {
 	return Config{
 		BindAddr: fc.BindAddr,
 
-		QdrantURL:        fc.Qdrant.URL,
+		QdrantURL:        env("QDRANT_URL", "http://localhost:6333"),
 		QdrantCollection: fc.Qdrant.Collection,
 		SearchMinScore:   fc.Qdrant.SearchMinScore,
 
-		PGHost:     fc.Postgres.Host,
-		PGPort:     fc.Postgres.Port,
-		PGDatabase: fc.Postgres.Database,
+		PGHost:     env("PGHOST", "localhost"),
+		PGPort:     env("PGPORT", "5432"),
+		PGDatabase: env("PGDATABASE", "knowledge"),
 		PGUser:     env("PGUSER", "postgres"),
 		PGPassword: env("PGPASSWORD", ""),
 

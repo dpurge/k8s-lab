@@ -35,6 +35,53 @@
     return s.slice(0, max) + "…";
   }
 
+  // field appends one dt/dd pair to dl, using textContent throughout — this
+  // is what makes the View dialog's showContent() call safe even though
+  // job.payload/job.result can contain arbitrary user-derived text (see
+  // pf-dialog's showContent doc comment).
+  function field(dl, label, value) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    dl.append(dt, dd);
+  }
+
+  function jsonBlock(heading, value) {
+    const h3 = document.createElement("h3");
+    h3.textContent = heading;
+    const pre = document.createElement("pre");
+    pre.textContent = value === null || value === undefined ? "—" : JSON.stringify(value, null, 2);
+    const wrap = document.createElement("div");
+    wrap.append(h3, pre);
+    return wrap;
+  }
+
+  // buildJobView renders job's full detail as structured content for
+  // pf-dialog's showContent() — metadata fields, then Payload/Result each
+  // in their own pretty-printed block, with Step/Error included only when
+  // the job actually has one. Returns a DocumentFragment (not a wrapping
+  // <div>) so its pieces land as .pf-dialog-content's own direct
+  // children — that's what component.css's "> * + *" spacing rule
+  // between blocks actually targets; nested one level deeper inside an
+  // extra wrapper div, it would never match.
+  function buildJobView(job) {
+    const root = document.createDocumentFragment();
+    const dl = document.createElement("dl");
+    field(dl, T("jobs.view_id"), job.id);
+    field(dl, T("jobs.col_kind"), job.kind);
+    field(dl, T("jobs.col_priority"), job.priority);
+    field(dl, T("jobs.col_status"), job.status);
+    field(dl, T("jobs.col_created"), job.created_at);
+    field(dl, T("jobs.view_updated"), job.updated_at);
+    if (job.step) field(dl, T("jobs.view_step"), job.step);
+    if (job.error) field(dl, T("jobs.col_error"), job.error);
+    root.append(dl);
+    root.append(jsonBlock(T("jobs.view_payload"), job.payload));
+    root.append(jsonBlock(T("jobs.view_result"), job.result));
+    return root;
+  }
+
   async function apiFetch(path, options) {
     const res = await fetch(path, options);
     if (!res.ok) {
@@ -65,35 +112,54 @@
     render(jobList);
   }
 
+  // Each action gets its own fixed table column so a row's buttons never
+  // shift position depending on which other actions apply — in particular
+  // Cancel and Delete share one column (jobActionCells's cancelOrDeleteCell
+  // return value): they're mutually exclusive by status (a job is
+  // cancellable — pending/running — before it's ever deletable —
+  // done/failed/cancelled — never both at once), so reusing one column for
+  // both reads as one consistent "the terminal action available right now"
+  // slot instead of two buttons awkwardly swapping columns.
+  function jobActionCells(j) {
+    const btn = (dataAttr, label) =>
+      `<button class="link-btn" type="button" data-${dataAttr}-id="${esc(j.id)}">${esc(label)}</button>`;
+    const retryCell = j.status === "failed" || j.status === "cancelled" ? btn("retry", T("jobs.retry")) : "";
+    const cancelOrDeleteCell =
+      j.status === "pending" || j.status === "running" ? btn("cancel", T("jobs.cancel")) : btn("delete", T("texts.delete"));
+    return { retryCell, cancelOrDeleteCell };
+  }
+
   function render(jobList) {
     const rows =
       jobList
-        .map(
-          (j) => `
+        .map((j) => {
+          const { retryCell, cancelOrDeleteCell } = jobActionCells(j);
+          return `
       <tr>
         <td>${esc(j.kind)}</td>
         <td>${esc(j.priority)}</td>
         <td>${esc(j.status)}</td>
         <td>${esc(j.createdAt)}</td>
         <td>${esc(truncate(j.error, 80))}</td>
-        <td style="white-space:nowrap;">
-          <a href="#" data-view-id="${esc(j.id)}">${esc(T("jobs.view"))}</a>
-          <button class="link-btn" type="button" data-retry-id="${esc(j.id)}" style="margin-left:0.5rem;" ${j.status === "failed" ? "" : "disabled"}>${esc(T("jobs.retry"))}</button>
-          <button class="link-btn" type="button" data-delete-id="${esc(j.id)}" style="margin-left:0.5rem;" ${j.status === "done" || j.status === "failed" ? "" : "disabled"}>${esc(T("texts.delete"))}</button>
-        </td>
-      </tr>`,
-        )
-        .join("") || `<tr><td colspan="6"><em>${esc(T("jobs.empty"))}</em></td></tr>`;
+        <td><a href="#" data-view-id="${esc(j.id)}">${esc(T("jobs.view"))}</a></td>
+        <td>${retryCell}</td>
+        <td>${cancelOrDeleteCell}</td>
+      </tr>`;
+        })
+        .join("") || `<tr><td colspan="8"><em>${esc(T("jobs.empty"))}</em></td></tr>`;
 
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
         <h1 style="margin-bottom:0;">${esc(T("jobs.title"))}</h1>
-        <pf-button variant="secondary" id="refreshJobsBtn">${esc(T("jobs.refresh"))}</pf-button>
+        <div style="display:flex; gap:0.5rem;">
+          <pf-button variant="secondary" id="refreshJobsBtn">${esc(T("jobs.refresh"))}</pf-button>
+          <pf-button variant="secondary" id="clearJobsBtn">${esc(T("jobs.clear"))}</pf-button>
+        </div>
       </div>
       <div class="card" style="margin-top:1.5rem;">
         <div style="overflow-x:auto;">
           <table class="admin-table">
-            <thead><tr><th>${esc(T("jobs.col_kind"))}</th><th>${esc(T("jobs.col_priority"))}</th><th>${esc(T("jobs.col_status"))}</th><th>${esc(T("jobs.col_created"))}</th><th>${esc(T("jobs.col_error"))}</th><th></th></tr></thead>
+            <thead><tr><th>${esc(T("jobs.col_kind"))}</th><th>${esc(T("jobs.col_priority"))}</th><th>${esc(T("jobs.col_status"))}</th><th>${esc(T("jobs.col_created"))}</th><th>${esc(T("jobs.col_error"))}</th><th></th><th></th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -102,30 +168,67 @@
 
     document.getElementById("refreshJobsBtn").addEventListener("click", () => loadAndRender());
 
+    document.getElementById("clearJobsBtn").addEventListener("click", async () => {
+      const confirmDialog = document.getElementById("confirmDialog");
+      const ok = await confirmDialog.confirm(T("jobs.clear_confirm"), { danger: true });
+      if (!ok) return;
+      try {
+        await apiFetch("/api/v1/admin/jobs/clear", { method: "POST" });
+        statusBar.setMessage(T("jobs.clear_done"));
+        await loadAndRender();
+      } catch (e) {
+        statusBar.setMessage(e.message, true);
+      }
+    });
+
     root.querySelectorAll("[data-view-id]").forEach((a) => {
       a.addEventListener("click", async (e) => {
         e.preventDefault();
         const confirmDialog = document.getElementById("confirmDialog");
         try {
           const job = await apiFetch(`/api/v1/admin/jobs/${a.dataset.viewId}`);
-          await confirmDialog.confirm(JSON.stringify(job, null, 2), { okLabel: T("jobs.view_close") });
+          await confirmDialog.showContent(buildJobView(job), { okLabel: T("jobs.view_close"), wide: true, hideCancel: true });
         } catch (err) {
           statusBar.setMessage(err.message, true);
         }
       });
     });
 
+    root.querySelectorAll("[data-cancel-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const confirmDialog = document.getElementById("confirmDialog");
+        const ok = await confirmDialog.confirm(T("jobs.cancel_confirm"), { danger: true });
+        if (!ok) return;
+        // Same immediate-disable pattern as Retry/Delete (see their own
+        // handlers below) — jobActionCells never renders Retry/Delete
+        // alongside Cancel on the same row, so there is nothing else on
+        // this row to disable.
+        btn.disabled = true;
+        try {
+          await apiFetch(`/api/v1/admin/jobs/${btn.dataset.cancelId}/cancel`, { method: "POST" });
+          await loadAndRender();
+          statusBar.setMessage("Job cancelled.");
+        } catch (e) {
+          statusBar.setMessage(e.message, true);
+          btn.disabled = false;
+        }
+      });
+    });
+
     root.querySelectorAll("[data-retry-id]").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        const confirmDialog = document.getElementById("confirmDialog");
+        const ok = await confirmDialog.confirm(T("jobs.retry_confirm"));
+        if (!ok) return;
         // Disable immediately (before the await), not just after the
         // request settles: otherwise a double-click, or two admins retrying
-        // the same failed job at once, both pass this button's own enabled
-        // state and each enqueue a real duplicate job. Also disables Delete
-        // on the same row for consistency, matching phraseforgeGenerate's
-        // disable-before-await/re-enable-in-catch pattern (see layout.html).
-        // Retry only ever renders enabled when status is "failed", and
-        // Delete is always enabled too in that state (done||failed), so
-        // re-enabling both unconditionally on error is safe here.
+        // the same failed/cancelled job at once, both pass this button's own
+        // enabled state and each enqueue a real duplicate job. Also disables
+        // Delete on the same row for consistency, matching
+        // phraseforgeGenerate's disable-before-await/re-enable-in-catch
+        // pattern (see layout.html) — jobActionCells always renders Retry
+        // and Delete together (failed/cancelled), so deleteBtn is always
+        // present here.
         const row = btn.closest("tr");
         const deleteBtn = row ? row.querySelector("[data-delete-id]") : null;
         btn.disabled = true;

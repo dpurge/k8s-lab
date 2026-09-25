@@ -366,6 +366,7 @@
         <td>${esc(p.provider)}</td>
         <td>${p.model ? esc(p.model) : `<em>${esc(T("admin.llm_model_default"))}</em>`}</td>
         <td>${p.think ? "✓" : "—"}</td>
+        <td>${p.timeout_seconds ? esc(String(p.timeout_seconds)) : `<em>${esc(T("admin.llm_timeout_default"))}</em>`}</td>
         <td style="white-space:pre-wrap;">${esc(p.prompt)}</td>
         <td style="white-space:nowrap;">
           <a href="#" data-edit-llm="${esc(key)}">${esc(T("texts.edit"))}</a>
@@ -373,7 +374,7 @@
         </td>
       </tr>`;
         })
-        .join("") || `<tr><td colspan="8"><em>${esc(T("admin.llm_no_configs"))}</em></td></tr>`;
+        .join("") || `<tr><td colspan="9"><em>${esc(T("admin.llm_no_configs"))}</em></td></tr>`;
 
     document.getElementById("tabLlm").innerHTML = `
       <div class="card" style="margin-bottom:1.5rem;">
@@ -398,10 +399,15 @@
               <input type="text" id="llm-model" placeholder="${esc(T("admin.llm_model_placeholder"))}">
             </pf-field>
           </div>
-          <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
-            <input type="checkbox" id="llm-think" style="width:auto; margin:0;">
-            ${esc(T("admin.llm_think"))}
-          </label>
+          <div class="field-row" style="margin-bottom:1rem; align-items:center;">
+            <label style="display:flex; align-items:center; gap:0.5rem;">
+              <input type="checkbox" id="llm-think" style="width:auto; margin:0;">
+              ${esc(T("admin.llm_think"))}
+            </label>
+            <pf-field label="${esc(T("admin.llm_timeout_seconds"))}" for="llm-timeout-seconds">
+              <input type="number" id="llm-timeout-seconds" min="1" max="3600" placeholder="${esc(T("admin.llm_timeout_placeholder"))}">
+            </pf-field>
+          </div>
           <pf-field label="${esc(T("admin.llm_prompt"))}" for="llm-prompt">
             <textarea id="llm-prompt" required style="height:10rem;" placeholder="${esc(T("admin.llm_prompt_placeholder"))}"></textarea>
           </pf-field>
@@ -415,7 +421,7 @@
         <h2 style="margin-top:0;">${esc(T("admin.llm_configs_heading"))}</h2>
         <div style="overflow-x:auto;">
           <table class="admin-table">
-            <thead><tr><th>${esc(T("admin.llm_kind"))}</th><th>${esc(T("admin.llm_source_language"))}</th><th>${esc(T("admin.llm_target_language"))}</th><th>${esc(T("admin.llm_provider"))}</th><th>${esc(T("admin.llm_model"))}</th><th>${esc(T("admin.llm_think"))}</th><th>${esc(T("admin.llm_prompt"))}</th><th></th></tr></thead>
+            <thead><tr><th>${esc(T("admin.llm_kind"))}</th><th>${esc(T("admin.llm_source_language"))}</th><th>${esc(T("admin.llm_target_language"))}</th><th>${esc(T("admin.llm_provider"))}</th><th>${esc(T("admin.llm_model"))}</th><th>${esc(T("admin.llm_think"))}</th><th>${esc(T("admin.llm_timeout_seconds"))}</th><th>${esc(T("admin.llm_prompt"))}</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -452,6 +458,7 @@
       kindSelect.value = editingPrompt.kind;
       document.getElementById("llm-source-language").value = editingPrompt.source_language;
       document.getElementById("llm-model").value = editingPrompt.model || "";
+      document.getElementById("llm-timeout-seconds").value = editingPrompt.timeout_seconds || "";
       document.getElementById("llm-prompt").value = editingPrompt.prompt;
     }
     refreshLLMTarget();
@@ -471,6 +478,7 @@
     document.getElementById("llmForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const kind = kindSelect.value;
+      const timeoutSecondsRaw = document.getElementById("llm-timeout-seconds").value.trim();
       const payload = {
         kind,
         sourceLanguage: document.getElementById("llm-source-language").value,
@@ -480,6 +488,11 @@
         provider: providerSelect.value,
         model: document.getElementById("llm-model").value,
         think: document.getElementById("llm-think").checked,
+        // Blank means "inherit the purpose default" (llm-purpose-timeout-
+        // and-prompt-config) — omitted entirely rather than sent as 0/null,
+        // matching apiAdminLLMPromptRequest.TimeoutSeconds's *int, nil-means-
+        // absent contract.
+        ...(timeoutSecondsRaw ? { timeoutSeconds: Number(timeoutSecondsRaw) } : {}),
         prompt: document.getElementById("llm-prompt").value,
       };
       try {
