@@ -19,12 +19,8 @@ spec:
           imagePullPolicy: Always
           command: ["/phraseforge", "migrate"]
           env:
-            - name: PGHOST
-              value: postgres.data.svc.cluster.local
-            - name: PGPORT
-              value: "5432"
-            - name: PGDATABASE
-              value: phraseforge
+            - name: CONFIG_FILE
+              value: /etc/phraseforge/config.yaml
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
@@ -35,3 +31,11 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: config
+              mountPath: /etc/phraseforge
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: phraseforge-config

@@ -13,8 +13,8 @@ func SharedConfig(cfg config.Config) sharedpg.Config {
 	return sharedpg.Config{Host: cfg.PGHost, Port: cfg.PGPort, Database: cfg.PGDatabase, User: cfg.PGUser, Password: cfg.PGPassword}
 }
 
-// Connect opens a pool against cfg.PGDatabase (the app's own database, separate
-// from phraseforge-api's "phraseforge" database on the same Postgres server).
+// Connect opens a pool against cfg.PGDatabase, this app's own database on the
+// shared Postgres server.
 func Connect(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 	return pgxpool.New(ctx, sharedpg.DSN(SharedConfig(cfg), cfg.PGDatabase))
 }

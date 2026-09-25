@@ -16,17 +16,9 @@
       if (localStorage.getItem('phraseforge-sidebar') === 'collapsed') {
         document.documentElement.setAttribute('data-sidebar', 'collapsed');
       }
-      // Remembered language filter (same mechanism as theme above): landing
-      // on a resource list (texts "/", dialogs "/dialogs", vocabulary
-      // "/vocabulary", models "/models") with no explicit ?language= in the
-      // URL re-applies the last chosen one, before the unfiltered list gets
-      // a chance to render. An explicit "All languages" choice stores ""
-      // and is never redirected back from — that IS the remembered state.
-      var storedLang = localStorage.getItem('phraseforge-language');
-      var listPath = window.location.pathname;
-      if (storedLang && (listPath === '/' || listPath === '/dialogs' || listPath === '/vocabulary' || listPath === '/models') && !/[?&]language=/.test(window.location.search)) {
-        window.location.replace(listPath + '?language=' + encodeURIComponent(storedLang));
-      }
+      // The remembered language filter is applied in-page by shell.js now
+      // (phraseforge-spa-unified-shell) — there is only one URL, so there is
+      // no page-reload redirect to do here anymore.
     })();
   </script>
   <style>
@@ -70,6 +62,12 @@
       margin: 0; color: var(--text); background: var(--bg);
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       font-size: 17px;
+      /* auto header row, everything else fills the middle, auto footer —
+         lets .layout's two columns (and main.auth-page) scroll
+         independently within a fixed-height row instead of growing the
+         whole page. Extended to 3 rows (from phraseforge-scroll-
+         independent's 2) to add the status-bar footer below. */
+      display: grid; grid-template-rows: auto 1fr auto; height: 100vh;
     }
 
     /* sticky top bar */
@@ -82,46 +80,57 @@
     header.topnav .user { margin-left: auto; display: flex; align-items: center; gap: 1rem; font-size: 0.95rem; color: var(--muted); }
     header.topnav .user a { color: var(--muted); text-decoration: none; }
     header.topnav .user a:hover { color: var(--link); }
-    .theme-toggle {
-      margin-left: auto; background: none; border: 1px solid var(--border); border-radius: 0.4rem;
-      width: 2.25rem; height: 2.25rem; font-size: 1.1rem; line-height: 1; cursor: pointer; color: var(--text);
-    }
-    .theme-toggle:hover { border-color: var(--link); }
+    /* Visual skin (border/size/color/hover) now lives in pf-button's own
+       component.css (variant="icon") — this class is kept only as a
+       page-layout hook for header positioning. */
+    .theme-toggle { margin-left: auto; }
+    /* login/signup's submit pf-button needs to fill its centered form-card,
+       matching the original plain <button style="width:100%">. Scoped by a
+       dedicated class (not by .form-card, which every other page's Save
+       button also sits inside) so no other pf-button is affected. */
+    pf-button.full-width { display: block; width: 100%; }
+    pf-button.full-width button { width: 100%; }
     /* logged-in pages put .user after the toggle, so the toggle shouldn't also claim margin-left:auto twice */
     .user + .theme-toggle, .theme-toggle + .user { margin-left: 0; }
 
     /* sidebar + content grid */
     .layout {
-      display: grid; grid-template-columns: 15rem 1fr; min-height: calc(100vh - 3.5rem);
+      display: grid; grid-template-columns: 15rem 1fr;
+      /* Overrides the grid item's default min-height:auto, which would
+         otherwise let this row grow past body's 1fr track to fit content
+         (the actual bug: aside/main only "scroll together" because .layout
+         itself grows the whole page instead of being height-constrained). */
+      min-height: 0;
       transition: grid-template-columns 0.15s ease;
     }
     [data-sidebar="collapsed"] .layout { grid-template-columns: 0 1fr; }
     aside.sidebar {
       background: var(--surface-alt); border-right: 1px solid var(--border);
-      padding: 1.5rem 1rem; overflow: hidden; white-space: nowrap;
+      padding: 1.5rem 1rem; overflow-y: auto; white-space: nowrap;
+      /* Same fix, one nesting level deeper: aside is itself a .layout grid
+         item, so it needs its own min-height:0 for overflow-y:auto to
+         actually take effect instead of growing to content. */
+      min-height: 0;
       transition: opacity 0.1s ease, padding 0.15s ease;
     }
     [data-sidebar="collapsed"] aside.sidebar { padding: 1.5rem 0; opacity: 0; pointer-events: none; }
     aside.sidebar select#language-filter { margin-bottom: 1rem; }
-    .sidebar-toggle {
-      background: none; border: 1px solid var(--border); border-radius: 0.4rem;
-      width: 2.25rem; height: 2.25rem; font-size: 1.1rem; line-height: 1; cursor: pointer; color: var(--text);
-    }
-    .sidebar-toggle:hover { border-color: var(--link); }
-    aside.sidebar nav a {
-      display: block; padding: 0.6rem 0.75rem; margin-bottom: 0.25rem;
-      border-radius: 0.4rem; color: var(--text); text-decoration: none; font-weight: 500;
-      border-left: 3px solid transparent;
-    }
-    aside.sidebar nav a:hover { background: rgba(128,128,128,0.12); }
-    aside.sidebar nav a.active { background: var(--surface); border-left-color: var(--link); color: var(--link); font-weight: 700; }
+    /* sidebar-toggle's visual skin now lives in pf-button's own
+       component.css (variant="icon") — no page-layout hook needed, it has
+       no special positioning (default flex item, first in the header). */
+    /* sidebar nav link styling now lives in pf-tabs' own component.css
+       (orientation="vertical" — see phraseforge-spa-unified-shell). */
 
-    main.content { padding: 2rem 3rem; }
+    main.content { padding: 2rem 3rem; overflow-y: auto; min-height: 0; }
     main.content h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
 
-    /* centered login/signup page (no sidebar, no user session yet) */
+    /* centered login/signup page (no sidebar, no user session yet).
+       height:100% (not min-height:0) — it needs to actually fill body's
+       1fr row for its own centering (align-items/justify-content) to have
+       room to center within; overflow-y:auto guards a message long enough
+       to overflow, same defensive reasoning as main.content above. */
     main.auth-page {
-      min-height: calc(100vh - 3.5rem);
+      height: 100%; overflow-y: auto;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       padding: 2rem;
       text-align: center;
@@ -164,6 +173,7 @@
     a.tag-link { color: var(--muted); text-decoration: none; margin-left: 0.35rem; }
     a.tag-link:hover { color: var(--link); background: var(--border); }
     .link-btn { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 0.9rem; padding: 0; text-decoration: underline; }
+    .link-btn:disabled { color: var(--muted); cursor: default; text-decoration: none; }
     textarea { height: 20rem; font-family: ui-monospace, "SF Mono", monospace; font-size: 0.95rem; }
     .btn {
       display: inline-block; background: var(--btn-bg); color: #fff; border: none;
@@ -180,6 +190,15 @@
     .btn-danger { background: var(--danger); }
     .btn-danger:hover { background: var(--danger-hover); }
     .back-link { display: inline-block; margin-bottom: 1rem; color: var(--muted); text-decoration: none; }
+
+    /* footer grid row hosting pf-status-bar (SPA pages only, for now —
+       present but empty elsewhere, same pattern as pf-dialog). Distinct
+       from .status-bar below (the flash-message toast every still-
+       server-rendered page keeps using during the migration). */
+    .statusbar-footer {
+      border-top: 1px solid var(--border); background: var(--surface);
+      padding: 0 1.5rem;
+    }
 
     /* bottom status bar: every form's success/error feedback lands here,
        instead of each page picking its own inline spot for it. */
@@ -250,41 +269,37 @@
     .editor-tab-pane textarea.editor-enlarged { font-size: 1.4rem; } /* CJK/Arabic/Hebrew/Syriac need a bigger base size to read while typing */
   </style>
   {{block "extra_head" .}}{{end}}
+  <script src="/static/components/pf-button/component.js"></script>
+  <script src="/static/components/pf-field/component.js"></script>
+  <script src="/static/components/pf-card/component.js"></script>
+  <script src="/static/components/pf-dialog/component.js"></script>
+  <script src="/static/components/pf-status-bar/component.js"></script>
+  <script src="/static/components/pf-tabs/component.js"></script>
 </head>
 <body>
   <header class="topnav">
     {{if .User}}
-    <button class="sidebar-toggle" type="button" onclick="phraseforgeToggleSidebar()" aria-label="{{call .T "sidebar.toggle"}}" title="{{call .T "sidebar.toggle"}}">☰</button>
+    <pf-button id="sidebarToggleBtn" variant="icon" onclick="phraseforgeToggleSidebar()">☰</pf-button>
     {{end}}
     <a class="brand" href="/">PhraseForge</a>
     {{if .User}}
     <div class="user">
-      <a href="/profile">{{.User.Username}}</a>
-      <a href="/logout">{{call .T "nav.logout"}}</a>
+      <a id="userLink" href="#"></a>
+      <a id="logoutLink" href="/logout"></a>
     </div>
     {{end}}
-    <button class="theme-toggle" type="button" onclick="phraseforgeToggleTheme()" aria-label="{{call .T "theme.toggle"}}" title="{{call .T "theme.toggle"}}">
+    <!-- aria-label/title stay server-rendered (not shell.js-driven, unlike
+         the rest of the chrome) because this button also appears on
+         login.html/signup.html, which never load shell.js. -->
+    <pf-button class="theme-toggle" variant="icon" onclick="phraseforgeToggleTheme()" aria-label="{{call .T "theme.toggle"}}" title="{{call .T "theme.toggle"}}">
       <span id="theme-icon"></span>
-    </button>
+    </pf-button>
   </header>
   {{if .User}}
   <div class="layout">
-    <aside class="sidebar">
-      {{if .NavFlags.ViewableLanguages}}
-      <select id="language-filter" onchange="phraseforgeSetLanguageFilter(this.value)">
-        <option value="">{{call .T "nav.all_languages"}}</option>
-        {{$cur := .LanguageFilter}}
-        {{range .NavFlags.ViewableLanguages}}<option value="{{.Code}}"{{if eq .Code $cur}} selected{{end}}>{{.Name}}</option>{{end}}
-      </select>
-      {{end}}
-      <nav>
-        <a href="/"{{if eq .Nav "texts"}} class="active"{{end}}>{{call .T "nav.texts"}}</a>
-        <a href="/dialogs"{{if eq .Nav "dialogs"}} class="active"{{end}}>{{call .T "nav.dialogs"}}</a>
-        <a href="/vocabulary"{{if eq .Nav "vocabulary"}} class="active"{{end}}>{{call .T "nav.vocabulary"}}</a>
-        <a href="/models"{{if eq .Nav "models"}} class="active"{{end}}>{{call .T "nav.models"}}</a>
-        {{if .NavFlags.IsAdmin}}<a href="/admin"{{if eq .Nav "admin"}} class="active"{{end}}>{{call .T "nav.admin"}}</a>{{end}}
-      </nav>
-    </aside>
+    <!-- Built entirely by shell.js from window.__PF_APP_BOOTSTRAP__.chrome —
+         see specs/features/phraseforge-spa-unified-shell.md. -->
+    <aside class="sidebar" id="sidebar"></aside>
     <main class="content">
       {{block "content" .}}{{end}}
     </main>
@@ -294,12 +309,16 @@
     {{block "content" .}}{{end}}
   </main>
   {{end}}
+  <footer class="statusbar-footer">
+    <pf-status-bar id="statusBar"></pf-status-bar>
+  </footer>
   {{if .Message}}
   <div class="status-bar {{.MessageType}}" id="status-bar" role="status">
     <span>{{.Message}}</span>
     <button type="button" class="status-close" onclick="document.getElementById('status-bar').remove()" aria-label="Dismiss">×</button>
   </div>
   {{end}}
+  <pf-dialog id="confirmDialog"></pf-dialog>
   <script>
     function phraseforgeSetIcon() {
       var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -380,31 +399,33 @@
         button.textContent = original;
       }
     }
-    function phraseforgeSetLanguageFilter(value) {
-      localStorage.setItem('phraseforge-language', value);
-      // Stay on whichever resource list is current (texts/dialogs/vocabulary/
-      // models); from any other page (view/edit/profile/admin), land on the
-      // texts list.
-      var here = window.location.pathname;
-      var listPath = (here === '/dialogs' || here === '/vocabulary' || here === '/models') ? here : '/';
-      window.location.href = value ? listPath + '?language=' + encodeURIComponent(value) : listPath;
-    }
-    (function () {
-      // Keep the select in sync with the remembered choice on every page,
-      // not just the list page (which already sets it server-side to match
-      // ?language=) — otherwise it would silently reset to "All languages"
-      // while browsing a text, even though the filter is still remembered.
-      var select = document.getElementById('language-filter');
-      var stored = localStorage.getItem('phraseforge-language');
-      if (select && stored && select.querySelector('option[value="' + CSS.escape(stored) + '"]')) {
-        select.value = stored;
-      }
-    })();
+    // The language filter is now built and driven entirely by shell.js
+    // (phraseforge-spa-unified-shell) — no page-reload mechanism left here.
     phraseforgeSetIcon();
     (function () {
       var bar = document.getElementById('status-bar');
       if (bar) { setTimeout(function () { bar.remove(); }, 5000); }
     })();
+    // Replaces native confirm() for every form marked data-confirm: shows
+    // pf-dialog instead, and only actually submits if the user confirms.
+    // confirm() is async (a Promise), which a synchronous onsubmit="return
+    // confirm(...)" handler could never await — so this intercepts the real
+    // submit event instead. form.submit() (the native method, NOT
+    // requestSubmit()) is used deliberately: it does not re-dispatch a
+    // "submit" event, so this listener can't re-trigger itself and needs no
+    // re-entrancy guard.
+    function phraseforgeWireConfirmForms() {
+      document.querySelectorAll('form[data-confirm]').forEach(function (form) {
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          var dialog = document.getElementById('confirmDialog');
+          dialog.confirm(form.dataset.confirm, { danger: form.dataset.confirmDanger === 'true' }).then(function (ok) {
+            if (ok) { form.submit(); }
+          });
+        });
+      });
+    }
+    phraseforgeWireConfirmForms();
   </script>
 </body>
 </html>

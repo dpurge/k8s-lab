@@ -73,6 +73,44 @@ function pfWireIme(el, imeData) {
   }
 }
 
+// Tracks the two independent things that decide whether the Transcribe
+// button should be visible on a tabbed (texts/dialogs) editor: whether the
+// currently selected language/script needs transcription at all (set async,
+// by pfApplyImeConfig below) and which tab is currently active (set
+// synchronously, by pfSwitchTab). Kept as module state rather than
+// recomputed inline so either one changing — the language/script select, or
+// a tab click — refreshes the same result. Meaningless on vocabulary/models'
+// tabless single-flat-form pages; see pfRefreshActionVisibility's own guard.
+let pfNeedsTranscription = false;
+let pfActiveTabName = 'source';
+
+// On a tabbed editor (texts/dialogs — has .editor-tab-btn elements), scopes
+// each action to the one tab it belongs to: Transcribe only appears on the
+// Transcription tab (and only when this language/script actually needs
+// one), Translate and its target-language select only on the Translation
+// tab. Save is unscoped — it stays visible on every tab, untouched here.
+// On a tabless editor (vocabulary/models item form), there is no tab to
+// scope by, so this is a no-op — those pages keep the Transcribe button
+// following needs_transcription alone, matching their existing behavior.
+function pfRefreshActionVisibility(name) {
+  if (document.querySelectorAll('.editor-tab-btn').length === 0) return;
+  // layout.html's own `.transcribe-action { display: none; }` rule (a class
+  // selector) beats `pf-button { display: inline-block; }` (a type
+  // selector) by specificity — setting style.display to '' only clears the
+  // inline override and falls back to the stylesheet, which still says
+  // none. Must set an explicit non-empty value to actually win; only an
+  // inline style (any non-empty value) can override a same-importance
+  // stylesheet rule, specificity or not. See the same-shaped pf-field/
+  // [hidden] gotcha found in admin-app.js.
+  document.querySelectorAll('.transcribe-action').forEach((button) => {
+    button.style.display = name === 'transcription' && pfNeedsTranscription ? 'inline-block' : 'none';
+  });
+  const translateBtn = document.getElementById('translateBtn');
+  if (translateBtn) translateBtn.style.display = name === 'translation' ? '' : 'none';
+  const translationTarget = document.getElementById('translation-target');
+  if (translationTarget) translationTarget.style.display = name === 'translation' ? '' : 'none';
+}
+
 // Looks up the script's direction/enlarged treatment and the admin-
 // configured source/transcription IME for the currently selected
 // language+script, then applies both to the matching fields. Also shows/
@@ -111,18 +149,31 @@ async function pfApplyImeConfig() {
   if (transcriptionGroup) {
     transcriptionGroup.style.display = cfg.needs_transcription ? '' : 'none';
   }
-  document.querySelectorAll('.transcribe-action').forEach((button) => {
-    button.style.display = cfg.needs_transcription ? '' : 'none';
-  });
+  pfNeedsTranscription = cfg.needs_transcription;
+  if (document.querySelectorAll('.editor-tab-btn').length === 0) {
+    // Tabless (vocabulary/models): no tab to scope by, so the Transcribe
+    // button just follows needs_transcription directly, as it always has.
+    // 'inline-block', not '' — see pfRefreshActionVisibility's comment on
+    // why an empty string can't override layout.html's own
+    // `.transcribe-action { display: none; }` rule. This was a real,
+    // pre-existing bug on this tabless path too, not just the tabbed one.
+    document.querySelectorAll('.transcribe-action').forEach((button) => {
+      button.style.display = cfg.needs_transcription ? 'inline-block' : 'none';
+    });
+  } else {
+    pfRefreshActionVisibility(pfActiveTabName);
+  }
 }
 
 function pfSwitchTab(name) {
+  pfActiveTabName = name;
   document.querySelectorAll('.editor-tab-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === name);
   });
   document.querySelectorAll('.editor-tab-pane').forEach((pane) => {
     pane.style.display = pane.id === `tab-${name}` ? '' : 'none';
   });
+  pfRefreshActionVisibility(name);
 }
 
 function pfInitEditor() {
@@ -130,6 +181,13 @@ function pfInitEditor() {
   const scriptSel = document.getElementById('script');
   if (languageSel) languageSel.addEventListener('change', pfApplyImeConfig);
   if (scriptSel) scriptSel.addEventListener('change', pfApplyImeConfig);
+
+  // Reset to the default tab synchronously, before pfApplyImeConfig's fetch
+  // resolves, so a tabbed editor never flashes Transcribe/Translate/the
+  // target-language select visible on the Source tab for one frame.
+  pfActiveTabName = 'source';
+  pfRefreshActionVisibility(pfActiveTabName);
+
   if (languageSel && scriptSel) pfApplyImeConfig();
 
   document.querySelectorAll('.editor-tab-btn').forEach((btn) => {

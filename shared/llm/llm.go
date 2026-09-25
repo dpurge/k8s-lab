@@ -17,6 +17,11 @@ type Config struct {
 	// means omit it, leaving Ollama's own default in effect. No effect on
 	// the openAI path, which has no equivalent per-request knob.
 	NumCtx int
+	// Think enables Ollama's hidden reasoning trace on thinking-capable
+	// models. Zero value (false) preserves prior behavior for every
+	// existing caller. No effect on the openAI path, which has no
+	// equivalent per-request knob.
+	Think bool
 }
 type Message struct {
 	Role, Content, ToolName string
@@ -49,7 +54,13 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (string, erro
 }
 
 func (c *Client) Chat(ctx context.Context, messages []Message, tools []map[string]any) (Response, error) {
-	if c.cfg.Provider == "openai" || strings.Contains(c.cfg.BaseURL, "openrouter.ai") {
+	// "openai" and "openrouter" are both OpenAI-compatible APIs, so route
+	// either provider name to the openAI path directly now that provider
+	// names are a first-class registry concept (phraseforge's
+	// providers.ollama/providers.openrouter). The BaseURL substring check
+	// stays alongside it for backward compatibility with any caller that
+	// doesn't set Provider to one of these exact strings.
+	if c.cfg.Provider == "openai" || c.cfg.Provider == "openrouter" || strings.Contains(c.cfg.BaseURL, "openrouter.ai") {
 		return c.openAI(ctx, messages, tools)
 	}
 	return c.ollama(ctx, messages, tools)
@@ -67,11 +78,12 @@ func (c *Client) ollama(ctx context.Context, messages []Message, tools []map[str
 		}
 		ms[i] = mm
 	}
-	// think:false is unconditional: a hidden reasoning trace on a
-	// thinking-capable model (e.g. gemma4) turned a ~1s answer into 148s —
-	// confirmed by direct testing. No caller here wants that trade-off, and
-	// it's a no-op for models without a thinking capability.
-	in := map[string]any{"model": c.cfg.Model, "messages": ms, "stream": false, "think": false}
+	// think is configurable per purpose/prompt (Config.Think) but defaults
+	// to false: a hidden reasoning trace on a thinking-capable model (e.g.
+	// gemma4) turned a ~1s answer into 148s — confirmed by direct testing.
+	// Callers should only opt in where that trade-off is wanted; it's a
+	// no-op for models without a thinking capability.
+	in := map[string]any{"model": c.cfg.Model, "messages": ms, "stream": false, "think": c.cfg.Think}
 	if len(tools) > 0 {
 		in["tools"] = tools
 	}

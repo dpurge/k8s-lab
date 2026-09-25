@@ -5,13 +5,11 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,6 +20,7 @@ import (
 	"phraseforge/internal/dialogs"
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/ime"
+	"phraseforge/internal/jobs"
 	"phraseforge/internal/models"
 	"phraseforge/internal/roles"
 	"phraseforge/internal/tags"
@@ -60,11 +59,7 @@ var pages = map[string]*template.Template{}
 
 func init() {
 	names := []string{
-		"login.html", "signup.html", "list.html", "new.html", "view.html",
-		"edit.html", "profile.html", "admin.html",
-		"dialogs-list.html", "dialogs-new.html", "dialogs-view.html", "dialogs-edit.html",
-		"vocab-list.html", "vocab-new.html", "vocab-view.html", "vocab-edit.html",
-		"models-list.html", "models-new.html", "models-view.html", "models-edit.html",
+		"login.html", "signup.html", "app.html",
 	}
 	for _, name := range names {
 		pages[name] = template.Must(template.ParseFS(templateFS, "templates/layout.html", "templates/"+name))
@@ -82,10 +77,11 @@ type Server struct {
 	tags         *tags.Store
 	translations *translations.Store
 	ai           *ai.Service
+	jobs         *jobs.Service
 }
 
-func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store, aiSvc *ai.Service) *Server {
-	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc}
+func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store, aiSvc *ai.Service, jobsSvc *jobs.Service) *Server {
+	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc, jobs: jobsSvc}
 }
 
 func (s *Server) Router() http.Handler {
@@ -118,61 +114,115 @@ func (s *Server) Router() http.Handler {
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
-		r.Get("/", s.handleList)
-		r.Get("/texts/new", s.handleNewForm)
-		r.Post("/texts", s.handleCreate)
-		r.Get("/texts/{id}", s.handleView)
-		r.Get("/texts/{id}/edit", s.handleEditForm)
-		r.Post("/texts/{id}/edit", s.handleUpdate)
-		r.Post("/texts/{id}/delete", s.handleDelete)
-
-		r.Get("/dialogs", s.handleDialogList)
-		r.Get("/dialogs/new", s.handleDialogNewForm)
-		r.Post("/dialogs", s.handleDialogCreate)
-		r.Get("/dialogs/{id}", s.handleDialogView)
-		r.Get("/dialogs/{id}/edit", s.handleDialogEditForm)
-		r.Post("/dialogs/{id}/edit", s.handleDialogUpdate)
-		r.Post("/dialogs/{id}/delete", s.handleDialogDelete)
-
-		r.Get("/vocabulary", s.handleVocabList)
-		r.Get("/vocabulary/new", s.handleVocabNewForm)
-		r.Post("/vocabulary", s.handleVocabCreate)
-		r.Get("/vocabulary/{id}", s.handleVocabView)
-		r.Get("/vocabulary/{id}/edit", s.handleVocabEditForm)
-		r.Post("/vocabulary/{id}/edit", s.handleVocabUpdate)
-		r.Post("/vocabulary/{id}/delete", s.handleVocabDelete)
-		r.Post("/vocabulary/{id}/items", s.handleVocabItemCreate)
-		r.Post("/vocabulary/{id}/items/{position}", s.handleVocabItemUpdate)
-		r.Post("/vocabulary/{id}/items/{position}/delete", s.handleVocabItemDelete)
-
-		r.Get("/models", s.handleModelsList)
-		r.Get("/models/new", s.handleModelsNewForm)
-		r.Post("/models", s.handleModelsCreate)
-		r.Get("/models/{id}", s.handleModelsView)
-		r.Get("/models/{id}/edit", s.handleModelsEditForm)
-		r.Post("/models/{id}/edit", s.handleModelsUpdate)
-		r.Post("/models/{id}/delete", s.handleModelsDelete)
-		r.Post("/models/{id}/items", s.handleModelsItemCreate)
-		r.Post("/models/{id}/items/{position}", s.handleModelsItemUpdate)
-		r.Post("/models/{id}/items/{position}/delete", s.handleModelsItemDelete)
+		// The whole app is one unified SPA shell now — see specs/features/
+		// phraseforge-spa-unified-shell.md. GET / serves it (handleApp);
+		// the five old per-resource shell URLs collapse to this single one
+		// (redirected below, not removed outright, so an old bookmark still
+		// lands somewhere sensible instead of a bare 404).
+		r.Get("/", s.handleApp)
+		redirectToApp := func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/", http.StatusFound) }
+		r.Get("/dialogs", redirectToApp)
+		r.Get("/vocabulary", redirectToApp)
+		r.Get("/models", redirectToApp)
 
 		r.Get("/ime-config", s.handleIMEConfig)
 		r.Post("/llm/generate", s.handleLLMGenerate)
-		r.Get("/profile", s.handleProfileForm)
-		r.Post("/profile/password", s.handleChangePassword)
-		r.Post("/profile/locale", s.handleSetLocale)
 
+		// phraseforge's first JSON API — see phraseforge-spa-shell-texts.
+		// Texts' own old HTML routes/templates have already been removed
+		// (this is the completed cutover, not a coexistence period); future
+		// resource types repeat this same pattern, each removed only once
+		// its own SPA replacement is fully validated.
+		r.Route("/api/v1", func(r chi.Router) {
+			r.Get("/texts", s.apiListTexts)
+			r.Post("/texts", s.apiCreateText)
+			// phraseforge-ingest-texts-dialogs: same requireAuth/CanEdit
+			// authorization as the "New" form's own create endpoint above —
+			// ingest is not admin-gated.
+			r.Post("/texts/ingest", s.apiIngestText)
+			// phraseforge-export-import: same requireAuth/CanEdit
+			// authorization as create/update above — export/import is not
+			// admin-gated either (see export_import.go).
+			r.Get("/texts/export", s.apiExportTexts)
+			r.Post("/texts/import", s.apiImportTexts)
+			r.Get("/texts/{id}", s.apiGetText)
+			r.Put("/texts/{id}", s.apiUpdateText)
+			r.Delete("/texts/{id}", s.apiDeleteText)
+			// phraseforge-generate-vocab-models-from-text: same requireAuth/
+			// CanEdit authorization as create/update above.
+			r.Post("/texts/{id}/generate-vocabulary", s.apiGenerateVocabularyFromText)
+			r.Post("/texts/{id}/generate-models", s.apiGenerateModelsFromText)
+
+			// Coexists with the old /dialogs/* HTML routes above temporarily
+			// (phraseforge-spa-dialogs) — removed once the SPA replacement
+			// is validated, per the established per-resource cutover pattern.
+			r.Get("/dialogs", s.apiListDialogs)
+			r.Post("/dialogs", s.apiCreateDialog)
+			r.Post("/dialogs/ingest", s.apiIngestDialog)
+			r.Get("/dialogs/export", s.apiExportDialogs)
+			r.Post("/dialogs/import", s.apiImportDialogs)
+			r.Get("/dialogs/{id}", s.apiGetDialog)
+			r.Put("/dialogs/{id}", s.apiUpdateDialog)
+			r.Delete("/dialogs/{id}", s.apiDeleteDialog)
+
+			// Coexists with the old /vocabulary/* HTML routes above
+			// temporarily (phraseforge-spa-vocabulary).
+			r.Get("/vocabulary", s.apiListVocabLists)
+			r.Post("/vocabulary", s.apiCreateVocabList)
+			// phraseforge-export-import: same requireAuth/CanEdit
+			// authorization as create/update above — export/import is not
+			// admin-gated either (see export_import.go).
+			r.Get("/vocabulary/export", s.apiExportVocabulary)
+			r.Post("/vocabulary/import", s.apiImportVocabulary)
+			r.Get("/vocabulary/{id}", s.apiGetVocabList)
+			r.Put("/vocabulary/{id}", s.apiUpdateVocabList)
+			r.Delete("/vocabulary/{id}", s.apiDeleteVocabList)
+			r.Post("/vocabulary/{id}/items", s.apiAddVocabItem)
+			r.Put("/vocabulary/{id}/items/{position}", s.apiUpdateVocabItem)
+			r.Delete("/vocabulary/{id}/items/{position}", s.apiDeleteVocabItem)
+
+			r.Get("/models", s.apiListModelsLists)
+			r.Post("/models", s.apiCreateModelsList)
+			r.Get("/models/export", s.apiExportModels)
+			r.Post("/models/import", s.apiImportModels)
+			r.Get("/models/{id}", s.apiGetModelsList)
+			r.Put("/models/{id}", s.apiUpdateModelsList)
+			r.Delete("/models/{id}", s.apiDeleteModelsList)
+			r.Post("/models/{id}/items", s.apiAddModelsItem)
+			r.Put("/models/{id}/items/{position}", s.apiUpdateModelsItem)
+			r.Delete("/models/{id}/items/{position}", s.apiDeleteModelsItem)
+
+			r.Get("/profile", s.apiGetProfile)
+			r.Post("/profile/locale", s.apiSetProfileLocale)
+			r.Post("/profile/password", s.apiChangeProfilePassword)
+
+			r.Get("/app-bootstrap", s.apiGetAppBootstrap)
+		})
+		r.Get("/profile", redirectToApp)
+
+		// Admin still gets its own requireAdmin-gated group — GET /admin
+		// redirects like the other four old shell URLs (a non-admin still
+		// gets 404, unchanged); GET /admin/config/export stays a real link
+		// (file download) — everything else goes through /api/v1/admin.
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAdmin)
-			r.Get("/admin", s.handleAdmin)
-			r.Post("/admin/grants", s.handleAdminGrant)
-			r.Post("/admin/grants/{id}/revoke", s.handleAdminRevoke)
-			r.Post("/admin/ime", s.handleAdminSetIME)
-			r.Post("/admin/ime/delete", s.handleAdminDeleteIME)
-			r.Post("/admin/llm-prompts", s.handleAdminLLMPrompt)
-			r.Post("/admin/llm-prompts/delete", s.handleAdminDeleteLLMPrompt)
+			r.Get("/admin", redirectToApp)
 			r.Get("/admin/config/export", s.handleAdminExportConfig)
-			r.Post("/admin/config/import", s.handleAdminImportConfig)
+
+			r.Route("/api/v1/admin", func(r chi.Router) {
+				r.Get("/", s.apiGetAdminBootstrap)
+				r.Post("/grants", s.apiCreateAdminGrant)
+				r.Delete("/grants/{id}", s.apiRevokeAdminGrant)
+				r.Post("/ime", s.apiSetAdminIME)
+				r.Delete("/ime/{language}/{script}", s.apiDeleteAdminIME)
+				r.Post("/llm-prompts", s.apiSetAdminLLMPrompt)
+				r.Delete("/llm-prompts/{kind}/{sourceLanguage}/{targetLanguage}", s.apiDeleteAdminLLMPrompt)
+				r.Post("/config/import", s.apiImportAdminConfig)
+				r.Get("/jobs", s.apiListAdminJobs)
+				r.Get("/jobs/{id}", s.apiGetAdminJob)
+				r.Post("/jobs/{id}/retry", s.apiRetryAdminJob)
+				r.Delete("/jobs/{id}", s.apiDeleteAdminJob)
+			})
 		})
 	})
 
@@ -356,57 +406,37 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
-func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	langs, all, err := s.roles.ViewableLanguages(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+// textsAppI18nKeys lists every i18n key list.html/new.html/edit.html/
+// view.html use (gathered by grepping their {{call .T "..."}} calls before
+// removing those templates) — the exact set handleTextsApp resolves once,
+// server-side, into a flat {key: translatedString} map for texts-app.js.
+var textsAppI18nKeys = []string{
+	"texts.title", "texts.new", "texts.empty", "texts.no_access",
+	"texts.tag_filter", "texts.tag_filter_clear",
+	"texts.new_title", "texts.field_title", "texts.field_language", "texts.field_script",
+	"texts.field_tags", "texts.field_tags_hint",
+	"texts.tab_source", "texts.tab_transcription", "texts.tab_translation",
+	"texts.field_body", "texts.field_transcription_hint", "texts.field_translation_hint",
+	"texts.save", "llm.transcribe", "llm.translate",
+	"texts.edit_title", "texts.back", "texts.edit", "texts.delete", "texts.delete_confirm",
+	"texts.ingest", "texts.ingest_title", "texts.ingest_source_label",
+	"texts.ingest_source_text", "texts.ingest_source_file", "texts.ingest_source_url",
+	"texts.ingest_field_text", "texts.ingest_field_file", "texts.ingest_field_url",
+	"texts.ingest_submit", "texts.ingest_started",
+	"texts.err_ingest_no_file", "texts.err_ingest_file_read",
+	"texts.export", "texts.import",
+	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
+	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
+	"texts.generate_vocabulary", "texts.generate_models",
+	"texts.generate_vocabulary_started", "texts.generate_models_started",
+}
 
-	// Sidebar language-filter select (persisted client-side in localStorage,
-	// same mechanism as the theme — see layout.html). Ignored if it names a
-	// language the viewer can't actually see, rather than erroring.
-	languageFilter := r.URL.Query().Get("language")
-	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
-		langs, all = []string{languageFilter}, false
+func textsAppI18n(loc string) map[string]string {
+	out := make(map[string]string, len(textsAppI18nKeys))
+	for _, k := range textsAppI18nKeys {
+		out[k] = i18n.T(loc, k)
 	}
-
-	list, err := s.texts.List(r.Context(), langs, all)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	tagFilter := r.URL.Query().Get("tag")
-	if tagFilter != "" {
-		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeText, tagFilter)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		list = filterByID(list, ids, func(t texts.Text) int64 { return t.ID })
-	}
-
-	ids := make([]int64, len(list))
-	for i, t := range list {
-		ids[i] = t.ID
-	}
-	tagsByID, err := s.tags.ForMany(r.Context(), resourceTypeText, ids)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	render(w, u.Locale, "list.html", map[string]any{
-		"User": u, "Nav": "texts", "NavFlags": nv, "Texts": list,
-		"TagsByID": tagsByID, "TagFilter": tagFilter, "LanguageFilter": languageFilter,
-	})
+	return out
 }
 
 // filterByID keeps only the items whose id (extracted via idOf) is in keep —
@@ -471,32 +501,6 @@ func (s *Server) handleIMEConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleNewForm(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !nv.CanCreateAny {
-		http.Error(w, i18n.T(u.Locale, "texts.err_no_create_access"), http.StatusForbidden)
-		return
-	}
-	langs, scripts, err := s.formOptions(r.Context(), nv)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allTags, err := s.tags.AllNames(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "new.html", map[string]any{
-		"User": u, "Nav": "new", "NavFlags": nv, "Languages": langs, "Scripts": scripts, "AllTags": allTags,
-	})
-}
-
 // formOptions returns the language dropdown (restricted to nv's editable
 // languages, unless admin) and the full script list (every script applies to
 // every language) for the new/edit text forms.
@@ -512,587 +516,307 @@ func (s *Server) formOptions(ctx context.Context, nv nav) ([]catalog.Language, [
 	return filterLanguages(allLangs, nv.EditableLangs, nv.EditableAllLng), scripts, nil
 }
 
-func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
+// --- JSON API (phraseforge-spa-shell-texts) ---
+//
+// writeJSON/writeErr mirror knowledge's own convention exactly
+// (knowledge/internal/server/server.go) for cross-app consistency: a
+// success body is whatever shape the caller passes; an error body is
+// always {"error": {"code": "...", "message": "..."}}.
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v) //nolint:errcheck // headers already sent; nothing to do if encoding fails
+}
+
+func writeErr(w http.ResponseWriter, status int, code, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": msg}}) //nolint:errcheck
+}
+
+type apiTextSummary struct {
+	ID        int64    `json:"id"`
+	Title     string   `json:"title"`
+	Language  string   `json:"language"`
+	Script    string   `json:"script"`
+	Tags      []string `json:"tags"`
+	CreatedAt string   `json:"createdAt"`
+}
+
+type apiTextDetail struct {
+	ID                    int64    `json:"id"`
+	Title                 string   `json:"title"`
+	Language              string   `json:"language"`
+	Script                string   `json:"script"`
+	Body                  string   `json:"body"`
+	Transcription         string   `json:"transcription"`
+	Translation           string   `json:"translation"`
+	Tags                  []string `json:"tags"`
+	CanEdit               bool     `json:"canEdit"`
+	ScriptDirection       string   `json:"scriptDirection"`
+	ScriptEnlarged        bool     `json:"scriptEnlarged"`
+	RenderedBody          string   `json:"renderedBody"`
+	RenderedTranscription string   `json:"renderedTranscription,omitempty"`
+	HasTranslation        bool     `json:"hasTranslation"`
+	RenderedTranslation   string   `json:"renderedTranslation,omitempty"`
+	SourceMarkdown        string   `json:"sourceMarkdown"`
+	TranscriptionMarkdown string   `json:"transcriptionMarkdown,omitempty"`
+	TranslationMarkdown   string   `json:"translationMarkdown,omitempty"`
+}
+
+// apiTextRequest is the JSON body shape for both create (POST) and update
+// (PUT) — same fields as the old handleCreate/handleUpdate's r.FormValue
+// reads, just decoded from JSON instead.
+type apiTextRequest struct {
+	Title         string `json:"title"`
+	Language      string `json:"language"`
+	Script        string `json:"script"`
+	Body          string `json:"body"`
+	Transcription string `json:"transcription"`
+	Translation   string `json:"translation"`
+	Tags          string `json:"tags"`
+}
+
+// apiListTexts is handleList's exact logic (language/tag filtering,
+// per-viewer visibility), JSON-encoded instead of rendered.
+func (s *Server) apiListTexts(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	language := r.FormValue("language")
-	script := r.FormValue("script")
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, language)
+	langs, all, err := s.roles.ViewableLanguages(r.Context(), u.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	languageFilter := r.URL.Query().Get("language")
+	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
+		langs, all = []string{languageFilter}, false
+	}
+	list, err := s.texts.List(r.Context(), langs, all)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	tagFilter := r.URL.Query().Get("tag")
+	if tagFilter != "" {
+		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeText, tagFilter)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		list = filterByID(list, ids, func(t texts.Text) int64 { return t.ID })
+	}
+	ids := make([]int64, len(list))
+	for i, t := range list {
+		ids[i] = t.ID
+	}
+	tagsByID, err := s.tags.ForMany(r.Context(), resourceTypeText, ids)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	out := make([]apiTextSummary, len(list))
+	for i, t := range list {
+		out[i] = apiTextSummary{
+			ID: t.ID, Title: t.Title, Language: t.Language, Script: t.Script,
+			Tags: tagsByID[t.ID], CreatedAt: t.CreatedAt.Format("Jan 2, 2006 · 15:04"),
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+// apiCreateText is handleCreate's exact logic — same authorization check,
+// same Create/SetFor/Set calls, in the same order.
+func (s *Server) apiCreateText(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	var req apiTextRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, req.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.Error(w, i18n.T(u.Locale, "texts.err_no_edit_language"), http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "texts.err_no_edit_language"))
 		return
 	}
-	id, err := s.texts.Create(r.Context(), u.ID, r.FormValue("title"), r.FormValue("body"), r.FormValue("transcription"), language, script)
+	id, err := s.texts.Create(r.Context(), u.ID, req.Title, req.Body, req.Transcription, req.Language, req.Script, "")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.tags.SetFor(r.Context(), resourceTypeText, id, tags.Parse(r.FormValue("tags"))); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.SetFor(r.Context(), resourceTypeText, id, tags.Parse(req.Tags)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	// Translation is stored per the editing user's own site locale — see
-	// internal/translations.
-	if err := s.translations.Set(r.Context(), resourceTypeText, id, u.Locale, r.FormValue("translation")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.translations.Set(r.Context(), resourceTypeText, id, u.Locale, req.Translation); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/texts/"+strconv.FormatInt(id, 10), http.StatusFound)
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
-func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
+// apiGetText is handleView's exact logic (CanView 404s exactly like
+// today — never reveal existence to a viewer who can't see it).
+func (s *Server) apiGetText(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	t, err := s.texts.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	canView, err := s.roles.CanView(r.Context(), u.ID, t.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canView {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, t.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	scriptMeta, err := catalog.GetScript(r.Context(), s.db, t.Script)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	rendered, err := texts.RenderHTML(t.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	textTags, err := s.tags.For(r.Context(), resourceTypeText, t.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	// Show whichever translation matches the viewer's own site locale, if any.
 	translationBody, hasTranslation, err := s.translations.Get(r.Context(), resourceTypeText, t.ID, u.Locale)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	var renderedTranscription, renderedTranslation template.HTML
 	if t.Transcription != "" {
 		if renderedTranscription, err = texts.RenderHTML(t.Transcription); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 	}
 	if hasTranslation {
 		if renderedTranslation, err = texts.RenderHTML(translationBody); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 	}
-	render(w, u.Locale, "view.html", map[string]any{
-		"User": u, "NavFlags": nv, "Text": t, "RenderedBody": rendered,
-		"CanEdit": canEdit, "Script": scriptMeta, "Tags": textTags,
-		"RenderedTranscription": renderedTranscription,
-		"HasTranslation":        hasTranslation,
-		"RenderedTranslation":   renderedTranslation,
-		"SourceMarkdown":        textBlockMarkdown(t.Body, "source", t.Language, t.Script),
-		"TranscriptionMarkdown": textBlockMarkdown(t.Transcription, "transcription", t.Language, "latn"),
-		"TranslationMarkdown":   textBlockMarkdown(translationBody, "translation", u.Locale, "latn"),
+	writeJSON(w, http.StatusOK, apiTextDetail{
+		ID: t.ID, Title: t.Title, Language: t.Language, Script: t.Script,
+		Body: t.Body, Transcription: t.Transcription, Translation: translationBody,
+		Tags: textTags, CanEdit: canEdit,
+		ScriptDirection: scriptMeta.Direction, ScriptEnlarged: scriptMeta.Enlarged,
+		RenderedBody: string(rendered), RenderedTranscription: string(renderedTranscription),
+		HasTranslation: hasTranslation, RenderedTranslation: string(renderedTranslation),
+		SourceMarkdown:        textBlockMarkdown(t.Body, "source", t.Language, t.Script),
+		TranscriptionMarkdown: textBlockMarkdown(t.Transcription, "transcription", t.Language, "latn"),
+		TranslationMarkdown:   textBlockMarkdown(translationBody, "translation", u.Locale, "latn"),
 	})
 }
 
-func (s *Server) handleEditForm(w http.ResponseWriter, r *http.Request) {
+// apiUpdateText is handleUpdate's exact logic, including the
+// moving-to-a-different-language re-check.
+func (s *Server) apiUpdateText(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	t, err := s.texts.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, t.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var req apiTextRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	langs, scripts, err := s.formOptions(r.Context(), nv)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	textTags, err := s.tags.For(r.Context(), resourceTypeText, id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allTags, err := s.tags.AllNames(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Prefills the editing user's OWN locale's translation slot — a
-	// different editor with a different profile language would see/edit a
-	// different slot for the same text (see internal/translations).
-	translationBody, _, err := s.translations.Get(r.Context(), resourceTypeText, id, u.Locale)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "edit.html", map[string]any{
-		"User": u, "NavFlags": nv, "Text": t, "Languages": langs, "Scripts": scripts,
-		"Tags": strings.Join(textTags, ", "), "AllTags": allTags, "Translation": translationBody,
-	})
-}
-
-func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	t, err := s.texts.Get(r.Context(), id)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, t.Language)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !canEdit {
-		http.NotFound(w, r)
-		return
-	}
-	newLanguage := r.FormValue("language")
-	if newLanguage != t.Language {
-		// Moving a text to a different language requires edit rights there too.
-		canEditNew, err := s.roles.CanEdit(r.Context(), u.ID, newLanguage)
+	if req.Language != t.Language {
+		canEditNew, err := s.roles.CanEdit(r.Context(), u.ID, req.Language)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		if !canEditNew {
-			http.Error(w, i18n.T(u.Locale, "texts.err_no_move_language"), http.StatusForbidden)
+			writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "texts.err_no_move_language"))
 			return
 		}
 	}
-	if err := s.texts.Update(r.Context(), id, r.FormValue("title"), r.FormValue("body"), r.FormValue("transcription"), newLanguage, r.FormValue("script")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.texts.Update(r.Context(), id, req.Title, req.Body, req.Transcription, req.Language, req.Script); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.tags.SetFor(r.Context(), resourceTypeText, id, tags.Parse(r.FormValue("tags"))); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.SetFor(r.Context(), resourceTypeText, id, tags.Parse(req.Tags)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.translations.Set(r.Context(), resourceTypeText, id, u.Locale, r.FormValue("translation")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.translations.Set(r.Context(), resourceTypeText, id, u.Locale, req.Translation); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/texts/"+strconv.FormatInt(id, 10), http.StatusFound)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
-func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+// apiDeleteText is handleDelete's exact logic.
+func (s *Server) apiDeleteText(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	t, err := s.texts.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, t.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "text not found")
 		return
 	}
 	if err := s.texts.Delete(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if err := s.tags.DeleteFor(r.Context(), resourceTypeText, id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-func (s *Server) handleProfileForm(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	grants, err := s.roles.GrantsForUser(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "profile.html", map[string]any{
-		"User": u, "NavFlags": nv, "Grants": grants, "Locales": i18n.Locales,
-	})
-}
-
-func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, _ := s.loadNav(r.Context(), u.ID)
-	grants, _ := s.roles.GrantsForUser(r.Context(), u.ID)
-	current := r.FormValue("current_password")
-	next := r.FormValue("new_password")
-	confirm := r.FormValue("confirm_password")
-
-	base := map[string]any{"User": u, "NavFlags": nv, "Grants": grants, "Locales": i18n.Locales}
-	withError := func(key string) map[string]any {
-		base["Message"] = i18n.T(u.Locale, key)
-		base["MessageType"] = "error"
-		return base
-	}
-
-	if next != confirm {
-		render(w, u.Locale, "profile.html", withError("profile.err_password_mismatch"))
-		return
-	}
-	if len(next) < 8 {
-		render(w, u.Locale, "profile.html", withError("profile.err_password_length"))
-		return
-	}
-	if err := s.auth.ChangePassword(r.Context(), u.ID, current, next); err != nil {
-		key := "profile.err_generic"
-		if err == auth.ErrInvalidCredentials {
-			key = "profile.err_current_password"
-		}
-		render(w, u.Locale, "profile.html", withError(key))
-		return
-	}
-	base["Message"] = i18n.T(u.Locale, "profile.password_changed")
-	base["MessageType"] = "success"
-	render(w, u.Locale, "profile.html", base)
-}
-
-func (s *Server) handleSetLocale(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	newLocale := r.FormValue("locale")
-	if !i18n.IsValid(newLocale) {
-		http.Error(w, "invalid locale", http.StatusBadRequest)
-		return
-	}
-	if err := s.auth.SetLocale(r.Context(), u.ID, newLocale); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	u.Locale = newLocale // avoid a re-query just to reflect what we just wrote
-
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	grants, err := s.roles.GrantsForUser(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "profile.html", map[string]any{
-		"User": u, "NavFlags": nv, "Grants": grants, "Locales": i18n.Locales,
-		"Message": i18n.T(u.Locale, "profile.language_saved"), "MessageType": "success",
-	})
-}
-
-func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	users, err := s.auth.ListUsers(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	grants, err := s.roles.Grants(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	langs, err := catalog.ListLanguages(r.Context(), s.db)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	scripts, err := catalog.ListScripts(r.Context(), s.db)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	imePresets, err := ime.ListPresets(r.Context(), s.db)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	imeConfigs, err := ime.ListConfigs(r.Context(), s.db)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	llmPrompts, err := s.ai.ListPrompts(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "admin.html", map[string]any{
-		"User": u, "Nav": "admin", "NavFlags": nv,
-		"Users": users, "Grants": grants, "Languages": langs, "Scripts": scripts,
-		"SiteLanguages": i18n.Locales,
-		"ImePresets":    imePresets, "ImeConfigs": imeConfigs, "LLMPrompts": llmPrompts,
-	})
-}
-
-type adminConfigExport struct {
-	Version    int          `json:"version"`
-	IMEConfigs []ime.Config `json:"ime_configs"`
-	LLMPrompts []ai.Prompt  `json:"llm_prompts"`
-}
-
-func (s *Server) handleAdminExportConfig(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	imeConfigs, err := ime.ListConfigs(ctx, s.db)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	llmPrompts, err := s.ai.ListPrompts(ctx)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="phraseforge-admin-config.json"`)
-	if err := json.NewEncoder(w).Encode(adminConfigExport{Version: 1, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts}); err != nil {
-		log.Printf("export admin config: %v", err)
-	}
-}
-
-func (s *Server) handleAdminImportConfig(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var data []byte
-	file, _, err := r.FormFile("config_file")
-	if err == nil {
-		defer file.Close()
-		data, err = io.ReadAll(file)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		_ = r.ParseMultipartForm(10 << 20)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		data = []byte(r.FormValue("config_json"))
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		http.Error(w, "configuration JSON is required", http.StatusBadRequest)
-		return
-	}
-	var cfg adminConfigExport
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		http.Error(w, "invalid configuration JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if cfg.Version != 1 {
-		http.Error(w, "unsupported configuration version", http.StatusBadRequest)
-		return
-	}
-	for _, c := range cfg.IMEConfigs {
-		if c.Language == "" || c.Script == "" {
-			http.Error(w, "each IME config requires language and script", http.StatusBadRequest)
-			return
-		}
-	}
-	for _, p := range cfg.LLMPrompts {
-		if p.Kind != "translation" && p.Kind != "transcription" {
-			http.Error(w, "each LLM prompt kind must be translation or transcription", http.StatusBadRequest)
-			return
-		}
-		if p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
-			http.Error(w, "each LLM prompt requires source_language, target_language, and prompt", http.StatusBadRequest)
-			return
-		}
-	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM ime_config`); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM llm_prompts`); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	toNull := func(s string) any {
-		if strings.TrimSpace(s) == "" {
-			return nil
-		}
-		return s
-	}
-	for _, c := range cfg.IMEConfigs {
-		if _, err := tx.Exec(ctx, `INSERT INTO ime_config(language, script, source_ime, transcription_ime, needs_transcription) VALUES($1,$2,$3,$4,$5)`, c.Language, c.Script, toNull(c.SourceIME), toNull(c.TranscriptionIME), c.NeedsTranscription); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	for _, p := range cfg.LLMPrompts {
-		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, model, prompt) VALUES($1,$2,$3,$4,$5)`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Model), p.Prompt); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleAdminSetIME(w http.ResponseWriter, r *http.Request) {
-	cfg := ime.Config{
-		Language:           r.FormValue("language"),
-		Script:             r.FormValue("script"),
-		SourceIME:          r.FormValue("source_ime"),
-		TranscriptionIME:   r.FormValue("transcription_ime"),
-		NeedsTranscription: r.FormValue("needs_transcription") != "", // unchecked checkboxes send no field at all
-	}
-	if cfg.Language == "" || cfg.Script == "" {
-		http.Error(w, "language and script are required", http.StatusBadRequest)
-		return
-	}
-	if err := ime.SetConfig(r.Context(), s.db, cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleAdminDeleteIME(w http.ResponseWriter, r *http.Request) {
-	language := r.FormValue("language")
-	script := r.FormValue("script")
-	if err := ime.DeleteConfig(r.Context(), s.db, language, script); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
-	p := ai.Prompt{Kind: r.FormValue("kind"), SourceLanguage: r.FormValue("source_language"), TargetLanguage: r.FormValue("target_language"), Model: r.FormValue("model"), Prompt: r.FormValue("prompt")}
-	if p.Kind == "" || p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
-		http.Error(w, "kind, source language, target language, and prompt are required", http.StatusBadRequest)
-		return
-	}
-	if p.Kind != "translation" && p.Kind != "transcription" {
-		http.Error(w, "kind must be translation or transcription", http.StatusBadRequest)
-		return
-	}
-	if err := s.ai.SetPrompt(r.Context(), p); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleAdminDeleteLLMPrompt(w http.ResponseWriter, r *http.Request) {
-	kind := r.FormValue("kind")
-	sourceLanguage := r.FormValue("source_language")
-	targetLanguage := r.FormValue("target_language")
-	if kind == "" || sourceLanguage == "" || targetLanguage == "" {
-		http.Error(w, "kind, source language, and target language are required", http.StatusBadRequest)
-		return
-	}
-	if err := s.ai.DeletePrompt(r.Context(), kind, sourceLanguage, targetLanguage); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleAdminGrant(w http.ResponseWriter, r *http.Request) {
-	userID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid user_id", http.StatusBadRequest)
-		return
-	}
-	role := r.FormValue("role")
-	language := r.FormValue("language")
-	if role == roles.Admin {
-		language = ""
-	} else if language == "" {
-		http.Error(w, "teacher/student grants require a language", http.StatusBadRequest)
-		return
-	}
-	if err := s.roles.Grant(r.Context(), userID, role, language); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := s.roles.Revoke(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func render(w http.ResponseWriter, loc, name string, data map[string]any) {

@@ -18,6 +18,7 @@ type Text struct {
 	Transcription string // "" if none — cli-tools' "pinned Latin/LTR romanization"
 	Language      string
 	Script        string
+	IngestSource  string // "" if manually created or pasted-text-ingested; else the URL/filename it came from
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
@@ -31,10 +32,10 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
-const selectCols = `id, user_id, title, body, coalesce(transcription, ''), language, script, created_at, updated_at`
+const selectCols = `id, user_id, title, body, coalesce(transcription, ''), language, script, coalesce(ingest_source, ''), created_at, updated_at`
 
 func scanText(row interface{ Scan(...any) error }, t *Text) error {
-	return row.Scan(&t.ID, &t.UserID, &t.Title, &t.Body, &t.Transcription, &t.Language, &t.Script, &t.CreatedAt, &t.UpdatedAt)
+	return row.Scan(&t.ID, &t.UserID, &t.Title, &t.Body, &t.Transcription, &t.Language, &t.Script, &t.IngestSource, &t.CreatedAt, &t.UpdatedAt)
 }
 
 // List returns texts in the given languages, most recent first. If all is
@@ -74,12 +75,14 @@ func (s *Store) Get(ctx context.Context, id int64) (Text, error) {
 	return t, err
 }
 
-// Create inserts a new text, recording userID as its creator.
-func (s *Store) Create(ctx context.Context, userID int64, title, body, transcription, language, script string) (int64, error) {
+// Create inserts a new text, recording userID as its creator. ingestSource is
+// the URL or original filename it was ingested from, or "" for a manually
+// created or pasted-text-ingested row.
+func (s *Store) Create(ctx context.Context, userID int64, title, body, transcription, language, script, ingestSource string) (int64, error) {
 	var id int64
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO texts (user_id, title, body, transcription, language, script) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		userID, title, body, nullIfEmpty(transcription), language, script).Scan(&id)
+		`INSERT INTO texts (user_id, title, body, transcription, language, script, ingest_source) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		userID, title, body, nullIfEmpty(transcription), language, script, nullIfEmpty(ingestSource)).Scan(&id)
 	return id, err
 }
 
@@ -89,6 +92,31 @@ func (s *Store) Update(ctx context.Context, id int64, title, body, transcription
 	_, err := s.db.Exec(ctx,
 		`UPDATE texts SET title = $1, body = $2, transcription = $3, language = $4, script = $5, updated_at = now() WHERE id = $6`,
 		title, body, nullIfEmpty(transcription), language, script, id)
+	return err
+}
+
+// GetBody returns just a text's body — used by phraseforge/internal/ingest's
+// retry-idempotency check to recover the content an earlier, already-
+// succeeded run of the same (job-id-carried-forward) job produced, without
+// exposing the rest of Get's Text struct to a caller that only needs this
+// one field.
+func (s *Store) GetBody(ctx context.Context, id int64) (string, error) {
+	t, err := s.Get(ctx, id)
+	return t.Body, err
+}
+
+// SetTitle overwrites only a text's title — used by a background job's
+// completion so it never clobbers a field it didn't touch, even if jobs
+// complete out of order.
+func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
+	_, err := s.db.Exec(ctx, `UPDATE texts SET title = $1, updated_at = now() WHERE id = $2`, title, id)
+	return err
+}
+
+// SetTranscription overwrites only a text's transcription — same
+// out-of-order-safety rationale as SetTitle.
+func (s *Store) SetTranscription(ctx context.Context, id int64, transcription string) error {
+	_, err := s.db.Exec(ctx, `UPDATE texts SET transcription = $1, updated_at = now() WHERE id = $2`, nullIfEmpty(transcription), id)
 	return err
 }
 

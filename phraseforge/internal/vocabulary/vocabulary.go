@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -101,6 +102,35 @@ func (s *Store) Create(ctx context.Context, userID int64, title, language, scrip
 	return id, err
 }
 
+// CreateFromText inserts a new list linked to a source text via
+// source_text_id — used by phraseforge/internal/generate's "Generate
+// Vocabulary" job the first time it runs for a given text (see
+// specs/features/phraseforge-generate-vocab-models-from-text.md); a rerun
+// instead finds the linked list via GetBySourceTextID and wholesale-replaces
+// its items.
+func (s *Store) CreateFromText(ctx context.Context, userID int64, title, language, script string, sourceTextID int64) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO vocabulary_lists (user_id, title, language, script, source_text_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		userID, title, language, script, sourceTextID).Scan(&id)
+	return id, err
+}
+
+// GetBySourceTextID returns the id of the list whose source_text_id equals
+// textID, if one exists — found is false (not an error) when no list is
+// linked to that text yet.
+func (s *Store) GetBySourceTextID(ctx context.Context, textID int64) (id int64, found bool, err error) {
+	err = s.db.QueryRow(ctx, `SELECT id FROM vocabulary_lists WHERE source_text_id = $1`, textID).Scan(&id)
+	switch {
+	case err == nil:
+		return id, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, false, nil
+	default:
+		return 0, false, err
+	}
+}
+
 // UpdateMeta overwrites a list's own title/language/script (not its items).
 func (s *Store) UpdateMeta(ctx context.Context, id int64, title, language, script string) error {
 	_, err := s.db.Exec(ctx,
@@ -113,6 +143,18 @@ func (s *Store) UpdateMeta(ctx context.Context, id int64, title, language, scrip
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM vocabulary_lists WHERE id = $1`, id)
 	return err
+}
+
+// Begin starts a transaction against this store's own pool — exported so a
+// caller (e.g. server.apiImportVocabulary's wholesale item replacement) can
+// wrap a whole delete-existing-items + add-new-items + set-translations
+// sequence for one list in a single transaction: a failure or client
+// disconnect partway through must never leave a list's items permanently
+// deleted with nothing re-added (see specs/features/
+// phraseforge-export-import.md's B2 fix). The caller commits or rolls back
+// tx itself once every step it wants atomic with the others has succeeded.
+func (s *Store) Begin(ctx context.Context) (pgx.Tx, error) {
+	return s.db.Begin(ctx)
 }
 
 // Items returns listID's common fields, in position order.
@@ -147,6 +189,18 @@ func (s *Store) AddItem(ctx context.Context, listID int64, phrase, grammar, tran
 	return pos, err
 }
 
+// AddItemTx is AddItem's logic run against an already-open transaction tx
+// (see Begin's doc comment) instead of this store's own pool.
+func (s *Store) AddItemTx(ctx context.Context, tx pgx.Tx, listID int64, phrase, grammar, transcription string) (int, error) {
+	var pos int
+	err := tx.QueryRow(ctx, `
+		INSERT INTO vocabulary_items (list_id, position, phrase, grammar, transcription)
+		VALUES ($1, coalesce((SELECT max(position) + 1 FROM vocabulary_items WHERE list_id = $1), 0), $2, $3, $4)
+		RETURNING position`,
+		listID, phrase, nullIfEmpty(grammar), nullIfEmpty(transcription)).Scan(&pos)
+	return pos, err
+}
+
 // UpdateItem overwrites the common fields of the item at position. Returns
 // ErrItemNotFound if position doesn't exist.
 func (s *Store) UpdateItem(ctx context.Context, listID int64, position int, phrase, grammar, transcription string) error {
@@ -161,6 +215,75 @@ func (s *Store) UpdateItem(ctx context.Context, listID int64, position int, phra
 		return ErrItemNotFound
 	}
 	return nil
+}
+
+// SetItemTranscription overwrites only the item at (listID, position)'s
+// transcription — same out-of-order-safety rationale as
+// texts.Store.SetTranscription (a background job's completion must never
+// clobber a field it didn't touch); never touches phrase/grammar or any
+// other item field. Guarded by phrase (see B3 in
+// specs/features/phraseforge-export-import.md): a background job is
+// generated against a specific (listID, position, phrase) triple, and by the
+// time it runs the item at that position may have moved (deleted/reordered)
+// or been replaced entirely — writing its result onto whatever now happens
+// to sit at that bare position would silently corrupt the wrong item. If
+// phrase no longer matches what's stored (or position no longer exists at
+// all), this is ErrItemNotFound, not a silent no-op, so the caller (ai.go's
+// writeback) fails the job instead of reporting false success.
+func (s *Store) SetItemTranscription(ctx context.Context, listID int64, position int, phrase, transcription string) error {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE vocabulary_items SET transcription = $1 WHERE list_id = $2 AND position = $3 AND phrase = $4`,
+		nullIfEmpty(transcription), listID, position, phrase)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrItemNotFound
+	}
+	return nil
+}
+
+// SetItemTranslationGuarded upserts one item's translation/notes at (listID,
+// position), but only if the item still has the given phrase — same
+// stale-target rationale as SetItemTranscription's own doc comment,
+// extended to translation writeback per B3. Runs the phrase check and the
+// upsert/delete inside one transaction (with FOR UPDATE on the phrase read)
+// so a concurrent edit can never slip between the check and the write.
+// Returns ErrItemNotFound if phrase no longer matches (or position is gone).
+func (s *Store) SetItemTranslationGuarded(ctx context.Context, listID int64, position int, phrase, locale, translation, notes string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
+
+	var storedPhrase string
+	err = tx.QueryRow(ctx, `SELECT phrase FROM vocabulary_items WHERE list_id = $1 AND position = $2 FOR UPDATE`, listID, position).Scan(&storedPhrase)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrItemNotFound
+		}
+		return err
+	}
+	if storedPhrase != phrase {
+		return ErrItemNotFound
+	}
+
+	if translation == "" && notes == "" {
+		if _, err := tx.Exec(ctx, `DELETE FROM vocabulary_item_translation WHERE list_id = $1 AND position = $2 AND locale = $3`, listID, position, locale); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO vocabulary_item_translation (list_id, position, locale, translation, notes)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (list_id, position, locale) DO UPDATE SET
+			translation = EXCLUDED.translation, notes = EXCLUDED.notes, updated_at = now()`,
+		listID, position, locale, nullIfEmpty(translation), nullIfEmpty(notes)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // DeleteItem removes the item at position and shifts every later item (and
@@ -179,6 +302,18 @@ func (s *Store) DeleteItem(ctx context.Context, listID int64, position int) erro
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 
+	if err := s.DeleteItemTx(ctx, tx, listID, position); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// DeleteItemTx is DeleteItem's logic run against an already-open transaction
+// tx (see Begin's doc comment) instead of this method beginning/committing
+// its own — lets a caller (e.g. a wholesale item replacement) fold several
+// items' deletes into one outer transaction. Returns ErrItemNotFound if
+// position doesn't exist; the caller commits/rolls back tx itself.
+func (s *Store) DeleteItemTx(ctx context.Context, tx pgx.Tx, listID int64, position int) error {
 	tag, err := tx.Exec(ctx, `DELETE FROM vocabulary_items WHERE list_id = $1 AND position = $2`, listID, position)
 	if err != nil {
 		return err
@@ -202,7 +337,7 @@ func (s *Store) DeleteItem(ctx context.Context, listID int64, position int) erro
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // Translations returns listID's translations for locale, keyed by position.
@@ -239,6 +374,18 @@ func (s *Store) SetTranslations(ctx context.Context, listID int64, locale string
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 
+	if err := s.SetTranslationsTx(ctx, tx, listID, locale, translations, validPositions); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SetTranslationsTx is SetTranslations' logic run against an already-open
+// transaction tx (see Begin's doc comment) instead of this method
+// beginning/committing its own — lets a caller fold several items'
+// translation upserts into one outer transaction alongside their own
+// delete/add steps (e.g. a wholesale item replacement).
+func (s *Store) SetTranslationsTx(ctx context.Context, tx pgx.Tx, listID int64, locale string, translations []ItemTranslation, validPositions int) error {
 	for _, t := range translations {
 		if t.Position >= validPositions {
 			continue
@@ -260,7 +407,7 @@ func (s *Store) SetTranslations(ctx context.Context, listID int64, locale string
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func nullIfEmpty(s string) any {

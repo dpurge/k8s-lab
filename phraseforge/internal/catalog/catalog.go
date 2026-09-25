@@ -57,6 +57,24 @@ func ListScripts(ctx context.Context, db *pgxpool.Pool) ([]Script, error) {
 	return out, rows.Err()
 }
 
+// GetLanguageIfExists reports whether code matches a language row, without
+// erroring when it doesn't (mirrors GetScriptIfExists) — used by the ingest
+// endpoint to reject an unknown language before enqueuing any work, rather
+// than letting it fail later at the texts/dialogs FK constraint after
+// already burning LLM calls.
+func GetLanguageIfExists(ctx context.Context, db *pgxpool.Pool, code string) (Language, bool, error) {
+	var l Language
+	err := db.QueryRow(ctx, `SELECT code, coalesce(iso1, ''), name FROM language WHERE code = $1`, code).
+		Scan(&l.Code, &l.ISO1, &l.Name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Language{}, false, nil
+	}
+	if err != nil {
+		return Language{}, false, err
+	}
+	return l, true, nil
+}
+
 // GetScript looks up one script's direction/enlarged treatment for rendering.
 func GetScript(ctx context.Context, db *pgxpool.Pool, code string) (Script, error) {
 	var s Script

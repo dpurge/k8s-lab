@@ -154,7 +154,7 @@ Each app's own deploy/delete/migrate tasks and full API docs live in its own REA
 Postgres, Qdrant, pgAdmin, Garage, and NATS run in the `data` namespace and are shared by both apps.
 
 **Postgres** — one server, two independent databases: `dictionary` (used by the `dictionary`
-app) and `phraseforge_app` (used by `phraseforge`), each created and migrated by its own app's
+app) and `phraseforge` (used by `phraseforge`), each created and migrated by its own app's
 own migration task — the two schemas never mix. Credentials are generated once into
 `.k3d/postgres.env` (gitignored) — by whichever of `task deploy-postgres`, `task deploy-dictionary`,
 or `task deploy-phraseforge` you run first — and projected as the `postgres-credentials` Secret

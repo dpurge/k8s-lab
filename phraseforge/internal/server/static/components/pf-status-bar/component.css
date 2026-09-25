@@ -1,0 +1,16 @@
+pf-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 2.4rem;
+  width: 100%;
+}
+
+pf-status-bar .pf-status-job {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+pf-status-bar .pf-status-message.error {
+  color: var(--danger);
+}

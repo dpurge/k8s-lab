@@ -5,12 +5,12 @@
 
 A Readeck-inspired Go app for language-learning content: login, per-language teacher/student roles, and four resource types —
 
-- **Texts** — markdown articles, with an optional transcription and a translation (in the reader's own site language).
-- **Dialogs** — the same, using phraseforge's own turn-based markdown syntax (`--:`/`@Name:` turns).
+- **Texts** — markdown articles, with an optional transcription and a translation (in the reader's own site language). Create via form, paste text, upload a file, or ingest from a URL; title and content are cleaned automatically in the background.
+- **Dialogs** — the same, using phraseforge's own turn-based markdown syntax (`--:`/`@Name:` turns). Same creation methods as Texts, with background processing for title and content cleanup.
 - **Vocabulary** and **Models** — structured lists (not markdown): edited one item at a time, with proper IME support on non-Latin scripts. A vocabulary item is phrase/grammar/transcription (common) plus translation/notes (per site locale, en/pl); a model item is the same minus grammar/notes — cli-tools' own `{start-models}` block, described as "vocabulary without a grammar tag or notes".
 - **LLM assist** — edit pages can generate transcription and translation with Ollama or OpenRouter-compatible chat APIs. Admins can set system prompts per request kind, source language, and target language.
 
-Shares the `data` namespace's Postgres server with `dictionary`, but its own database (`phraseforge_app`) and its own migration path — the two apps' schemas never mix. Shared Postgres/LLM helper code lives in `../shared`.
+Shares the `data` namespace's Postgres server with `dictionary`, but its own database (`phraseforge`) and its own migration path — the two apps' schemas never mix. Shared Postgres/LLM helper code lives in `../shared`.
 
 ## Deploy and migrate
 
@@ -21,7 +21,7 @@ task deploy-phraseforge        # build the image, check its size, migrate, apply
 ```
 
 `task deploy-phraseforge` builds and size-checks the image, runs the database migration Job
-(creates the `phraseforge_app` database if missing and applies `internal/db/schema.sql`, which
+(creates the `phraseforge` database if missing and applies `internal/db/schema.sql`, which
 is idempotent), then applies `phraseforge/k8s/deployment.yaml` (Deployment/Service/Ingress). Run
 `task migrate-phraseforge-db` on its own later to re-apply the schema after a change without a
 full redeploy. `task delete-phraseforge` removes the Deployment/Service/Ingress only — it leaves
@@ -29,24 +29,34 @@ the migration Job and the database alone.
 
 ## LLM configuration
 
-Defaults are Ollama-compatible:
+LLM configuration is file-based with per-purpose (transcription/translation) defaults, and per-prompt admin overrides:
 
-```env
-LLM_PROVIDER=ollama
-LLM_BASE_URL=http://localhost:11434
-LLM_MODEL=gemma4:e4b
+**Configuration file:** mounted at `CONFIG_FILE` (default `/etc/phraseforge/config.yaml`), containing:
+- `providers.ollama.baseURL` and `providers.openrouter.baseURL` — provider connection URLs.
+- `transcription.{provider, model, think}` and `translation.{provider, model, think}` — per-purpose defaults (provider is `"ollama"` or `"openrouter"`; model examples: `"gemma4:12b"` for Ollama, `"meta-llama/llama-2-70b"` for OpenRouter; think is boolean, default false).
+
+**Credentials:** API keys come from environment variables only, never from the config file:
+- `OLLAMA_API_KEY` — Ollama API key (empty for local Ollama, which needs no auth).
+- `OPENROUTER_API_KEY` — OpenRouter API key.
+
+**Admin overrides:** in the admin panel's LLM tab, admins can set provider, model, and think (enable/disable thinking) per prompt, overriding the purpose defaults for that specific (kind, source_language, target_language) combination. A newly saved row inherits the purpose default.
+
+**Example config.yaml:**
+```yaml
+providers:
+  ollama:
+    baseURL: http://host.docker.internal:11434
+  openrouter:
+    baseURL: https://openrouter.ai/api/v1
+transcription:
+  provider: ollama
+  model: gemma4:12b
+  think: false
+translation:
+  provider: ollama
+  model: gemma4:12b
+  think: false
 ```
-
-For OpenRouter or another OpenAI-compatible provider:
-
-```env
-LLM_PROVIDER=openai
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_API_KEY=...
-LLM_MODEL=<model-id>
-```
-
-In Kubernetes the default `LLM_BASE_URL` is `http://host.docker.internal:11434`.
 
 ## Ingress host
 

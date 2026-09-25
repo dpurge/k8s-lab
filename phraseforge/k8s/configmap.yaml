@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: phraseforge-config
+  namespace: app
+data:
+  config.yaml: |
+    bindAddr: 0.0.0.0:8090
+    postgres:
+      host: postgres.data.svc.cluster.local
+      port: "5432"
+      database: phraseforge
+    providers:
+      ollama:
+        baseURL: http://host.docker.internal:11434
+      openrouter:
+        baseURL: https://openrouter.ai/api/v1
+    transcription:
+      provider: ollama
+      model: gemma4:12b
+    translation:
+      provider: ollama
+      model: gemma4:12b

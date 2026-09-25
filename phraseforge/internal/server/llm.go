@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"phraseforge/internal/ai"
+	"phraseforge/internal/jobs"
 )
 
 type llmGenerateRequest struct {
@@ -14,6 +17,16 @@ type llmGenerateRequest struct {
 	Content        string `json:"content"`
 }
 
+type llmGenerateResult struct {
+	Text string `json:"text"`
+}
+
+// handleLLMGenerate's external HTTP contract is unchanged — same request and
+// response shape — but internally it now goes through the job queue
+// (jobs.Service.EnqueueAndAwait) instead of calling ai.Service.Generate
+// directly, serializing it against any future background job rather than
+// running fully concurrently with it (see
+// specs/features/phraseforge-job-queue.md).
 func (s *Server) handleLLMGenerate(w http.ResponseWriter, r *http.Request) {
 	var req llmGenerateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -27,11 +40,21 @@ func (s *Server) handleLLMGenerate(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.TargetLanguage) == "" {
 		req.TargetLanguage = currentUser(r).Locale
 	}
-	out, err := s.ai.Generate(r.Context(), req.Kind, req.SourceLanguage, req.TargetLanguage, req.ContentType, req.Content)
+	payload, err := json.Marshal(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	raw, err := s.jobs.EnqueueAndAwait(r.Context(), ai.KindLLMGenerate, jobs.PriorityInteractive, payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var result llmGenerateResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"text": strings.TrimSpace(out)}) //nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]string{"text": strings.TrimSpace(result.Text)}) //nolint:errcheck
 }

@@ -576,6 +576,13 @@ tasks:
 
   # ── phraseforge ──────────────────────────────────────────────────────────────
 
+  test-phraseforge-frontend:
+    desc: Run phraseforge's pf-* Web Component tests (Node+jsdom, dev-time only).
+    dir: phraseforge/internal/server/static/components
+    cmds:
+      - npm install
+      - npm test
+
   deploy-phraseforge:
     desc: Build and deploy the phraseforge app to the running cluster.
     cmds:
@@ -588,6 +595,7 @@ tasks:
       - task: _require-cluster
       - task: _apply-namespaces
       - task: _ensure-db-secret
+      - '{{.KUBECTL}} apply -f phraseforge/k8s/configmap.yaml'
       - task: _migrate-db
         vars:
           APP: phraseforge

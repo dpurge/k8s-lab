@@ -1,4 +1,4 @@
--- phraseforge_app schema. Applied (idempotently — every statement is safe to
+-- phraseforge schema. Applied (idempotently — every statement is safe to
 -- rerun) by `phraseforge migrate`. Dialogs and vocabulary lists (parsed from
 -- the same markdown via cli-tools' goldmark extension) are read straight out
 -- of `texts.body` for now — dedicated tables land when we build those
@@ -285,6 +285,11 @@ ALTER TABLE ime_config ADD COLUMN IF NOT EXISTS needs_transcription boolean NOT 
 -- on texts.
 ALTER TABLE texts ADD COLUMN IF NOT EXISTS transcription text;
 
+-- Records the URL or original filename a text was ingested from
+-- (phraseforge-ingest-texts-dialogs); NULL for manually-created or
+-- pasted-text-ingested rows.
+ALTER TABLE texts ADD COLUMN IF NOT EXISTS ingest_source text;
+
 -- Translation is stored per *viewer* site locale AND per resource, using the
 -- same resource_type + resource_id polymorphism as tagging (see below): a
 -- resource can accumulate an English translation, a Polish one, both, or
@@ -331,6 +336,11 @@ CREATE TABLE IF NOT EXISTS dialogs (
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- Records the URL or original filename a dialog was ingested from
+-- (phraseforge-ingest-texts-dialogs); NULL for manually-created or
+-- pasted-text-ingested rows.
+ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS ingest_source text;
 
 -- ── Vocabulary lists ─────────────────────────────────────────────────────────
 -- Genuinely different shape from texts/dialogs, not a relabeled markdown
@@ -442,3 +452,51 @@ CREATE TABLE IF NOT EXISTS llm_prompts (
     PRIMARY KEY (kind, source_language, target_language)
 );
 ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS model text NOT NULL DEFAULT '';
+ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS provider text NOT NULL DEFAULT 'ollama';
+ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS think boolean NOT NULL DEFAULT false;
+-- Ingest (phraseforge-ingest-texts-dialogs) adds three more LLM purposes on
+-- top of the original translation/transcription pair. Postgres has no
+-- "ALTER CONSTRAINT ... CHECK" — drop and recreate under the same name, same
+-- guarded pattern as users_locale_check above, so this is safe to rerun and
+-- correctly upgrades an installation created before this migration.
+ALTER TABLE llm_prompts DROP CONSTRAINT IF EXISTS llm_prompts_kind_check;
+ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_kind_check
+    CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models'));
+
+-- phraseforge-generate-vocab-models-from-text: links a vocabulary/models
+-- list to the text it was generated from, so a rerun of "Generate
+-- Vocabulary"/"Generate Models" on that same text can find and
+-- wholesale-replace its own list's items instead of creating a duplicate one
+-- every time. NULL for every hand-created list (the normal, pre-existing
+-- case) and ON DELETE SET NULL rather than CASCADE — deleting the source
+-- text must never silently delete a list of vocabulary/models a learner may
+-- still want to keep studying.
+ALTER TABLE vocabulary_lists ADD COLUMN IF NOT EXISTS source_text_id bigint REFERENCES texts(id) ON DELETE SET NULL;
+ALTER TABLE models_lists ADD COLUMN IF NOT EXISTS source_text_id bigint REFERENCES texts(id) ON DELETE SET NULL;
+
+-- ── Jobs ─────────────────────────────────────────────────────────────────────
+-- Ported from knowledge/internal/queue's "operations" table (see
+-- specs/features/phraseforge-job-queue.md), but as a single unified table
+-- rather than knowledge's split jobs (ingest-specific)/operations (general
+-- LLM queue) design — a future Jobs menu is meant to show every submitted
+-- operation, interactive and background alike, in one place. id is generated
+-- client-side in Go (phraseforge/internal/jobs.uuid), matching knowledge's
+-- own operations/jobs tables — this project has no pgcrypto/uuid-ossp
+-- extension enabled, so there's no gen_random_uuid() to default to.
+CREATE TABLE IF NOT EXISTS jobs (
+    id         uuid PRIMARY KEY,
+    kind       text NOT NULL,
+    priority   text NOT NULL CHECK (priority IN ('interactive', 'background')),
+    status     text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
+    payload    jsonb NOT NULL DEFAULT '{}',
+    result     jsonb,
+    error      text,
+    step       text, -- opaque per-kind progress marker (jobs.Service.SetStep); phraseforge/internal/ingest's process_text/process_dialog handlers use it to record "row already created" so a Retry (which carries this value forward onto the new job it enqueues) doesn't redo that step
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+-- Enforces exactly one job running app-wide: the single-worker/single-
+-- Ollama-call-at-a-time constraint (see specs/memory.md on Ollama load
+-- starving the k3d node).
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_running_idx ON jobs ((true)) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (created_at ASC) WHERE status = 'pending';

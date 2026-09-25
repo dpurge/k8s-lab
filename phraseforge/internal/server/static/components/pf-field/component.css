@@ -1,0 +1,11 @@
+/* Matches phraseforge's existing label.field-label look exactly. */
+pf-field {
+  display: block;
+}
+
+pf-field .pf-field-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}

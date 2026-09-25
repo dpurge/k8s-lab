@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -17,326 +18,320 @@ import (
 	"phraseforge/internal/texts"
 )
 
-func (s *Server) handleDialogList(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+// dialogsAppI18nKeys mirrors textsAppI18nKeys (server.go) for the Dialogs
+// SPA shell — gathered by grepping dialogs-list/new/edit/view.html's
+// {{call .T "..."}} calls before removing those templates.
+var dialogsAppI18nKeys = []string{
+	"dialogs.title", "texts.new", "dialogs.empty", "texts.no_access",
+	"texts.tag_filter", "texts.tag_filter_clear",
+	"dialogs.new_title", "texts.field_title", "texts.field_language", "texts.field_script",
+	"texts.field_tags", "texts.field_tags_hint",
+	"texts.tab_source", "texts.tab_transcription", "texts.tab_translation",
+	"dialogs.field_body_hint", "texts.field_transcription_hint", "texts.field_translation_hint",
+	"texts.save", "llm.transcribe", "llm.translate",
+	"dialogs.edit_title", "texts.back", "texts.edit", "texts.delete", "dialogs.delete_confirm",
+	"dialogs.render_error_prefix",
+	"texts.ingest", "dialogs.ingest_title", "texts.ingest_source_label",
+	"texts.ingest_source_text", "texts.ingest_source_file", "texts.ingest_source_url",
+	"texts.ingest_field_text", "texts.ingest_field_file", "texts.ingest_field_url",
+	"texts.ingest_submit", "texts.ingest_started",
+	"texts.err_ingest_no_file", "texts.err_ingest_file_read",
+	"texts.export", "texts.import",
+	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
+	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
+}
+
+func dialogsAppI18n(loc string) map[string]string {
+	out := make(map[string]string, len(dialogsAppI18nKeys))
+	for _, k := range dialogsAppI18nKeys {
+		out[k] = i18n.T(loc, k)
 	}
+	return out
+}
+
+// --- JSON API (phraseforge-spa-dialogs) ---
+
+type apiDialogSummary struct {
+	ID        int64    `json:"id"`
+	Title     string   `json:"title"`
+	Language  string   `json:"language"`
+	Script    string   `json:"script"`
+	Tags      []string `json:"tags"`
+	CreatedAt string   `json:"createdAt"`
+}
+
+type apiDialogDetail struct {
+	ID                    int64    `json:"id"`
+	Title                 string   `json:"title"`
+	Language              string   `json:"language"`
+	Script                string   `json:"script"`
+	Body                  string   `json:"body"`
+	Transcription         string   `json:"transcription"`
+	Translation           string   `json:"translation"`
+	Tags                  []string `json:"tags"`
+	CanEdit               bool     `json:"canEdit"`
+	ScriptDirection       string   `json:"scriptDirection"`
+	ScriptEnlarged        bool     `json:"scriptEnlarged"`
+	RenderedBody          string   `json:"renderedBody,omitempty"`
+	BodyError             string   `json:"bodyError,omitempty"`
+	RenderedTranscription string   `json:"renderedTranscription,omitempty"`
+	TranscriptionError    string   `json:"transcriptionError,omitempty"`
+	HasTranslation        bool     `json:"hasTranslation"`
+	RenderedTranslation   string   `json:"renderedTranslation,omitempty"`
+	TranslationError      string   `json:"translationError,omitempty"`
+	SourceMarkdown        string   `json:"sourceMarkdown"`
+	TranscriptionMarkdown string   `json:"transcriptionMarkdown,omitempty"`
+	TranslationMarkdown   string   `json:"translationMarkdown,omitempty"`
+}
+
+// apiDialogRequest is the JSON body shape for both create and update — the
+// raw author-typed body/transcription, stored as-is (wrapDialogBody is
+// called only when rendering, at GET time, exactly matching
+// handleDialogCreate/handleDialogUpdate's original behavior of never
+// wrapping before storing).
+type apiDialogRequest struct {
+	Title         string `json:"title"`
+	Language      string `json:"language"`
+	Script        string `json:"script"`
+	Body          string `json:"body"`
+	Transcription string `json:"transcription"`
+	Translation   string `json:"translation"`
+	Tags          string `json:"tags"`
+}
+
+// apiListDialogs is handleDialogList's exact logic, JSON-encoded.
+func (s *Server) apiListDialogs(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
 	langs, all, err := s.roles.ViewableLanguages(r.Context(), u.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
 	languageFilter := r.URL.Query().Get("language")
 	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
 		langs, all = []string{languageFilter}, false
 	}
-
 	list, err := s.dialogs.List(r.Context(), langs, all)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
 	tagFilter := r.URL.Query().Get("tag")
 	if tagFilter != "" {
 		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeDialog, tagFilter)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		list = filterByID(list, ids, func(d dialogs.Dialog) int64 { return d.ID })
 	}
-
 	ids := make([]int64, len(list))
 	for i, d := range list {
 		ids[i] = d.ID
 	}
 	tagsByID, err := s.tags.ForMany(r.Context(), resourceTypeDialog, ids)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
-	render(w, u.Locale, "dialogs-list.html", map[string]any{
-		"User": u, "Nav": "dialogs", "NavFlags": nv, "Dialogs": list,
-		"TagsByID": tagsByID, "TagFilter": tagFilter, "LanguageFilter": languageFilter,
-	})
+	out := make([]apiDialogSummary, len(list))
+	for i, d := range list {
+		out[i] = apiDialogSummary{
+			ID: d.ID, Title: d.Title, Language: d.Language, Script: d.Script,
+			Tags: tagsByID[d.ID], CreatedAt: d.CreatedAt.Format("Jan 2, 2006 · 15:04"),
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-func (s *Server) handleDialogNewForm(w http.ResponseWriter, r *http.Request) {
+// apiCreateDialog is handleDialogCreate's exact logic — stores the raw
+// body, never wraps it (wrapDialogBody is a render-time-only concern).
+func (s *Server) apiCreateDialog(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var req apiDialogRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if !nv.CanCreateAny {
-		http.Error(w, i18n.T(u.Locale, "dialogs.err_no_create_access"), http.StatusForbidden)
-		return
-	}
-	langs, scripts, err := s.formOptions(r.Context(), nv)
+	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, req.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allTags, err := s.tags.AllNames(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "dialogs-new.html", map[string]any{
-		"User": u, "Nav": "dialogs", "NavFlags": nv, "Languages": langs, "Scripts": scripts, "AllTags": allTags,
-	})
-}
-
-func (s *Server) handleDialogCreate(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	language := r.FormValue("language")
-	script := r.FormValue("script")
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, language)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.Error(w, i18n.T(u.Locale, "dialogs.err_no_edit_language"), http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "dialogs.err_no_edit_language"))
 		return
 	}
-	id, err := s.dialogs.Create(r.Context(), u.ID, r.FormValue("title"), r.FormValue("body"), r.FormValue("transcription"), language, script)
+	id, err := s.dialogs.Create(r.Context(), u.ID, req.Title, req.Body, req.Transcription, req.Language, req.Script, "")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.tags.SetFor(r.Context(), resourceTypeDialog, id, tags.Parse(r.FormValue("tags"))); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.SetFor(r.Context(), resourceTypeDialog, id, tags.Parse(req.Tags)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.translations.Set(r.Context(), resourceTypeDialog, id, u.Locale, r.FormValue("translation")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.translations.Set(r.Context(), resourceTypeDialog, id, u.Locale, req.Translation); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/dialogs/"+strconv.FormatInt(id, 10), http.StatusFound)
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
-func (s *Server) handleDialogView(w http.ResponseWriter, r *http.Request) {
+// apiGetDialog is handleDialogView's exact logic, including wrapDialogBody
+// at render time and the three independent render-error fields — a render
+// failure is data (a 200 with an error string), never an HTTP error.
+func (s *Server) apiGetDialog(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	d, err := s.dialogs.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	canView, err := s.roles.CanView(r.Context(), u.ID, d.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canView {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, d.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	scriptMeta, err := catalog.GetScript(r.Context(), s.db, d.Script)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	dialogTags, err := s.tags.For(r.Context(), resourceTypeDialog, d.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	translationBody, hasTranslation, err := s.translations.Get(r.Context(), resourceTypeDialog, d.ID, u.Locale)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	// Malformed dialog turn syntax (e.g. content that isn't indented under a
-	// "--:" header) is a content problem, not a server error — cli-tools'
-	// parser rejects the whole block rather than rendering what it can, so
-	// show that as an inline notice instead of a hard 500. The edit form
-	// still works either way, so the author can fix it.
 	rendered, bodyErr := texts.RenderHTML(wrapDialogBody(d.Body, d.Language, d.Script))
 	var renderedTranscription, renderedTranslation template.HTML
 	var transcriptionErr, translationErr error
 	if d.Transcription != "" {
-		// Transcription is a pinned-Latin romanization, independent of the
-		// dialog's own script — always wrapped as script=latn so it never
-		// inherits e.g. RTL from a Hebrew/Arabic source dialog.
 		renderedTranscription, transcriptionErr = texts.RenderHTML(wrapDialogBody(d.Transcription, d.Language, "latn"))
 	}
 	if hasTranslation {
-		// Translation is written in the viewer's own site locale (en/pl —
-		// both Latin script, LTR), never the dialog's own source script —
-		// wrapping it with d.Script wrongly inherited e.g. RTL from a
-		// Hebrew/Arabic source dialog even when the translation is plain
-		// English. Pinned to latn, same treatment as transcription above.
 		renderedTranslation, translationErr = texts.RenderHTML(wrapDialogBody(translationBody, d.Language, "latn"))
 	}
 
-	render(w, u.Locale, "dialogs-view.html", map[string]any{
-		"User": u, "NavFlags": nv, "Dialog": d, "RenderedBody": rendered,
-		"CanEdit": canEdit, "Script": scriptMeta, "Tags": dialogTags,
-		"RenderedTranscription": renderedTranscription,
-		"HasTranslation":        hasTranslation,
-		"RenderedTranslation":   renderedTranslation,
-		"BodyError":             renderErrString(bodyErr),
-		"TranscriptionError":    renderErrString(transcriptionErr),
-		"TranslationError":      renderErrString(translationErr),
-		"SourceMarkdown":        wrapDialogBody(d.Body, d.Language, d.Script),
-		"TranscriptionMarkdown": wrapDialogBody(d.Transcription, d.Language, "latn"),
-		"TranslationMarkdown":   wrapDialogBody(translationBody, u.Locale, "latn"),
+	writeJSON(w, http.StatusOK, apiDialogDetail{
+		ID: d.ID, Title: d.Title, Language: d.Language, Script: d.Script,
+		Body: d.Body, Transcription: d.Transcription, Translation: translationBody,
+		Tags: dialogTags, CanEdit: canEdit,
+		ScriptDirection: scriptMeta.Direction, ScriptEnlarged: scriptMeta.Enlarged,
+		RenderedBody: string(rendered), BodyError: renderErrString(bodyErr),
+		RenderedTranscription: string(renderedTranscription), TranscriptionError: renderErrString(transcriptionErr),
+		HasTranslation: hasTranslation, RenderedTranslation: string(renderedTranslation), TranslationError: renderErrString(translationErr),
+		SourceMarkdown:        wrapDialogBody(d.Body, d.Language, d.Script),
+		TranscriptionMarkdown: wrapDialogBody(d.Transcription, d.Language, "latn"),
+		TranslationMarkdown:   wrapDialogBody(translationBody, u.Locale, "latn"),
 	})
 }
 
-func (s *Server) handleDialogEditForm(w http.ResponseWriter, r *http.Request) {
+// apiUpdateDialog is handleDialogUpdate's exact logic, including the
+// moving-to-a-different-language re-check.
+func (s *Server) apiUpdateDialog(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	d, err := s.dialogs.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, d.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var req apiDialogRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	langs, scripts, err := s.formOptions(r.Context(), nv)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	dialogTags, err := s.tags.For(r.Context(), resourceTypeDialog, id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allTags, err := s.tags.AllNames(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	translationBody, _, err := s.translations.Get(r.Context(), resourceTypeDialog, id, u.Locale)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "dialogs-edit.html", map[string]any{
-		"User": u, "NavFlags": nv, "Dialog": d, "Languages": langs, "Scripts": scripts,
-		"Tags": strings.Join(dialogTags, ", "), "AllTags": allTags, "Translation": translationBody,
-	})
-}
-
-func (s *Server) handleDialogUpdate(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	d, err := s.dialogs.Get(r.Context(), id)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, d.Language)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !canEdit {
-		http.NotFound(w, r)
-		return
-	}
-	newLanguage := r.FormValue("language")
-	if newLanguage != d.Language {
-		canEditNew, err := s.roles.CanEdit(r.Context(), u.ID, newLanguage)
+	if req.Language != d.Language {
+		canEditNew, err := s.roles.CanEdit(r.Context(), u.ID, req.Language)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		if !canEditNew {
-			http.Error(w, i18n.T(u.Locale, "dialogs.err_no_move_language"), http.StatusForbidden)
+			writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "dialogs.err_no_move_language"))
 			return
 		}
 	}
-	if err := s.dialogs.Update(r.Context(), id, r.FormValue("title"), r.FormValue("body"), r.FormValue("transcription"), newLanguage, r.FormValue("script")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.dialogs.Update(r.Context(), id, req.Title, req.Body, req.Transcription, req.Language, req.Script); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.tags.SetFor(r.Context(), resourceTypeDialog, id, tags.Parse(r.FormValue("tags"))); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.SetFor(r.Context(), resourceTypeDialog, id, tags.Parse(req.Tags)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.translations.Set(r.Context(), resourceTypeDialog, id, u.Locale, r.FormValue("translation")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.translations.Set(r.Context(), resourceTypeDialog, id, u.Locale, req.Translation); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/dialogs/"+strconv.FormatInt(id, 10), http.StatusFound)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
-func (s *Server) handleDialogDelete(w http.ResponseWriter, r *http.Request) {
+// apiDeleteDialog is handleDialogDelete's exact logic.
+func (s *Server) apiDeleteDialog(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	d, err := s.dialogs.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, d.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "dialog not found")
 		return
 	}
 	if err := s.dialogs.Delete(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if err := s.tags.DeleteFor(r.Context(), resourceTypeDialog, id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/dialogs", http.StatusFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // renderErrString returns err's message, or "" if err is nil — a small

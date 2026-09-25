@@ -16,6 +16,7 @@ type Dialog struct {
 	Transcription string
 	Language      string
 	Script        string
+	IngestSource  string // "" if manually created or pasted-text-ingested; else the URL/filename it came from
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
@@ -29,10 +30,10 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
-const selectCols = `id, user_id, title, body, coalesce(transcription, ''), language, script, created_at, updated_at`
+const selectCols = `id, user_id, title, body, coalesce(transcription, ''), language, script, coalesce(ingest_source, ''), created_at, updated_at`
 
 func scanDialog(row interface{ Scan(...any) error }, d *Dialog) error {
-	return row.Scan(&d.ID, &d.UserID, &d.Title, &d.Body, &d.Transcription, &d.Language, &d.Script, &d.CreatedAt, &d.UpdatedAt)
+	return row.Scan(&d.ID, &d.UserID, &d.Title, &d.Body, &d.Transcription, &d.Language, &d.Script, &d.IngestSource, &d.CreatedAt, &d.UpdatedAt)
 }
 
 // List returns dialogs in the given languages, most recent first. If all is
@@ -72,12 +73,14 @@ func (s *Store) Get(ctx context.Context, id int64) (Dialog, error) {
 	return d, err
 }
 
-// Create inserts a new dialog, recording userID as its creator.
-func (s *Store) Create(ctx context.Context, userID int64, title, body, transcription, language, script string) (int64, error) {
+// Create inserts a new dialog, recording userID as its creator. ingestSource
+// is the URL or original filename it was ingested from, or "" for a
+// manually created or pasted-text-ingested row.
+func (s *Store) Create(ctx context.Context, userID int64, title, body, transcription, language, script, ingestSource string) (int64, error) {
 	var id int64
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO dialogs (user_id, title, body, transcription, language, script) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		userID, title, body, nullIfEmpty(transcription), language, script).Scan(&id)
+		`INSERT INTO dialogs (user_id, title, body, transcription, language, script, ingest_source) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		userID, title, body, nullIfEmpty(transcription), language, script, nullIfEmpty(ingestSource)).Scan(&id)
 	return id, err
 }
 
@@ -93,6 +96,31 @@ func (s *Store) Update(ctx context.Context, id int64, title, body, transcription
 // Delete removes a dialog by id.
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM dialogs WHERE id = $1`, id)
+	return err
+}
+
+// GetBody returns just a dialog's body — used by phraseforge/internal/
+// ingest's retry-idempotency check to recover the content an earlier,
+// already-succeeded run of the same (job-id-carried-forward) job produced,
+// without exposing the rest of Get's Dialog struct to a caller that only
+// needs this one field.
+func (s *Store) GetBody(ctx context.Context, id int64) (string, error) {
+	d, err := s.Get(ctx, id)
+	return d.Body, err
+}
+
+// SetTitle overwrites only a dialog's title — used by a background job's
+// completion so it never clobbers a field it didn't touch, even if jobs
+// complete out of order.
+func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
+	_, err := s.db.Exec(ctx, `UPDATE dialogs SET title = $1, updated_at = now() WHERE id = $2`, title, id)
+	return err
+}
+
+// SetTranscription overwrites only a dialog's transcription — same
+// out-of-order-safety rationale as SetTitle.
+func (s *Store) SetTranscription(ctx context.Context, id int64, transcription string) error {
+	_, err := s.db.Exec(ctx, `UPDATE dialogs SET transcription = $1, updated_at = now() WHERE id = $2`, nullIfEmpty(transcription), id)
 	return err
 }
 

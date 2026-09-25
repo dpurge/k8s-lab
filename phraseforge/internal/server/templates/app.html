@@ -1,0 +1,40 @@
+{{define "title"}}PhraseForge{{end}}
+{{define "extra_head"}}
+  <link rel="stylesheet" href="/static/css/latn.css">
+  <link rel="stylesheet" href="/static/css/cyrl.css">
+  <link rel="stylesheet" href="/static/css/arab.css">
+  <link rel="stylesheet" href="/static/css/hebr.css">
+  <link rel="stylesheet" href="/static/css/hans.css">
+  <link rel="stylesheet" href="/static/css/hant.css">
+  <link rel="stylesheet" href="/static/css/kore.css">
+  <link rel="stylesheet" href="/static/css/deva.css">
+  <link rel="stylesheet" href="/static/css/grek.css">
+  <link rel="stylesheet" href="/static/css/geor.css">
+  <script src="/static/js/ime.js"></script>
+  <script src="/static/js/editor.js"></script>
+{{end}}
+{{define "content"}}
+  <div id="texts-app"></div>
+  <div id="dialogs-app" style="display:none;"></div>
+  <div id="vocabulary-app" style="display:none;"></div>
+  <div id="models-app" style="display:none;"></div>
+  {{if .NavFlags.IsAdmin}}<div id="admin-app" style="display:none;"></div>{{end}}
+  {{if .NavFlags.IsAdmin}}<div id="jobs-app" style="display:none;"></div>{{end}}
+  <div id="profile-app" style="display:none;"></div>
+  <script>window.__PF_APP_BOOTSTRAP__ = {{.BootstrapJSON}};</script>
+  <!-- defer is required on every one of these: each section's top-level
+       code reads document.getElementById("statusBar"), which lives in
+       <footer>, after <main> in the document — see specs/memory.md's
+       [gotcha] entry from phraseforge-spa-shell-texts. Section scripts
+       first (each only registers itself on window.pfSections — see each
+       file's own comment), shell.js last (it's the one that actually calls
+       into whichever section ends up active). -->
+  <script defer src="/static/js/texts-app.js"></script>
+  <script defer src="/static/js/dialogs-app.js"></script>
+  <script defer src="/static/js/vocabulary-app.js"></script>
+  <script defer src="/static/js/models-app.js"></script>
+  {{if .NavFlags.IsAdmin}}<script defer src="/static/js/admin-app.js"></script>{{end}}
+  {{if .NavFlags.IsAdmin}}<script defer src="/static/js/jobs-app.js"></script>{{end}}
+  <script defer src="/static/js/profile-app.js"></script>
+  <script defer src="/static/js/shell.js"></script>
+{{end}}

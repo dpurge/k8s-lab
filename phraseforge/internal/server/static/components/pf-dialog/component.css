@@ -1,0 +1,36 @@
+pf-dialog {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.4);
+  align-items: center;
+  justify-content: center;
+}
+
+pf-dialog.open {
+  display: flex;
+}
+
+pf-dialog .pf-dialog-box {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 1.25rem;
+  max-width: 28rem;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+pf-dialog .pf-dialog-message {
+  margin: 0 0 1rem;
+  white-space: pre-wrap;
+}
+
+pf-dialog .pf-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}

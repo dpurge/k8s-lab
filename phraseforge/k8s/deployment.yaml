@@ -8,6 +8,9 @@ spec:
   replicas: 1
   strategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: phraseforge
@@ -28,12 +31,8 @@ spec:
           ports:
             - containerPort: 8090
           env:
-            - name: PGHOST
-              value: postgres.data.svc.cluster.local
-            - name: PGPORT
-              value: "5432"
-            - name: PGDATABASE
-              value: phraseforge
+            - name: CONFIG_FILE
+              value: /etc/phraseforge/config.yaml
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
@@ -44,19 +43,19 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD
-            - name: BIND_ADDR
-              value: 0.0.0.0:8090
             - name: SESSION_KEY
               valueFrom:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD # reused as a signing key; dedicated secret can follow later
-            - name: LLM_PROVIDER
-              value: ollama
-            - name: LLM_BASE_URL
-              value: http://host.docker.internal:11434
-            - name: LLM_MODEL
-              value: rinex20/translategemma3:12b
+            - name: OLLAMA_API_KEY
+              value: "" # Ollama needs none
+            - name: OPENROUTER_API_KEY
+              value: "" # TODO: set a real key via a Secret before using OpenRouter in production
+          volumeMounts:
+            - name: config
+              mountPath: /etc/phraseforge
+              readOnly: true
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -80,6 +79,10 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 6
+      volumes:
+        - name: config
+          configMap:
+            name: phraseforge-config
 ---
 apiVersion: v1
 kind: Service

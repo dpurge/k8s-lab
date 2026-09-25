@@ -1,0 +1,31 @@
+/* Matches phraseforge's existing .card look exactly (layout.html) — a
+   deliberate duplicate, not a replacement: admin.html and profile.html
+   still use plain class="card" and are out of scope for this feature, so
+   that CSS stays untouched. */
+pf-card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 1.5rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+pf-card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+}
+
+pf-card h2 a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+pf-card h2 a:hover {
+  color: var(--link);
+}
+
+pf-card .meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}

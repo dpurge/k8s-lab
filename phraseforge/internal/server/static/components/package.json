@@ -1,0 +1,12 @@
+{
+  "name": "phraseforge-components",
+  "private": true,
+  "type": "module",
+  "description": "Dev-time-only test tooling for phraseforge's pf-* Web Components. Never used to build or ship the actual assets (those stay zero-build-step, served as-is by the Go server).",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.1"
+  }
+}

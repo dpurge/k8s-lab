@@ -1,0 +1,67 @@
+pf-tabs {
+  display: inline-flex;
+}
+
+pf-tabs .pf-tabs-items {
+  display: flex;
+  gap: 0.25rem;
+}
+
+pf-tabs .pf-tabs-item {
+  font: inherit;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.1s ease, color 0.1s ease;
+}
+
+pf-tabs .pf-tabs-item:hover {
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--text);
+}
+
+pf-tabs .pf-tabs-item.active {
+  background: var(--btn-bg);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* orientation="vertical": a sidebar-style stacked nav list, replacing
+   pf-nav's old look exactly (see pf-nav's former component.css) — used by
+   the unified shell's sidebar (phraseforge-spa-unified-shell). Horizontal
+   (the default, Admin's own usage) is completely unaffected. */
+pf-tabs[orientation="vertical"] {
+  display: block;
+  width: 100%;
+}
+
+pf-tabs[orientation="vertical"] .pf-tabs-items {
+  display: block;
+}
+
+pf-tabs[orientation="vertical"] .pf-tabs-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border-radius: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.25rem;
+  border-left: 3px solid transparent;
+  color: var(--text);
+  font-weight: 500;
+}
+
+pf-tabs[orientation="vertical"] .pf-tabs-item:hover {
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--text);
+}
+
+pf-tabs[orientation="vertical"] .pf-tabs-item.active {
+  background: var(--surface);
+  border-left-color: var(--link);
+  color: var(--link);
+  font-weight: 700;
+}

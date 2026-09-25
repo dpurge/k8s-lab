@@ -1,0 +1,71 @@
+pf-button {
+  display: inline-block;
+}
+
+/* Base style doubles as variant="secondary" — matches phraseforge's
+   existing .btn-secondary look exactly (no separate rule needed since
+   "no variant" and "secondary" look identical). */
+pf-button button {
+  font: inherit;
+  font-size: 1rem;
+  padding: 0.65rem 1.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--surface-alt);
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
+}
+
+pf-button button:hover:not(:disabled) {
+  background: var(--border);
+}
+
+pf-button button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* Matches phraseforge's existing .btn look exactly. */
+pf-button[variant="primary"] button {
+  background: var(--btn-bg);
+  border-color: var(--btn-bg);
+  color: #fff;
+  font-weight: 600;
+}
+
+pf-button[variant="primary"] button:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+  border-color: var(--btn-bg-hover);
+}
+
+/* Matches phraseforge's existing .btn.btn-danger look exactly. */
+pf-button[variant="danger"] button {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+
+pf-button[variant="danger"] button:hover:not(:disabled) {
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
+}
+
+/* Matches phraseforge's existing .theme-toggle/.sidebar-toggle look exactly. */
+pf-button[variant="icon"] button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text);
+}
+
+pf-button[variant="icon"] button:hover:not(:disabled) {
+  background: none;
+  border-color: var(--link);
+}

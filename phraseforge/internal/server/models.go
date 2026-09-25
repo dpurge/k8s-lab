@@ -1,10 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,469 +14,428 @@ import (
 	"phraseforge/internal/tags"
 )
 
-func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+// modelsAppI18nKeys mirrors vocabularyAppI18nKeys for the Models SPA shell.
+var modelsAppI18nKeys = []string{
+	"models.title", "texts.new", "models.empty", "texts.no_access",
+	"texts.tag_filter", "texts.tag_filter_clear",
+	"models.new_title", "texts.field_title", "texts.field_language", "texts.field_script",
+	"texts.field_tags", "texts.field_tags_hint", "models.new_hint",
+	"texts.save", "texts.save_changes", "llm.transcribe", "llm.translate",
+	"models.edit_title", "texts.back", "texts.edit", "texts.delete",
+	"models.delete_confirm", "models.delete_item_confirm",
+	"models.add_item", "models.edit_item", "models.save_item", "models.cancel_edit",
+	"models.col_phrase", "models.col_transcription", "models.col_translation", "models.col_actions",
+	"texts.export", "texts.import",
+	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
+	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
+}
+
+func modelsAppI18n(loc string) map[string]string {
+	out := make(map[string]string, len(modelsAppI18nKeys))
+	for _, k := range modelsAppI18nKeys {
+		out[k] = i18n.T(loc, k)
 	}
+	return out
+}
+
+// --- JSON API (phraseforge-spa-models) ---
+
+type apiModelsSummary struct {
+	ID        int64    `json:"id"`
+	Title     string   `json:"title"`
+	Language  string   `json:"language"`
+	Script    string   `json:"script"`
+	Tags      []string `json:"tags"`
+	ItemCount int      `json:"itemCount"`
+	CreatedAt string   `json:"createdAt"`
+}
+
+type apiModelsItem struct {
+	Position      int    `json:"position"`
+	Phrase        string `json:"phrase"`
+	Transcription string `json:"transcription"`
+	Translation   string `json:"translation"`
+}
+
+// apiModelsDetail serves both the client's View and Manage states — Manage
+// needs every field View does, plus canEdit to decide whether to show the
+// edit form/table controls at all.
+type apiModelsDetail struct {
+	ID              int64           `json:"id"`
+	Title           string          `json:"title"`
+	Language        string          `json:"language"`
+	Script          string          `json:"script"`
+	Tags            []string        `json:"tags"`
+	CanEdit         bool            `json:"canEdit"`
+	ScriptDirection string          `json:"scriptDirection"`
+	ScriptEnlarged  bool            `json:"scriptEnlarged"`
+	Markdown        string          `json:"markdown"`
+	Items           []apiModelsItem `json:"items"`
+}
+
+type apiModelsListRequest struct {
+	Title    string `json:"title"`
+	Language string `json:"language"`
+	Script   string `json:"script"`
+	Tags     string `json:"tags"`
+}
+
+type apiModelsItemRequest struct {
+	Phrase        string `json:"phrase"`
+	Transcription string `json:"transcription"`
+	Translation   string `json:"translation"`
+}
+
+// apiListModelsLists is handleModelsList's exact logic, JSON-encoded.
+func (s *Server) apiListModelsLists(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
 	langs, all, err := s.roles.ViewableLanguages(r.Context(), u.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
 	languageFilter := r.URL.Query().Get("language")
 	if languageFilter != "" && (all || slices.Contains(langs, languageFilter)) {
 		langs, all = []string{languageFilter}, false
 	}
-
 	list, err := s.models.ListAll(r.Context(), langs, all)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
 	tagFilter := r.URL.Query().Get("tag")
 	if tagFilter != "" {
 		ids, err := s.tags.ResourceIDsWithTag(r.Context(), resourceTypeModels, tagFilter)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		list = filterByID(list, ids, func(l models.List) int64 { return l.ID })
 	}
-
 	ids := make([]int64, len(list))
 	for i, l := range list {
 		ids[i] = l.ID
 	}
 	tagsByID, err := s.tags.ForMany(r.Context(), resourceTypeModels, ids)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
-	// Item count per list, so a tile can show it without a translation
-	// existing yet — a list with zero translated items is still a real tile.
-	itemCounts := make(map[int64]int, len(list))
-	for _, l := range list {
+	out := make([]apiModelsSummary, len(list))
+	for i, l := range list {
 		items, err := s.models.Items(r.Context(), l.ID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		itemCounts[l.ID] = len(items)
+		out[i] = apiModelsSummary{
+			ID: l.ID, Title: l.Title, Language: l.Language, Script: l.Script,
+			Tags: tagsByID[l.ID], ItemCount: len(items), CreatedAt: l.CreatedAt.Format("Jan 2, 2006 · 15:04"),
+		}
 	}
-
-	render(w, u.Locale, "models-list.html", map[string]any{
-		"User": u, "Nav": "models", "NavFlags": nv, "Lists": list,
-		"TagsByID": tagsByID, "TagFilter": tagFilter, "LanguageFilter": languageFilter,
-		"ItemCounts": itemCounts,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-func (s *Server) handleModelsNewForm(w http.ResponseWriter, r *http.Request) {
+// apiCreateModelsList is handleModelsCreate's exact logic.
+func (s *Server) apiCreateModelsList(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var req apiModelsListRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if !nv.CanCreateAny {
-		http.Error(w, i18n.T(u.Locale, "models.err_no_create_access"), http.StatusForbidden)
-		return
-	}
-	langs, scripts, err := s.formOptions(r.Context(), nv)
+	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, req.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allTags, err := s.tags.AllNames(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	render(w, u.Locale, "models-new.html", map[string]any{
-		"User": u, "Nav": "models", "NavFlags": nv, "Languages": langs, "Scripts": scripts, "AllTags": allTags,
-	})
-}
-
-func (s *Server) handleModelsCreate(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	language := r.FormValue("language")
-	script := r.FormValue("script")
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, language)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.Error(w, i18n.T(u.Locale, "models.err_no_edit_language"), http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "models.err_no_edit_language"))
 		return
 	}
-	id, err := s.models.Create(r.Context(), u.ID, r.FormValue("title"), language, script)
+	id, err := s.models.Create(r.Context(), u.ID, req.Title, req.Language, req.Script)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.tags.SetFor(r.Context(), resourceTypeModels, id, tags.Parse(r.FormValue("tags"))); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.SetFor(r.Context(), resourceTypeModels, id, tags.Parse(req.Tags)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	// A new list starts empty — land straight on its edit page to start
-	// adding items one at a time, rather than the view page with nothing to show.
-	http.Redirect(w, r, "/models/"+strconv.FormatInt(id, 10)+"/edit", http.StatusFound)
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
-func (s *Server) handleModelsView(w http.ResponseWriter, r *http.Request) {
+// apiGetModelsList is handleModelsView's/handleModelsEditForm's shared logic
+// (list + items + per-locale translations + tags + markdown) — serves both
+// the client's View and Manage states from one response.
+func (s *Server) apiGetModelsList(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	l, err := s.models.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	canView, err := s.roles.CanView(r.Context(), u.ID, l.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canView {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	scriptMeta, err := catalog.GetScript(r.Context(), s.db, l.Script)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	items, err := s.models.Items(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	trans, err := s.models.Translations(r.Context(), id, u.Locale)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	listTags, err := s.tags.For(r.Context(), resourceTypeModels, id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-
-	// Pair each item with its translation (zero value — blank — if this
-	// locale hasn't translated that position yet) for the view template's
-	// one-row-per-item table.
 	rows := make([]modelsViewRow, len(items))
+	apiItems := make([]apiModelsItem, len(items))
 	for i, it := range items {
 		t := trans[it.Position]
 		rows[i] = modelsViewRow{Item: it, Translation: t.Translation}
-	}
-
-	render(w, u.Locale, "models-view.html", map[string]any{
-		"User": u, "NavFlags": nv, "List": l, "Rows": rows, "Script": scriptMeta,
-		"CanEdit": canEdit, "Tags": listTags, "Markdown": modelsMarkdown(l.Language, l.Script, rows),
-	})
-}
-
-func (s *Server) handleModelsEditForm(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	l, err := s.models.Get(r.Context(), id)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !canEdit {
-		http.NotFound(w, r)
-		return
-	}
-	nv, err := s.loadNav(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	langs, scripts, err := s.formOptions(r.Context(), nv)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	scriptMeta, err := catalog.GetScript(r.Context(), s.db, l.Script)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	items, err := s.models.Items(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	trans, err := s.models.Translations(r.Context(), id, u.Locale)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	listTags, err := s.tags.For(r.Context(), resourceTypeModels, id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allTags, err := s.tags.AllNames(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Pair each item with its translation (blank if this locale hasn't
-	// translated that position yet) for the item-list table below the entry
-	// form — same shape as the view page's table.
-	rows := make([]modelsViewRow, len(items))
-	for i, it := range items {
-		t := trans[it.Position]
-		rows[i] = modelsViewRow{Item: it, Translation: t.Translation}
-	}
-
-	// The entry form either adds a new item (default) or edits an existing
-	// one, named by ?edit=<position> — prefill its fields from that item.
-	editPosition := -1
-	var entryPhrase, entryTranscription, entryTranslation string
-	if q := r.URL.Query().Get("edit"); q != "" {
-		if p, err := strconv.Atoi(q); err == nil && p >= 0 && p < len(items) {
-			editPosition = p
-			entryPhrase = items[p].Phrase
-			entryTranscription = items[p].Transcription
-			if t, ok := trans[p]; ok {
-				entryTranslation = t.Translation
-			}
+		apiItems[i] = apiModelsItem{
+			Position: it.Position, Phrase: it.Phrase, Transcription: it.Transcription,
+			Translation: t.Translation,
 		}
 	}
-
-	render(w, u.Locale, "models-edit.html", map[string]any{
-		"User": u, "NavFlags": nv, "List": l, "Languages": langs, "Scripts": scripts, "Script": scriptMeta,
-		"Tags": strings.Join(listTags, ", "), "AllTags": allTags, "Rows": rows,
-		"EditPosition":       editPosition,
-		"EntryPhrase":        entryPhrase,
-		"EntryTranscription": entryTranscription,
-		"EntryTranslation":   entryTranslation,
+	writeJSON(w, http.StatusOK, apiModelsDetail{
+		ID: l.ID, Title: l.Title, Language: l.Language, Script: l.Script,
+		Tags: listTags, CanEdit: canEdit,
+		ScriptDirection: scriptMeta.Direction, ScriptEnlarged: scriptMeta.Enlarged,
+		Markdown: modelsMarkdown(l.Language, l.Script, rows),
+		Items:    apiItems,
 	})
 }
 
-func (s *Server) handleModelsUpdate(w http.ResponseWriter, r *http.Request) {
+// apiUpdateModelsList is handleModelsUpdate's exact logic (list metadata
+// only — items are untouched by this endpoint).
+func (s *Server) apiUpdateModelsList(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	l, err := s.models.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
-	newLanguage := r.FormValue("language")
-	if newLanguage != l.Language {
-		canEditNew, err := s.roles.CanEdit(r.Context(), u.ID, newLanguage)
+	var req apiModelsListRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if req.Language != l.Language {
+		canEditNew, err := s.roles.CanEdit(r.Context(), u.ID, req.Language)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		if !canEditNew {
-			http.Error(w, i18n.T(u.Locale, "models.err_no_move_language"), http.StatusForbidden)
+			writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "models.err_no_move_language"))
 			return
 		}
 	}
-	if err := s.models.UpdateMeta(r.Context(), id, r.FormValue("title"), newLanguage, r.FormValue("script")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.models.UpdateMeta(r.Context(), id, req.Title, req.Language, req.Script); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.tags.SetFor(r.Context(), resourceTypeModels, id, tags.Parse(r.FormValue("tags"))); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.SetFor(r.Context(), resourceTypeModels, id, tags.Parse(req.Tags)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/models/"+strconv.FormatInt(id, 10)+"/edit", http.StatusFound)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
-// handleModelsItemCreate appends one new item to the list, plus its
-// translation in the editing user's own site locale.
-func (s *Server) handleModelsItemCreate(w http.ResponseWriter, r *http.Request) {
+// apiDeleteModelsList is handleModelsDelete's exact logic.
+func (s *Server) apiDeleteModelsList(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	l, err := s.models.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
-	position, err := s.models.AddItem(r.Context(), id, r.FormValue("phrase"), r.FormValue("transcription"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.models.Delete(r.Context(), id); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.models.SetTranslation(r.Context(), id, position, u.Locale, r.FormValue("translation"), position+1); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.tags.DeleteFor(r.Context(), resourceTypeModels, id); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/models/"+strconv.FormatInt(id, 10)+"/edit", http.StatusFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleModelsItemUpdate overwrites one existing item's common fields and
-// its translation in the editing user's own site locale.
-func (s *Server) handleModelsItemUpdate(w http.ResponseWriter, r *http.Request) {
+// apiAddModelsItem is handleModelsItemCreate's exact logic.
+func (s *Server) apiAddModelsItem(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
+		return
+	}
+	l, err := s.models.Get(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
+		return
+	}
+	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if !canEdit {
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
+		return
+	}
+	var req apiModelsItemRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	position, err := s.models.AddItem(r.Context(), id, req.Phrase, req.Transcription)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if err := s.models.SetTranslation(r.Context(), id, position, u.Locale, req.Translation, position+1); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"position": position})
+}
+
+// apiUpdateModelsItem is handleModelsItemUpdate's exact logic.
+func (s *Server) apiUpdateModelsItem(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	position, err := strconv.Atoi(chi.URLParam(r, "position"))
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models item not found")
 		return
 	}
 	l, err := s.models.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
-	if err := s.models.UpdateItem(r.Context(), id, position, r.FormValue("phrase"), r.FormValue("transcription")); err != nil {
+	var req apiModelsItemRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if err := s.models.UpdateItem(r.Context(), id, position, req.Phrase, req.Transcription); err != nil {
 		if err == models.ErrItemNotFound {
-			http.NotFound(w, r)
+			writeErr(w, http.StatusNotFound, "not_found", "models item not found")
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.models.SetTranslation(r.Context(), id, position, u.Locale, r.FormValue("translation"), position+1); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.models.SetTranslation(r.Context(), id, position, u.Locale, req.Translation, position+1); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/models/"+strconv.FormatInt(id, 10)+"/edit", http.StatusFound)
+	writeJSON(w, http.StatusOK, map[string]any{"position": position})
 }
 
-// handleModelsItemDelete removes one item, shifting later items (and their
-// translations, in every locale) down a position — see models.DeleteItem.
-func (s *Server) handleModelsItemDelete(w http.ResponseWriter, r *http.Request) {
+// apiDeleteModelsItem is handleModelsItemDelete's exact logic.
+func (s *Server) apiDeleteModelsItem(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	position, err := strconv.Atoi(chi.URLParam(r, "position"))
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models item not found")
 		return
 	}
 	l, err := s.models.Get(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if !canEdit {
-		http.NotFound(w, r)
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
 		return
 	}
 	if err := s.models.DeleteItem(r.Context(), id, position); err != nil {
 		if err == models.ErrItemNotFound {
-			http.NotFound(w, r)
+			writeErr(w, http.StatusNotFound, "not_found", "models item not found")
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/models/"+strconv.FormatInt(id, 10)+"/edit", http.StatusFound)
-}
-
-func (s *Server) handleModelsDelete(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	l, err := s.models.Get(r.Context(), id)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !canEdit {
-		http.NotFound(w, r)
-		return
-	}
-	if err := s.models.Delete(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := s.tags.DeleteFor(r.Context(), resourceTypeModels, id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/models", http.StatusFound)
+	w.WriteHeader(http.StatusNoContent)
 }
