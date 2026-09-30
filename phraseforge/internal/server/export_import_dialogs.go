@@ -179,7 +179,10 @@ func (s *Server) importUpdateDialog(ctx context.Context, u auth.User, index int,
 	existing, err := s.dialogs.Get(ctx, item.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			res.Errors = append(res.Errors, importError{Index: index, ID: item.ID, Message: "dialog not found"})
+			// The id was deleted since export (or never existed here): create it
+			// as a new row rather than failing, so an export of since-deleted
+			// content can be re-imported to restore it (under a new id).
+			s.importCreateDialog(ctx, u, index, item, res)
 			return
 		}
 		res.Errors = append(res.Errors, importError{Index: index, ID: item.ID, Message: err.Error()})

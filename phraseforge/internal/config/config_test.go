@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadDefaultsWhenFileMissing(t *testing.T) {
@@ -59,26 +61,34 @@ func TestLoadDefaultsWhenFileMissing(t *testing.T) {
 			t.Errorf("%s = %d, want %d (default)", c.name, c.got, c.want)
 		}
 	}
-	// TimeoutSeconds: 120s for transcription/translation/title, 300s for
-	// process_text/process_dialog, 600s for generate_vocabulary/
-	// generate_models (see llm-purpose-timeout-and-prompt-config).
+	// TimeoutSeconds: 1800s overall backstop for every purpose; streamed
+	// calls are bounded first by the provider's first-token/idle limits
+	// (see llm-streaming-progress-timeout).
 	timeoutCases := []struct {
 		name string
 		got  int
 		want int
 	}{
-		{"Transcription.TimeoutSeconds", cfg.Transcription.TimeoutSeconds, 120},
-		{"Translation.TimeoutSeconds", cfg.Translation.TimeoutSeconds, 120},
-		{"Title.TimeoutSeconds", cfg.Title.TimeoutSeconds, 120},
-		{"ProcessText.TimeoutSeconds", cfg.ProcessText.TimeoutSeconds, 300},
-		{"ProcessDialog.TimeoutSeconds", cfg.ProcessDialog.TimeoutSeconds, 300},
-		{"GenerateVocabulary.TimeoutSeconds", cfg.GenerateVocabulary.TimeoutSeconds, 600},
-		{"GenerateModels.TimeoutSeconds", cfg.GenerateModels.TimeoutSeconds, 600},
+		{"Transcription.TimeoutSeconds", cfg.Transcription.TimeoutSeconds, 1800},
+		{"Translation.TimeoutSeconds", cfg.Translation.TimeoutSeconds, 1800},
+		{"Title.TimeoutSeconds", cfg.Title.TimeoutSeconds, 1800},
+		{"ProcessText.TimeoutSeconds", cfg.ProcessText.TimeoutSeconds, 1800},
+		{"ProcessDialog.TimeoutSeconds", cfg.ProcessDialog.TimeoutSeconds, 1800},
+		{"GenerateVocabulary.TimeoutSeconds", cfg.GenerateVocabulary.TimeoutSeconds, 1800},
+		{"GenerateModels.TimeoutSeconds", cfg.GenerateModels.TimeoutSeconds, 1800},
+		{"VocabularyItem.TimeoutSeconds", cfg.VocabularyItem.TimeoutSeconds, 1800},
+		{"ModelsItem.TimeoutSeconds", cfg.ModelsItem.TimeoutSeconds, 1800},
 	}
 	for _, c := range timeoutCases {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d (default)", c.name, c.got, c.want)
 		}
+	}
+	if got := cfg.Providers["ollama"].FirstTokenTimeoutSeconds; got != 300 {
+		t.Errorf("Providers[ollama].FirstTokenTimeoutSeconds = %d, want 300 (default)", got)
+	}
+	if got := cfg.Providers["ollama"].IdleTimeoutSeconds; got != 60 {
+		t.Errorf("Providers[ollama].IdleTimeoutSeconds = %d, want 60 (default)", got)
 	}
 	// Prompt must be non-empty for every purpose — a blank default would
 	// silently defeat ai.go's fallback-to-config-default behavior.
@@ -88,6 +98,8 @@ func TestLoadDefaultsWhenFileMissing(t *testing.T) {
 	}{
 		{"Transcription.Prompt", cfg.Transcription.Prompt},
 		{"Translation.Prompt", cfg.Translation.Prompt},
+		{"VocabularyItem.Prompt", cfg.VocabularyItem.Prompt},
+		{"ModelsItem.Prompt", cfg.ModelsItem.Prompt},
 		{"Title.Prompt", cfg.Title.Prompt},
 		{"ProcessText.Prompt", cfg.ProcessText.Prompt},
 		{"ProcessDialog.Prompt", cfg.ProcessDialog.Prompt},
@@ -108,6 +120,7 @@ func TestLoadOverridesFromFile(t *testing.T) {
 		"providers:\n" +
 		"  ollama:\n" +
 		"    baseURL: http://custom-ollama:11434\n" +
+		"    firstTokenTimeoutSeconds: 90\n" +
 		"transcription:\n" +
 		"  model: custom-model\n" +
 		"  timeoutSeconds: 45\n" +
@@ -142,8 +155,14 @@ func TestLoadOverridesFromFile(t *testing.T) {
 	if cfg.Translation.Model != "gemma4:12b" {
 		t.Errorf("Translation.Model = %q, want gemma4:12b (default, unset in file)", cfg.Translation.Model)
 	}
-	if cfg.Translation.TimeoutSeconds != 120 {
-		t.Errorf("Translation.TimeoutSeconds = %d, want 120 (default, unset in file)", cfg.Translation.TimeoutSeconds)
+	if cfg.Translation.TimeoutSeconds != 1800 {
+		t.Errorf("Translation.TimeoutSeconds = %d, want 1800 (default, unset in file)", cfg.Translation.TimeoutSeconds)
+	}
+	if got := cfg.Providers["ollama"].FirstTokenTimeoutSeconds; got != 90 {
+		t.Errorf("Providers[ollama].FirstTokenTimeoutSeconds = %d, want 90 (from file)", got)
+	}
+	if got := cfg.Providers["ollama"].IdleTimeoutSeconds; got != 60 {
+		t.Errorf("Providers[ollama].IdleTimeoutSeconds = %d, want 60 (default, unset in file)", got)
 	}
 	if cfg.Providers["openrouter"].BaseURL != "https://openrouter.ai/api/v1" {
 		t.Errorf("Providers[openrouter].BaseURL = %q, want https://openrouter.ai/api/v1 (default, unset in file)", cfg.Providers["openrouter"].BaseURL)
@@ -247,5 +266,36 @@ func TestLoadErrorsOnMalformedFile(t *testing.T) {
 	t.Setenv("CONFIG_FILE", path)
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want error for malformed YAML")
+	}
+}
+
+// TestConfigMapItemPromptsMatchDefaults: k8s/configmap.yaml declares every
+// purpose explicitly, so its item-prompt templates must stay byte-identical
+// to the compiled-in defaults (the ones mirrored from prompt-eval).
+func TestConfigMapItemPromptsMatchDefaults(t *testing.T) {
+	raw, err := os.ReadFile("../../k8s/configmap.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(cm.Data["config.yaml"]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_FILE", path)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VocabularyItem.Prompt != DefaultVocabularyItemPrompt {
+		t.Errorf("configmap vocabularyItem.prompt differs from DefaultVocabularyItemPrompt:\n%q\nvs\n%q", cfg.VocabularyItem.Prompt, DefaultVocabularyItemPrompt)
+	}
+	if cfg.ModelsItem.Prompt != DefaultModelsItemPrompt {
+		t.Errorf("configmap modelsItem.prompt differs from DefaultModelsItemPrompt:\n%q\nvs\n%q", cfg.ModelsItem.Prompt, DefaultModelsItemPrompt)
 	}
 }

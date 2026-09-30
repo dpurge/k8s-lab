@@ -160,27 +160,6 @@ func decideBackfill(title, transcription string, needsTranscription bool, provid
 	return out
 }
 
-// decideItemBackfill mirrors decideBackfill for one vocabulary/models item —
-// a "transcription" decision if the language needs transcription and
-// transcription is blank, and one "translation" decision per site locale the
-// item didn't provide a translation for. There is no "title" decision here:
-// vocabulary/models items have no title field at all, unlike a text/dialog
-// row (see this feature's Vocabulary/Models Approach section) — a separate
-// function rather than decideBackfill called with a dummy non-blank title
-// keeps that difference explicit rather than papered over by a fake value.
-func decideItemBackfill(transcription string, needsTranscription bool, providedTranslations map[string]string, siteLocales []i18n.Locale) []backfillDecision {
-	var out []backfillDecision
-	if needsTranscription && strings.TrimSpace(transcription) == "" {
-		out = append(out, backfillDecision{Kind: "transcription"})
-	}
-	for _, loc := range siteLocales {
-		if _, provided := providedTranslations[loc.Code]; !provided {
-			out = append(out, backfillDecision{Kind: "translation", Locale: loc.Code})
-		}
-	}
-	return out
-}
-
 // listMetaFields is the set of a vocabulary/models list's own primitive
 // metadata fields (everything except its items) — pulled out as a plain data
 // value (like importFields) so listMetaUnchanged is unit-testable without a
@@ -389,6 +368,7 @@ func (s *Server) enqueueBackfill(ctx context.Context, resourceType string, resou
 type itemBackfillSpec struct {
 	position             int
 	phrase               string
+	grammar              string // vocabulary only
 	transcription        string
 	providedTranslations map[string]string
 }
@@ -411,26 +391,26 @@ func backgroundTxContext(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeout(context.WithoutCancel(ctx), itemReplaceTxTimeout)
 }
 
-// enqueueItemBackfill mirrors enqueueBackfill for one vocabulary/models item
-// — addressed by (listID, position) rather than its own independent id, per
-// ai.generatePayload's ItemPosition field (see that field's doc comment).
-// Shared between apiImportVocabulary and apiImportModels the same way
-// enqueueBackfill is shared between apiImportTexts and apiImportDialogs.
-func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, listID int64, position int, language, phrase, transcription string, providedTranslations map[string]string) error {
-	needsTranscription, err := ime.NeedsTranscriptionForLanguage(ctx, s.db, language)
-	if err != nil {
-		return fmt.Errorf("check needs_transcription for language %s: %w", language, err)
+// enqueueItemBackfill enqueues the structured item calls
+// (ai.ItemJobsFor) one imported vocabulary/models item needs: one per site
+// locale the import didn't provide a translation for (a locale present in
+// the file counts as provided, even if blank — unchanged from before), or
+// one call when only grammar/transcription is missing. Shared between
+// apiImportVocabulary and apiImportModels the same way enqueueBackfill is
+// shared between apiImportTexts and apiImportDialogs.
+func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, listID int64, position int, language, phrase, grammar, transcription string, providedTranslations map[string]string) error {
+	translated := make(map[string]bool, len(providedTranslations))
+	for locale := range providedTranslations {
+		translated[locale] = true
 	}
-	decisions := decideItemBackfill(transcription, needsTranscription, providedTranslations, i18n.Locales)
-	for _, d := range decisions {
-		payload := buildBackfillPayload(d, resourceType, listID, language, phrase)
-		payload.ItemPosition = position
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("marshal %s backfill payload: %w", payload.Kind, err)
-		}
-		if _, err := s.jobs.Enqueue(ctx, ai.JobKind(payload.Kind), jobs.PriorityBackground, raw); err != nil {
-			return fmt.Errorf("enqueue %s backfill job: %w", payload.Kind, err)
+	state := ai.ItemState{ResourceType: resourceType, Translated: translated, Grammar: grammar, Transcription: transcription}
+	itemJobs, err := s.ai.ItemJobsFor(ctx, state, listID, position, language, phrase, nil, i18n.Locales)
+	if err != nil {
+		return fmt.Errorf("plan item backfill for %s %d position %d: %w", resourceType, listID, position, err)
+	}
+	for _, j := range itemJobs {
+		if _, err := s.jobs.Enqueue(ctx, j.Kind, jobs.PriorityBackground, j.Payload); err != nil {
+			return fmt.Errorf("enqueue %s backfill job: %w", j.Kind, err)
 		}
 	}
 	return nil

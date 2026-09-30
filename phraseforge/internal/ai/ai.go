@@ -64,7 +64,7 @@ func JobKind(payloadKind string) string {
 // <select> (populated from apiAdminBootstrap, which reads this slice) must
 // all agree with — a hardcoded copy in any of those places is exactly how
 // they drifted apart before.
-var ValidKinds = []string{"translation", "transcription", "title", "process_text", "process_dialog", "generate_vocabulary", "generate_models"}
+var ValidKinds = []string{"translation", "transcription", "title", "process_text", "process_dialog", "generate_vocabulary", "generate_models", "vocabulary_item", "models_item"}
 
 // IsValidKind reports whether kind is one of ValidKinds.
 func IsValidKind(kind string) bool {
@@ -139,6 +139,18 @@ type ItemTranslationWriteback interface {
 	SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (applied bool, err error)
 }
 
+// ItemReplyWriteback writes the fields a structured vocabulary/models item
+// reply adds beyond ItemTranscriptionWriteback: a translation together
+// with its notes (vocabulary; models has no notes and ignores them), and
+// vocabulary grammar tags. Same guards as the other item writebacks —
+// phrase must still match (else an error), and an already present value
+// is left alone (applied false). Satisfied by main.go's adapter, which
+// holds both stores.
+type ItemReplyWriteback interface {
+	SetItemTranslationWithNotes(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation, notes string) (applied bool, err error)
+	SetItemGrammarIfBlank(ctx context.Context, listID int64, position int, phrase, grammar string) (applied bool, err error)
+}
+
 type Service struct {
 	db  *pgxpool.Pool
 	cfg config.Config
@@ -153,9 +165,11 @@ type Service struct {
 	vocabItems       ItemTranscriptionWriteback
 	modelsItems      ItemTranscriptionWriteback
 	itemTranslations ItemTranslationWriteback
+	// itemReplies backs HandleItemTranslation's structured-reply writes.
+	itemReplies ItemReplyWriteback
 }
 
-func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, translations TranslationWriteback, vocabItems, modelsItems ItemTranscriptionWriteback, itemTranslations ItemTranslationWriteback) *Service {
+func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, translations TranslationWriteback, vocabItems, modelsItems ItemTranscriptionWriteback, itemTranslations ItemTranslationWriteback, itemReplies ItemReplyWriteback) *Service {
 	return &Service{
 		db:               db,
 		cfg:              cfg,
@@ -165,6 +179,7 @@ func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, tran
 		vocabItems:       vocabItems,
 		modelsItems:      modelsItems,
 		itemTranslations: itemTranslations,
+		itemReplies:      itemReplies,
 	}
 }
 
@@ -212,6 +227,10 @@ func (s *Service) purposeDefault(kind string) config.PurposeConfig {
 		return s.cfg.GenerateVocabulary
 	case "generate_models":
 		return s.cfg.GenerateModels
+	case "vocabulary_item":
+		return s.cfg.VocabularyItem
+	case "models_item":
+		return s.cfg.ModelsItem
 	case "translation":
 		return s.cfg.Translation
 	default:
@@ -290,6 +309,14 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 		"{{content_type}}", contentType,
 		"{{content}}", content,
 	).Replace(userMessageTemplate)
+	return s.callLLM(ctx, kind, prompt, def, []llm.Message{{Role: "system", Content: prompt.Prompt}, {Role: "user", Content: user}}, nil)
+}
+
+// callLLM sends messages with prompt's resolved provider/model/think and
+// timeouts (def supplies NumCtx and the purpose timeout), constraining the
+// reply to format's JSON schema when non-nil, and logs one telemetry line.
+// Shared by Generate and HandleItemTranslation.
+func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def config.PurposeConfig, messages []llm.Message, format json.RawMessage) (string, error) {
 	provider, ok := s.cfg.Providers[prompt.Provider]
 	if !ok {
 		return "", fmt.Errorf("llm provider %q is not in the configured provider registry", prompt.Provider)
@@ -303,15 +330,23 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 		NumCtx:   def.NumCtx,
 		Think:    prompt.Think,
 		Timeout:  time.Duration(timeoutSeconds) * time.Second,
+
+		FirstTokenTimeout: time.Duration(provider.FirstTokenTimeoutSeconds) * time.Second,
+		IdleTimeout:       time.Duration(provider.IdleTimeoutSeconds) * time.Second,
+		Format:            format,
 	}
 	start := time.Now()
-	out, err := llm.New(clientCfg).Complete(ctx, []llm.Message{{Role: "system", Content: prompt.Prompt}, {Role: "user", Content: user}})
-	outcome := "success"
+	out, err := llm.New(clientCfg).Complete(ctx, messages)
+	outcome, limit := "success", ""
 	if err != nil {
 		outcome = "error"
+		var te *llm.TimeoutError
+		if errors.As(err, &te) {
+			limit = te.Limit
+		}
 	}
 	// Telemetry only — never log content or the response text.
-	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit)
 	return out, err
 }
 

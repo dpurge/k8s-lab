@@ -63,6 +63,25 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- the interface now matches phraseforge's look: its color palette and CSS variable names (light and dark),
+  the theme toggle showing ☽ in light mode and ☀ in dark (was a static 🌓), phraseforge's top bar with a
+  bold **Knowledge** brand, phraseforge's button styles, and its 17px system font; the login/signup form is a
+  card. The top menu's first tab and its panel heading are renamed **Documents** (from Knowledge), and the Qdrant console link is
+  removed from the header.
+- **Breaking config change** — config.yaml now has phraseforge's shape: a `providers:` registry
+  (`ollama`, `openrouter`, `openai`: `baseURL`, and for Ollama the streaming
+  `firstTokenTimeoutSeconds`/`idleTimeoutSeconds`, default 300/60) and per-purpose `embeddings`, `chat`,
+  `generateTitle`, `generateSummary`, `translate`, each naming a provider and setting its own `model`,
+  `numCtx`, `think`, `timeoutSeconds` (default 1800), and `prompt`. API keys are per provider
+  (`OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`), replacing `CHAT_API_KEY`,
+  `GENERATE_API_KEY`, `TRANSLATE_API_KEY`, `EMBEDDINGS_API_KEY`. The old shape (per-section `baseURL`,
+  `generate:`, `prompts:`) and the old env vars are rejected at startup with a message saying where each
+  value moved. Defaults keep today's models, prompts, and behavior.
+- chat, generate, and translate calls to Ollama now stream and fail on lack of progress — no
+  output within 300s, or a 60s gap once output has started — with a 30-minute overall cap,
+  replacing the fixed 2-minute timeout that cut off slow-but-healthy generations on CPU-only
+  hosts. The limits are configurable per provider (`providers.ollama.firstTokenTimeoutSeconds`/
+  `idleTimeoutSeconds`) and per purpose (`timeoutSeconds`).
 - the Knowledge tab's aside now visually separates the search
   block from the export/import block with a divider, instead of both
   reading as one undifferentiated stack of inputs.

@@ -95,6 +95,27 @@ func (w *itemTranslationWriteback) SetItemTranslation(ctx context.Context, resou
 	}
 }
 
+// SetItemTranslationWithNotes is the structured item reply's translation
+// write (ai.ItemReplyWriteback): unlike SetItemTranslation it stores the
+// model's own notes for vocabulary instead of preserving the old ones —
+// there are none to preserve, since the guarded setter only writes when
+// this locale has no translation yet.
+func (w *itemTranslationWriteback) SetItemTranslationWithNotes(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation, notes string) (applied bool, err error) {
+	switch resourceType {
+	case "vocabulary_item":
+		return w.vocab.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation, notes)
+	case "models_item":
+		return w.models.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation)
+	default:
+		return false, fmt.Errorf("phraseforge: unknown resource_type %q for item translation writeback", resourceType)
+	}
+}
+
+// SetItemGrammarIfBlank: only vocabulary items have grammar.
+func (w *itemTranslationWriteback) SetItemGrammarIfBlank(ctx context.Context, listID int64, position int, phrase, grammar string) (applied bool, err error) {
+	return w.vocab.SetItemGrammarIfBlank(ctx, listID, position, phrase, grammar)
+}
+
 func runServe(ctx context.Context, cfg config.Config) {
 	pool, err := db.Connect(ctx, cfg)
 	if err != nil {
@@ -118,7 +139,7 @@ func runServe(ctx context.Context, cfg config.Config) {
 	tagsSvc := tags.New(pool)
 	translationsSvc := translations.New(pool)
 	itemTranslationsSvc := &itemTranslationWriteback{vocab: vocabStore, models: modelsStore}
-	aiSvc := ai.New(pool, cfg, textStore, dialogStore, translationsSvc, vocabStore, modelsStore, itemTranslationsSvc)
+	aiSvc := ai.New(pool, cfg, textStore, dialogStore, translationsSvc, vocabStore, modelsStore, itemTranslationsSvc, itemTranslationsSvc)
 
 	// jobsSvc is phraseforge's single app-wide job queue (see
 	// specs/features/phraseforge-job-queue.md): /llm/generate enqueues its
@@ -137,6 +158,8 @@ func runServe(ctx context.Context, cfg config.Config) {
 	jobsSvc.Register(ai.KindGenerateTitle, aiSvc.HandleGenerate)
 	jobsSvc.Register(ai.KindGenerateTranscription, aiSvc.HandleGenerate)
 	jobsSvc.Register(ai.KindGenerateTranslation, aiSvc.HandleGenerate)
+	jobsSvc.Register(ai.KindGenerateVocabularyItem, aiSvc.HandleItemTranslation)
+	jobsSvc.Register(ai.KindGenerateModelsItem, aiSvc.HandleItemTranslation)
 
 	// ingestSvc's two job kinds turn an ingest HTTP endpoint's staged raw
 	// content (a later pass — see specs/features/phraseforge-ingest-texts-dialogs.md)

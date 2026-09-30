@@ -34,22 +34,30 @@ type ItemWriteback interface {
 }
 
 type Service struct {
-	llm           *llm.Client
-	model         string
-	titlePrompt   string
-	summaryPrompt string
-	queue         *queue.Service
-	items         ItemWriteback
+	title   purposeClient
+	summary purposeClient
+	queue   *queue.Service
+	items   ItemWriteback
+}
+
+// purposeClient is one configured purpose (generateTitle or
+// generateSummary): its own LLM client, model (for logging), and prompt.
+type purposeClient struct {
+	llm    *llm.Client
+	model  string
+	prompt string
+}
+
+func newPurposeClient(cfg config.Config, p config.PurposeConfig) purposeClient {
+	return purposeClient{llm: llm.New(cfg.LLM(p)), model: p.Model, prompt: p.Prompt}
 }
 
 func New(cfg config.Config, q *queue.Service, items ItemWriteback) *Service {
 	return &Service{
-		llm:           llm.New(llm.Config{Provider: cfg.GenerateProvider, BaseURL: cfg.GenerateBaseURL, APIKey: cfg.GenerateAPIKey, Model: cfg.GenerateModel, NumCtx: cfg.GenerateNumCtx}),
-		model:         cfg.GenerateModel,
-		titlePrompt:   cfg.GenerateTitlePrompt,
-		summaryPrompt: cfg.GenerateSummaryPrompt,
-		queue:         q,
-		items:         items,
+		title:   newPurposeClient(cfg, cfg.GenerateTitle),
+		summary: newPurposeClient(cfg, cfg.GenerateSummary),
+		queue:   q,
+		items:   items,
 	}
 }
 
@@ -131,14 +139,14 @@ func (s *Service) TitleDirect(ctx context.Context, body string) (string, error) 
 	if strings.TrimSpace(body) == "" {
 		return "", ErrEmptyBody
 	}
-	return s.llmComplete(ctx, s.titlePrompt, body)
+	return s.llmComplete(ctx, s.title, body)
 }
 
 func (s *Service) SummaryDirect(ctx context.Context, body string) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", ErrEmptyBody
 	}
-	return s.llmComplete(ctx, s.summaryPrompt, body)
+	return s.llmComplete(ctx, s.summary, body)
 }
 
 // HandleTitle and HandleSummary are the queue.HandlerFunc implementations
@@ -148,19 +156,19 @@ func (s *Service) SummaryDirect(ctx context.Context, body string) (string, error
 // — the same handler serves both the awaited manual case and the
 // fire-and-forget import case.
 func (s *Service) HandleTitle(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
-	return s.handleGenerate(ctx, raw, s.titlePrompt, s.items.SetTitle)
+	return s.handleGenerate(ctx, raw, s.title, s.items.SetTitle)
 }
 
 func (s *Service) HandleSummary(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
-	return s.handleGenerate(ctx, raw, s.summaryPrompt, s.items.SetSummary)
+	return s.handleGenerate(ctx, raw, s.summary, s.items.SetSummary)
 }
 
-func (s *Service) handleGenerate(ctx context.Context, raw json.RawMessage, prompt string, writeback func(ctx context.Context, itemID, text string) error) (json.RawMessage, error) {
+func (s *Service) handleGenerate(ctx context.Context, raw json.RawMessage, pc purposeClient, writeback func(ctx context.Context, itemID, text string) error) (json.RawMessage, error) {
 	var p genPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
-	text, err := s.llmComplete(ctx, prompt, p.Body)
+	text, err := s.llmComplete(ctx, pc, p.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -175,14 +183,14 @@ func (s *Service) handleGenerate(ctx context.Context, raw json.RawMessage, promp
 // llmComplete is the one place this package actually calls the LLM,
 // logging duration and outcome (never body content) for every call
 // regardless of which path reached it.
-func (s *Service) llmComplete(ctx context.Context, prompt, body string) (string, error) {
+func (s *Service) llmComplete(ctx context.Context, pc purposeClient, body string) (string, error) {
 	start := time.Now()
-	out, err := s.llm.Complete(ctx, []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: body}})
+	out, err := pc.llm.Complete(ctx, []llm.Message{{Role: "system", Content: pc.prompt}, {Role: "user", Content: body}})
 	outcome := "ok"
 	if err != nil {
 		outcome = "error"
 	}
-	slog.Info("generate llm call", "model", s.model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("generate llm call", "model", pc.model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
 	if err != nil {
 		return "", err
 	}

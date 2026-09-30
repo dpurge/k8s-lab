@@ -6,7 +6,7 @@
 
 kb-job-card {
   display: block;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--border, #d7dae0);
   border-radius: 8px;
   padding: 0.7rem;
   margin: 0.5rem 0;
@@ -26,12 +26,12 @@ kb-job-card .kb-job-card-status {
 }
 
 kb-job-card .kb-job-card-status-pending {
-  background: var(--tag-bg);
+  background: var(--surface-alt);
   color: var(--muted);
 }
 
 kb-job-card .kb-job-card-status-active {
-  background: var(--accent);
+  background: var(--btn-bg);
   color: #fff;
 }
 

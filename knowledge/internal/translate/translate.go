@@ -22,10 +22,10 @@ type Service struct {
 
 func New(cfg config.Config) *Service {
 	return &Service{
-		llm:            llm.New(llm.Config{Provider: cfg.TranslateProvider, BaseURL: cfg.TranslateBaseURL, APIKey: cfg.TranslateAPIKey, Model: cfg.TranslateModel, NumCtx: cfg.TranslateNumCtx}),
-		model:          cfg.TranslateModel,
+		llm:            llm.New(cfg.LLM(cfg.Translate)),
+		model:          cfg.Translate.Model,
 		language:       cfg.KnowledgeLanguage,
-		promptTemplate: cfg.TranslatePrompt,
+		promptTemplate: cfg.Translate.Prompt,
 	}
 }
 

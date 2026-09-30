@@ -14,12 +14,12 @@ kb-message {
    reusing variables already used elsewhere in this file rather than
    introducing new ones. */
 kb-message[data-role="assistant"] {
-  background: var(--sources-bg);
-  border-left: 3px solid var(--accent);
+  background: var(--surface-alt);
+  border-left: 3px solid var(--link);
 }
 
 kb-message[data-role="user"] {
-  background: var(--tag-bg);
+  background: var(--surface-alt);
   border-left: 3px solid var(--border);
 }
 
@@ -28,7 +28,7 @@ kb-message .kb-message-role {
 }
 
 kb-message .kb-message-content pre {
-  background: var(--tag-bg);
+  background: var(--surface-alt);
   border-radius: 6px;
   padding: 0.6rem;
   overflow-x: auto;
@@ -36,7 +36,7 @@ kb-message .kb-message-content pre {
 
 kb-message .kb-message-content code {
   font-family: ui-monospace, monospace;
-  background: var(--tag-bg);
+  background: var(--surface-alt);
   border-radius: 3px;
   padding: 0.1rem 0.3rem;
 }
@@ -72,7 +72,7 @@ kb-message .kb-message-content ol {
 
 kb-message .kb-message-sources {
   font-size: 0.9rem;
-  background: var(--sources-bg);
+  background: var(--surface-alt);
   padding: 0.5rem;
   border-radius: 6px;
 }

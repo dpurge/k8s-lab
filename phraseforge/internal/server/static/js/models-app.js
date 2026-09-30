@@ -309,15 +309,15 @@
       .join("");
     root.innerHTML = `
       <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+      <div class="resource-header">
+        <div class="resource-actions">
+          <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
+          ${list.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
+        </div>
         <div>
           <h1 style="margin-bottom:0.25rem;">${esc(list.title)}</h1>
           <span class="badge">${esc(list.language)} / ${esc(list.script)}</span>
           ${tags}
-        </div>
-        <div class="resource-actions">
-          <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
-          ${list.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
         </div>
       </div>
       <textarea id="copy-models-markdown" class="copy-source" readonly>${esc(list.markdown)}</textarea>

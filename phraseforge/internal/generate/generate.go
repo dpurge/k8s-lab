@@ -17,14 +17,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"phraseforge/internal/ai"
 	"phraseforge/internal/dialogs"
 	"phraseforge/internal/i18n"
-	"phraseforge/internal/ime"
 	"phraseforge/internal/jobs"
 	"phraseforge/internal/models"
 	"phraseforge/internal/texts"
@@ -67,31 +65,6 @@ const (
 	resourceTypeVocabItem  = "vocabulary_item"
 	resourceTypeModelsItem = "models_item"
 )
-
-// transcriptionTargetLanguage mirrors ingest.go's/export_import.go's own
-// sentinel constant of the same name (duplicated rather than exported and
-// imported — a job payload's field values are a wire-contract convention
-// every independent caller re-declares for itself) — the fixed
-// target_language value every transcription call in this codebase uses.
-const transcriptionTargetLanguage = "transcription"
-
-// llmGeneratePayload mirrors ai.Service's own (unexported) llm_generate job
-// payload shape exactly (field-for-field, same JSON tags) — duplicated
-// here rather than imported, matching server/export_import.go's own
-// generatePayload precedent: a job payload is a wire contract between
-// independently-versioned packages, not a shared Go type.
-type llmGeneratePayload struct {
-	Kind           string `json:"kind"`
-	SourceLanguage string `json:"source_language"`
-	TargetLanguage string `json:"target_language"`
-	ContentType    string `json:"content_type"`
-	Content        string `json:"content"`
-
-	ResourceType string `json:"resource_type,omitempty"`
-	ResourceID   int64  `json:"resource_id,omitempty"`
-	Locale       string `json:"locale,omitempty"`
-	ItemPosition int    `json:"item_position,omitempty"`
-}
 
 // payload is the generate_vocab_from_*/generate_models_from_* job payload
 // shape, constructed and enqueued by the HTTP handlers in
@@ -184,19 +157,14 @@ func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocab
 	return &Service{texts: textsStore, dialogs: dialogsStore, vocab: vocabStore, models: modelsStore, ai: aiSvc, jobs: jobsSvc, db: db}
 }
 
-// enqueueItemBackfill enqueues one background transcription job (only if
-// itemLanguage needs one and transcription is still blank) plus one
-// translation job per site locale, for one just-created/replaced
-// vocabulary/models item — see the user's own direction: "when vocabulary
-// is created also jobs to translate all words to all site languages are
-// submitted... these translations should happen automatically when I
-// ingest text or dialog." Every freshly-generated item genuinely has no
-// translation yet in any locale (a rerun cascade-deletes the old item rows'
-// translations along with the rows themselves — see
-// vocabulary_item_translation's ON DELETE CASCADE FK in schema.sql), so
-// unlike server/export_import.go's own enqueueItemBackfill (which must
-// check which locales an import actually provided), every site locale
-// unconditionally needs a job here.
+// enqueueItemBackfill enqueues the structured item calls (ai.ItemJobsFor)
+// for one just-created/replaced vocabulary/models item — every site locale,
+// since a freshly generated item has no translation yet in any locale (a
+// rerun cascade-deletes the old rows' translations with the rows, see
+// vocabulary_item_translation's ON DELETE CASCADE FK in schema.sql); each
+// call also fills grammar/transcription where the language has a section.
+// Per the user's direction: "when vocabulary is created also jobs to
+// translate all words to all site languages are submitted".
 //
 // Best-effort: a lookup or enqueue failure here is logged and skipped, not
 // returned as an error — the vocabulary/models list and its items were
@@ -205,39 +173,17 @@ func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocab
 // generate job into a failed one (which would prompt a Retry that redoes
 // the entire LLM extraction and wholesale item replacement just to retry
 // enqueueing).
-func (s *Service) enqueueItemBackfill(ctx context.Context, itemResourceType string, listID int64, position int, language, phrase, transcription string) {
-	needsTranscription, err := ime.NeedsTranscriptionForLanguage(ctx, s.db, language)
+func (s *Service) enqueueItemBackfill(ctx context.Context, itemResourceType string, listID int64, position int, language, phrase, grammar, transcription string) {
+	state := ai.ItemState{ResourceType: itemResourceType, Grammar: grammar, Transcription: transcription}
+	itemJobs, err := s.ai.ItemJobsFor(ctx, state, listID, position, language, phrase, nil, i18n.Locales)
 	if err != nil {
-		log.Printf("generate: check needs_transcription for language %s: %v", language, err)
-		needsTranscription = false
-	}
-	if needsTranscription && strings.TrimSpace(transcription) == "" {
-		s.enqueueLLMGenerate(ctx, llmGeneratePayload{
-			Kind: "transcription", SourceLanguage: language, TargetLanguage: transcriptionTargetLanguage,
-			ContentType: itemResourceType, Content: phrase,
-			ResourceType: itemResourceType, ResourceID: listID, ItemPosition: position,
-		})
-	}
-	for _, loc := range i18n.Locales {
-		s.enqueueLLMGenerate(ctx, llmGeneratePayload{
-			Kind: "translation", SourceLanguage: language, TargetLanguage: loc.Code,
-			ContentType: itemResourceType, Content: phrase,
-			ResourceType: itemResourceType, ResourceID: listID, Locale: loc.Code, ItemPosition: position,
-		})
-	}
-}
-
-// enqueueLLMGenerate marshals and enqueues one llmGeneratePayload under
-// ai.JobKind(p.Kind) — logged, not returned, on failure; see
-// enqueueItemBackfill's own doc comment on why this stays best-effort.
-func (s *Service) enqueueLLMGenerate(ctx context.Context, p llmGeneratePayload) {
-	raw, err := json.Marshal(p)
-	if err != nil {
-		log.Printf("generate: marshal %s backfill payload for %s %d position %d: %v", p.Kind, p.ResourceType, p.ResourceID, p.ItemPosition, err)
+		log.Printf("generate: plan item backfill for %s %d position %d: %v", itemResourceType, listID, position, err)
 		return
 	}
-	if _, err := s.jobs.Enqueue(ctx, ai.JobKind(p.Kind), jobs.PriorityBackground, raw); err != nil {
-		log.Printf("generate: enqueue %s backfill job for %s %d position %d: %v", p.Kind, p.ResourceType, p.ResourceID, p.ItemPosition, err)
+	for _, j := range itemJobs {
+		if _, err := s.jobs.Enqueue(ctx, j.Kind, jobs.PriorityBackground, j.Payload); err != nil {
+			log.Printf("generate: enqueue %s for %s %d position %d: %v", j.Kind, itemResourceType, listID, position, err)
+		}
 	}
 }
 
@@ -329,7 +275,7 @@ func (s *Service) HandleGenerateVocab(ctx context.Context, id string, raw json.R
 			if err != nil {
 				return nil, fmt.Errorf("generate: add vocabulary item to new list %d: %w", listID, err)
 			}
-			s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, position, src.Language, it.Phrase, it.Transcription)
+			s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, position, src.Language, it.Phrase, it.Grammar, it.Transcription)
 		}
 	}
 	return json.Marshal(result{ListID: listID, ItemCount: len(items)})
@@ -375,7 +321,7 @@ func (s *Service) HandleGenerateModels(ctx context.Context, id string, raw json.
 			if err != nil {
 				return nil, fmt.Errorf("generate: add models item to new list %d: %w", listID, err)
 			}
-			s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, position, src.Language, it.Phrase, it.Transcription)
+			s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, position, src.Language, it.Phrase, "", it.Transcription)
 		}
 	}
 	return json.Marshal(result{ListID: listID, ItemCount: len(items)})
@@ -420,7 +366,7 @@ func (s *Service) replaceVocabItems(ctx context.Context, listID int64, language 
 	// pattern) — an item that gets rolled back must never have a backfill
 	// job enqueued against it.
 	for i, it := range items {
-		s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, positions[i], language, it.Phrase, it.Transcription)
+		s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, positions[i], language, it.Phrase, it.Grammar, it.Transcription)
 	}
 	return nil
 }
@@ -457,7 +403,7 @@ func (s *Service) replaceModelsItems(ctx context.Context, listID int64, language
 	// Backfill enqueueing happens only once the transaction has actually
 	// committed — see replaceVocabItems's own doc comment.
 	for i, it := range items {
-		s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, positions[i], language, it.Phrase, it.Transcription)
+		s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, positions[i], language, it.Phrase, "", it.Transcription)
 	}
 	return nil
 }
@@ -471,7 +417,7 @@ type targetListDecision struct {
 
 // decideTargetList decides which list a generate job should write into,
 // given whatever GetBySourceTextID already found — pulled out as a pure
-// function (matching this codebase's decideBackfill/decideItemBackfill
+// function (matching this codebase's decideBackfill/ai.ItemCallLocales
 // convention) so this decision is unit-testable without a database.
 func decideTargetList(existingID int64, found bool) targetListDecision {
 	if found {

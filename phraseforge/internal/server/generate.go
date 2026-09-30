@@ -329,7 +329,7 @@ type vocabItem struct {
 // apiGenerateVocabItemTranscription handles POST
 // /api/v1/vocabulary/{id}/items/{position}/generate-transcription.
 func (s *Server) apiGenerateVocabItemTranscription(w http.ResponseWriter, r *http.Request) {
-	s.apiGenerateVocabItemField(w, r, "transcription", "")
+	s.apiGenerateVocabItemField(w, r, "")
 }
 
 // apiGenerateVocabItemTranslation handles POST
@@ -347,7 +347,7 @@ func (s *Server) apiGenerateVocabItemTranslation(w http.ResponseWriter, r *http.
 		writeErr(w, http.StatusBadRequest, "invalid_locale", "locale is not a supported site locale")
 		return
 	}
-	s.apiGenerateVocabItemField(w, r, "translation", req.Locale)
+	s.apiGenerateVocabItemField(w, r, req.Locale)
 }
 
 // apiGenerateVocabItemField is apiGenerateVocabItemTranscription/
@@ -356,7 +356,12 @@ func (s *Server) apiGenerateVocabItemTranslation(w http.ResponseWriter, r *http.
 // the item's current phrase (the generation source, and the stale-target
 // guard the job's writeback checks against — see
 // vocabulary.Store.SetItemTranscriptionIfBlank's doc comment).
-func (s *Server) apiGenerateVocabItemField(w http.ResponseWriter, r *http.Request, kind, locale string) {
+//
+// Either button (transcription or translation) now queues the same single
+// structured item call (phraseforge-structured-item-translation), which
+// fills every blank field it can; locale "" (the transcription button)
+// means the caller's own site locale.
+func (s *Server) apiGenerateVocabItemField(w http.ResponseWriter, r *http.Request, locale string) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -400,25 +405,13 @@ func (s *Server) apiGenerateVocabItemField(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusNotFound, "not_found", "vocabulary item not found")
 		return
 	}
-	payload := buildBackfillPayload(backfillDecision{Kind: kind, Locale: locale}, "vocabulary_item", l.ID, l.Language, item.Phrase)
-	payload.ItemPosition = position
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-	jobID, err := s.jobs.Enqueue(r.Context(), ai.JobKind(kind), jobs.PriorityBackground, raw)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID})
+	s.enqueueItemButtonJob(w, r, "vocabulary_item", l.ID, position, l.Language, locale, item.Phrase)
 }
 
 // apiGenerateModelsItemTranscription handles POST
 // /api/v1/models/{id}/items/{position}/generate-transcription.
 func (s *Server) apiGenerateModelsItemTranscription(w http.ResponseWriter, r *http.Request) {
-	s.apiGenerateModelsItemField(w, r, "transcription", "")
+	s.apiGenerateModelsItemField(w, r, "")
 }
 
 // apiGenerateModelsItemTranslation handles POST
@@ -436,12 +429,12 @@ func (s *Server) apiGenerateModelsItemTranslation(w http.ResponseWriter, r *http
 		writeErr(w, http.StatusBadRequest, "invalid_locale", "locale is not a supported site locale")
 		return
 	}
-	s.apiGenerateModelsItemField(w, r, "translation", req.Locale)
+	s.apiGenerateModelsItemField(w, r, req.Locale)
 }
 
 // apiGenerateModelsItemField mirrors apiGenerateVocabItemField — see that
 // method's doc comment.
-func (s *Server) apiGenerateModelsItemField(w http.ResponseWriter, r *http.Request, kind, locale string) {
+func (s *Server) apiGenerateModelsItemField(w http.ResponseWriter, r *http.Request, locale string) {
 	u := currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -485,14 +478,21 @@ func (s *Server) apiGenerateModelsItemField(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusNotFound, "not_found", "models item not found")
 		return
 	}
-	payload := buildBackfillPayload(backfillDecision{Kind: kind, Locale: locale}, "models_item", l.ID, l.Language, item.Phrase)
-	payload.ItemPosition = position
-	raw, err := json.Marshal(payload)
+	s.enqueueItemButtonJob(w, r, "models_item", l.ID, position, l.Language, locale, item.Phrase)
+}
+
+// enqueueItemButtonJob queues one structured item call for a per-item
+// Generate button and responds with its job id.
+func (s *Server) enqueueItemButtonJob(w http.ResponseWriter, r *http.Request, resourceType string, listID int64, position int, language, locale, phrase string) {
+	if locale == "" {
+		locale = currentUser(r).Locale
+	}
+	job, err := ai.NewItemJob(resourceType, listID, position, language, locale, phrase)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	jobID, err := s.jobs.Enqueue(r.Context(), ai.JobKind(kind), jobs.PriorityBackground, raw)
+	jobID, err := s.jobs.Enqueue(r.Context(), job.Kind, jobs.PriorityBackground, job.Payload)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

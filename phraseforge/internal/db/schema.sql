@@ -461,7 +461,7 @@ ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS think boolean NOT NULL DEFAULT 
 -- correctly upgrades an installation created before this migration.
 ALTER TABLE llm_prompts DROP CONSTRAINT IF EXISTS llm_prompts_kind_check;
 ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_kind_check
-    CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models'));
+    CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models', 'vocabulary_item', 'models_item'));
 
 -- llm-purpose-timeout-and-prompt-config: an optional per-(kind, source,
 -- target) admin override of that call's timeout. NULL (the default, and
@@ -549,3 +549,15 @@ CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (created_at ASC) WHERE status 
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
 ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
     CHECK (status IN ('pending', 'running', 'done', 'failed', 'cancelled'));
+
+-- phraseforge-structured-item-translation: optional per-language prompt
+-- sections rendered into the vocabularyItem/modelsItem templates as
+-- {{grammarPrompt}}/{{transcriptionPrompt}} — keyed by source language only,
+-- since grammar tags and the transcription system describe the source
+-- phrase whatever the target locale. Blank means "section absent".
+CREATE TABLE IF NOT EXISTS language_llm_sections (
+    language             text PRIMARY KEY REFERENCES language(code) ON DELETE CASCADE,
+    grammar_prompt       text NOT NULL DEFAULT '',
+    transcription_prompt text NOT NULL DEFAULT '',
+    updated_at           timestamptz NOT NULL DEFAULT now()
+);

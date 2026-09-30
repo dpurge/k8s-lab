@@ -240,6 +240,8 @@ func (s *Server) Router() http.Handler {
 				r.Delete("/ime/{language}/{script}", s.apiDeleteAdminIME)
 				r.Post("/llm-prompts", s.apiSetAdminLLMPrompt)
 				r.Delete("/llm-prompts/{kind}/{sourceLanguage}/{targetLanguage}", s.apiDeleteAdminLLMPrompt)
+				r.Post("/language-sections", s.apiSetAdminLanguageSections)
+				r.Delete("/language-sections/{language}", s.apiDeleteAdminLanguageSections)
 				r.Post("/config/import", s.apiImportAdminConfig)
 				r.Get("/jobs", s.apiListAdminJobs)
 				r.Post("/jobs/clear", s.apiClearAdminJobs)

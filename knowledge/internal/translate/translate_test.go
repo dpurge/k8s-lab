@@ -32,14 +32,17 @@ func TestTranslateSubstitutesAllLanguageOccurrences(t *testing.T) {
 			t.Fatal(err)
 		}
 		gotSystemPrompt = body.Messages[0].Content
-		json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": "stub"}})
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": "stub"}, "done": true})
 	}))
 	defer server.Close()
 
 	svc := New(config.Config{
 		KnowledgeLanguage: "French",
-		TranslateBaseURL:  server.URL,
-		TranslatePrompt:   "already in {{language}}, unchanged. Otherwise into {{language}}.",
+		Providers:         map[string]config.ProviderConfig{"ollama": {BaseURL: server.URL}},
+		Translate: config.PurposeConfig{
+			Provider: "ollama",
+			Prompt:   "already in {{language}}, unchanged. Otherwise into {{language}}.",
+		},
 	})
 	if _, err := svc.Translate(context.Background(), "hello"); err != nil {
 		t.Fatalf("Translate() error = %v", err)

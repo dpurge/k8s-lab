@@ -10,7 +10,7 @@ const mainNav = $("mainNav");
 const ingestSubNav = $("ingestSubNav");
 const confirmDialog = $("confirmDialog");
 mainNav.items = [
-  { id: "knowledge", label: "Knowledge" },
+  { id: "knowledge", label: "Documents" },
   { id: "chat", label: "Chat" },
   { id: "ingest", label: "Ingest" },
 ];

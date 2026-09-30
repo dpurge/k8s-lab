@@ -6,13 +6,17 @@ const Default = "en"
 type Locale struct {
 	Code string
 	Name string
+	// PromptName is the locale's language name in English, as LLM prompts
+	// name a target language ({{targetLanguage}}) — the language table has
+	// no English row, so it can't supply this for "en".
+	PromptName string
 }
 
 // Locales lists every selectable site language, for the profile page's
 // dropdown. Order is display order.
 var Locales = []Locale{
-	{Code: "en", Name: "English"},
-	{Code: "pl", Name: "Polski"},
+	{Code: "en", Name: "English", PromptName: "English"},
+	{Code: "pl", Name: "Polski", PromptName: "Polish"},
 }
 
 // IsValid reports whether code is one of the selectable locales.
@@ -258,30 +262,42 @@ var catalog = map[string]map[string]string{
 		"admin.ime_remove_confirm":      "Delete this IME configuration?",
 		"admin.ime_needs_transcription": "Needs transcription",
 
-		"admin.llm_heading":               "LLM prompts",
-		"admin.llm_configs_heading":       "LLM prompt configs",
-		"admin.llm_kind":                  "Kind",
-		"admin.llm_kind_translation":      "Translation",
-		"admin.llm_kind_transcription":    "Transcription",
-		"admin.llm_kind_title":            "Title",
-		"admin.llm_kind_process_text":     "Process text",
-		"admin.llm_kind_process_dialog":   "Process dialog",
-		"admin.llm_source_language":       "Source language",
-		"admin.llm_target_language":       "Target language",
-		"admin.llm_target_not_applicable": "not applicable",
-		"admin.llm_provider":              "Provider",
-		"admin.llm_model":                 "Model",
-		"admin.llm_model_default":         "app default",
-		"admin.llm_model_placeholder":     "empty = app default",
-		"admin.llm_think":                 "Enable thinking",
-		"admin.llm_timeout_seconds":       "Timeout (seconds)",
-		"admin.llm_timeout_default":       "app default",
-		"admin.llm_timeout_placeholder":   "empty = app default",
-		"admin.llm_prompt":                "System prompt",
-		"admin.llm_prompt_placeholder":    "Return only the requested text. Preserve line breaks and structure.",
-		"admin.llm_save":                  "Save prompt",
-		"admin.llm_delete_confirm":        "Delete this LLM prompt rule?",
-		"admin.llm_no_configs":            "No LLM prompt configs yet.",
+		"admin.llm_heading":                  "LLM prompts",
+		"admin.llm_configs_heading":          "LLM prompt configs",
+		"admin.llm_kind":                     "Kind",
+		"admin.llm_kind_translation":         "Translation",
+		"admin.llm_kind_transcription":       "Transcription",
+		"admin.llm_kind_title":               "Title",
+		"admin.llm_kind_process_text":        "Process text",
+		"admin.llm_kind_process_dialog":      "Process dialog",
+		"admin.llm_kind_generate_vocabulary": "Generate vocabulary",
+		"admin.llm_kind_generate_models":     "Generate models",
+		"admin.llm_kind_vocabulary_item":     "Vocabulary item",
+		"admin.llm_kind_models_item":         "Models item",
+		"admin.llm_source_language":          "Source language",
+		"admin.llm_target_language":          "Target language",
+		"admin.llm_target_not_applicable":    "not applicable",
+		"admin.llm_provider":                 "Provider",
+		"admin.llm_model":                    "Model",
+		"admin.llm_model_default":            "app default",
+		"admin.llm_model_placeholder":        "empty = app default",
+		"admin.llm_think":                    "Enable thinking",
+		"admin.llm_timeout_seconds":          "Timeout (seconds)",
+		"admin.llm_timeout_default":          "app default",
+		"admin.llm_timeout_placeholder":      "empty = app default",
+		"admin.llm_prompt":                   "System prompt",
+		"admin.llm_prompt_placeholder":       "Return only the requested text. Preserve line breaks and structure.",
+		"admin.llm_save":                     "Save prompt",
+		"admin.llm_delete_confirm":           "Delete this LLM prompt rule?",
+		"admin.llm_no_configs":               "No LLM prompt configs yet.",
+		"admin.sections_heading":             "Language sections",
+		"admin.sections_hint":                "Optional per-language text for the vocabulary/models item prompts: {{grammarPrompt}} (grammar tags) and {{transcriptionPrompt}} (transcription system). Leave blank to omit.",
+		"admin.sections_grammar":             "Grammar tags ({{grammarPrompt}})",
+		"admin.sections_transcription":       "Transcription ({{transcriptionPrompt}})",
+		"admin.sections_save":                "Save sections",
+		"admin.sections_configs_heading":     "Configured language sections",
+		"admin.sections_delete_confirm":      "Delete this language's sections?",
+		"admin.sections_no_configs":          "No language sections yet.",
 
 		"role.admin":   "Admin",
 		"role.teacher": "Teacher",
@@ -376,8 +392,8 @@ var catalog = map[string]map[string]string{
 		"texts.err_no_edit_language":     "Nie masz uprawnień do tworzenia tekstów w tym języku.",
 		"texts.err_no_move_language":     "Nie masz uprawnień, aby przenieść ten tekst do tego języka.",
 
-		"texts.ingest":               "Importuj",
-		"texts.ingest_title":         "Importuj tekst",
+		"texts.ingest":               "Dodaj z pliku/URL",
+		"texts.ingest_title":         "Dodaj tekst",
 		"texts.ingest_source_label":  "Źródło",
 		"texts.ingest_source_text":   "Wklej tekst",
 		"texts.ingest_source_file":   "Prześlij plik",
@@ -391,12 +407,12 @@ var catalog = map[string]map[string]string{
 		"texts.err_ingest_file_read": "Nie udało się odczytać wybranego pliku.",
 
 		// Export/import (phraseforge-export-import) — mirrors the "en" catalog's
-		// own new-key block above. texts.import uses the perfective "Zaimportuj"
-		// rather than texts.ingest's imperfective "Importuj" — the two buttons
-		// sit side by side on the same Texts/Dialogs list view, so they need
-		// distinct labels even though "Ingest"/"Import" only differ in English.
-		"texts.export":                  "Eksportuj",
-		"texts.import":                  "Zaimportuj",
+		// own new-key block above. Ingest ("Dodaj z pliku/URL") and YAML import
+		// ("Importuj YAML") sit side by side on the Texts/Dialogs list view, so
+		// they use different verbs — the earlier "Importuj"/"Zaimportuj" pair
+		// was the same word in two aspects and read as duplicates.
+		"texts.export":                  "Eksportuj YAML",
+		"texts.import":                  "Importuj YAML",
 		"texts.import_result_imported":  "Zaimportowano",
 		"texts.import_result_deleted":   "Usunięto",
 		"texts.import_result_unchanged": "Bez zmian",
@@ -425,7 +441,7 @@ var catalog = map[string]map[string]string{
 		"dialogs.empty":                "Brak dialogów.",
 		"dialogs.new_title":            "Nowy dialog",
 		"dialogs.edit_title":           "Edytuj dialog",
-		"dialogs.ingest_title":         "Importuj dialog",
+		"dialogs.ingest_title":         "Dodaj dialog",
 		"dialogs.field_body_hint":      "Kwestie: \"--:\" (lub \"@Imię:\" dla nazwanego mówcy) a linijkę niżej wcięty tekst — bez otoczki {start-dialog}",
 		"dialogs.delete_confirm":       "Usunąć ten dialog? Tej operacji nie można cofnąć.",
 		"dialogs.err_no_create_access": "Nie masz jeszcze uprawnień do tworzenia dialogów w żadnym języku. Poproś administratora o rolę nauczyciela dla danego języka.",
@@ -527,30 +543,42 @@ var catalog = map[string]map[string]string{
 		"admin.ime_remove_confirm":      "Usunąć tę konfigurację IME?",
 		"admin.ime_needs_transcription": "Wymaga transkrypcji",
 
-		"admin.llm_heading":               "Prompty LLM",
-		"admin.llm_configs_heading":       "Konfiguracje promptów LLM",
-		"admin.llm_kind":                  "Typ",
-		"admin.llm_kind_translation":      "Tłumaczenie",
-		"admin.llm_kind_transcription":    "Transkrypcja",
-		"admin.llm_kind_title":            "Tytuł",
-		"admin.llm_kind_process_text":     "Przetwarzanie tekstu",
-		"admin.llm_kind_process_dialog":   "Przetwarzanie dialogu",
-		"admin.llm_source_language":       "Język źródłowy",
-		"admin.llm_target_language":       "Język docelowy",
-		"admin.llm_target_not_applicable": "nie dotyczy",
-		"admin.llm_provider":              "Dostawca",
-		"admin.llm_model":                 "Model",
-		"admin.llm_model_default":         "domyślny model aplikacji",
-		"admin.llm_model_placeholder":     "puste = domyślny model aplikacji",
-		"admin.llm_think":                 "Włącz myślenie",
-		"admin.llm_timeout_seconds":       "Limit czasu (sekundy)",
-		"admin.llm_timeout_default":       "domyślny aplikacji",
-		"admin.llm_timeout_placeholder":   "puste = domyślny aplikacji",
-		"admin.llm_prompt":                "Prompt systemowy",
-		"admin.llm_prompt_placeholder":    "Zwróć tylko żądany tekst. Zachowaj podział wierszy i strukturę.",
-		"admin.llm_save":                  "Zapisz prompt",
-		"admin.llm_delete_confirm":        "Usunąć tę regułę promptu LLM?",
-		"admin.llm_no_configs":            "Brak konfiguracji promptów LLM.",
+		"admin.llm_heading":                  "Prompty LLM",
+		"admin.llm_configs_heading":          "Konfiguracje promptów LLM",
+		"admin.llm_kind":                     "Typ",
+		"admin.llm_kind_translation":         "Tłumaczenie",
+		"admin.llm_kind_transcription":       "Transkrypcja",
+		"admin.llm_kind_title":               "Tytuł",
+		"admin.llm_kind_process_text":        "Przetwarzanie tekstu",
+		"admin.llm_kind_process_dialog":      "Przetwarzanie dialogu",
+		"admin.llm_kind_generate_vocabulary": "Generowanie słownictwa",
+		"admin.llm_kind_generate_models":     "Generowanie modeli",
+		"admin.llm_kind_vocabulary_item":     "Pozycja słownictwa",
+		"admin.llm_kind_models_item":         "Pozycja modeli",
+		"admin.llm_source_language":          "Język źródłowy",
+		"admin.llm_target_language":          "Język docelowy",
+		"admin.llm_target_not_applicable":    "nie dotyczy",
+		"admin.llm_provider":                 "Dostawca",
+		"admin.llm_model":                    "Model",
+		"admin.llm_model_default":            "domyślny model aplikacji",
+		"admin.llm_model_placeholder":        "puste = domyślny model aplikacji",
+		"admin.llm_think":                    "Włącz myślenie",
+		"admin.llm_timeout_seconds":          "Limit czasu (sekundy)",
+		"admin.llm_timeout_default":          "domyślny aplikacji",
+		"admin.llm_timeout_placeholder":      "puste = domyślny aplikacji",
+		"admin.llm_prompt":                   "Prompt systemowy",
+		"admin.llm_prompt_placeholder":       "Zwróć tylko żądany tekst. Zachowaj podział wierszy i strukturę.",
+		"admin.llm_save":                     "Zapisz prompt",
+		"admin.llm_delete_confirm":           "Usunąć tę regułę promptu LLM?",
+		"admin.llm_no_configs":               "Brak konfiguracji promptów LLM.",
+		"admin.sections_heading":             "Sekcje językowe",
+		"admin.sections_hint":                "Opcjonalny tekst dla danego języka w promptach pozycji słownictwa/modeli: {{grammarPrompt}} (tagi gramatyczne) i {{transcriptionPrompt}} (system transkrypcji). Puste = pominięte.",
+		"admin.sections_grammar":             "Tagi gramatyczne ({{grammarPrompt}})",
+		"admin.sections_transcription":       "Transkrypcja ({{transcriptionPrompt}})",
+		"admin.sections_save":                "Zapisz sekcje",
+		"admin.sections_configs_heading":     "Skonfigurowane sekcje językowe",
+		"admin.sections_delete_confirm":      "Usunąć sekcje tego języka?",
+		"admin.sections_no_configs":          "Brak sekcji językowych.",
 
 		"role.admin":   "Administrator",
 		"role.teacher": "Nauczyciel",
@@ -580,6 +608,13 @@ var catalog = map[string]map[string]string{
 		"jobs.delete_confirm": "Usunąć to zadanie?",
 		"jobs.empty":          "Brak zadań.",
 	},
+}
+
+// Has reports whether key is translated in locale itself, without T's
+// English fallback — for tests asserting every locale is complete.
+func Has(locale, key string) bool {
+	_, ok := catalog[locale][key]
+	return ok
 }
 
 // T translates key into locale, falling back to English, then to the key

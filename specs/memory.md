@@ -71,3 +71,7 @@
 2026-09-25T18:57:59Z [gotcha] A modifier class (.foo-x) beside a base class (.foo) can lose to a same-element rule (article.foo) on specificity — verify with getComputedStyle, not the class list.
 2026-09-25T20:35:30Z [gotcha] Each phraseforge SPA section has its own *AppI18nKeys whitelist (server.go/dialogs.go/etc.) — a new key must be added to every section using it, or it renders literally.
 2026-09-25T21:28:36Z [decision] Vocab/Models item transcription+translation backfill now auto-enqueues on Generate; llm_generate split into generate_title/transcription/translation kinds.
+2026-09-30T16:04:38Z [gotcha] Ollama aborts an in-progress model load when the client disconnects mid-load ("aborting load"); a too-short timeout makes every retry restart the load.
+2026-09-30T16:04:38Z [env] Prod jdpct101 Ollama is CPU-only (6 CPU limit): gemma4:12b cold load ~27s, generation ~4 tok/s; a 942-char translation took ~300s.
+2026-09-30T17:26:06Z [domain] promptfoo 0.123.1 sends a plain-text prompt file to ollama:chat as ONE user message (nunjucks, autoescape off); format only if provider config sets it.
+2026-09-30T17:26:06Z [gotcha] phraseforge's language table has no English row; use i18n.Locale.PromptName for a site locale's English name in prompts, not an ISO1 lookup.

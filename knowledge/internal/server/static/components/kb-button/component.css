@@ -2,22 +2,24 @@ kb-button {
   display: inline-block;
 }
 
-/* Base style doubles as variant="secondary" — no separate rule needed since
-   "no variant" and "secondary" look identical (bordered, neutral). */
+/* Colors, weights, and the icon variant match phraseforge's pf-button
+   exactly (shared palette convention); knowledge keeps its own tighter
+   padding/min-width for its denser asides. Base style doubles as
+   variant="secondary" — "no variant" and "secondary" look identical. */
 kb-button button {
   font: inherit;
   padding: 0.5rem 0.9rem;
   min-width: 6rem;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+  border-radius: 0.4rem;
+  background: var(--surface-alt);
+  color: var(--text);
   cursor: pointer;
   transition: background-color 0.1s ease, border-color 0.1s ease;
 }
 
 kb-button button:hover:not(:disabled) {
-  background: var(--hover-bg);
+  background: var(--border);
 }
 
 kb-button button:disabled {
@@ -26,27 +28,43 @@ kb-button button:disabled {
 }
 
 kb-button[variant="primary"] button {
-  background: var(--accent, #2f6fed);
-  border-color: var(--accent, #2f6fed);
+  background: var(--btn-bg, #3b5bab);
+  border-color: var(--btn-bg, #3b5bab);
   color: #fff;
+  font-weight: 600;
 }
 
 kb-button[variant="primary"] button:hover:not(:disabled) {
-  background: var(--accent-hover, #2557bd);
-  border-color: var(--accent-hover, #2557bd);
+  background: var(--btn-bg-hover, #2f4a8c);
+  border-color: var(--btn-bg-hover, #2f4a8c);
 }
 
 kb-button[variant="danger"] button {
-  background: var(--danger, #b00020);
-  border-color: var(--danger, #b00020);
+  background: var(--danger, #b3453f);
+  border-color: var(--danger, #b3453f);
   color: #fff;
+  font-weight: 600;
 }
 
 kb-button[variant="danger"] button:hover:not(:disabled) {
-  filter: brightness(1.1);
+  background: var(--danger-hover, #9c3b36);
+  border-color: var(--danger-hover, #9c3b36);
 }
 
 kb-button[variant="icon"] button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
   min-width: 0;
-  padding: 0.5rem 0.6rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text);
+}
+
+kb-button[variant="icon"] button:hover:not(:disabled) {
+  background: none;
+  border-color: var(--link);
 }

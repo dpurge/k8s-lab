@@ -20,17 +20,17 @@
   </head>
   <body>
     <header>
+      <a class="brand" href="/">Knowledge</a>
       <kb-nav id="mainNav"></kb-nav>
-      <a href="http://qdrant.localhost:8080/dashboard" target="_blank" rel="noreferrer">Qdrant ↗</a>
       <div class="spacer"></div>
       <span class="muted" id="userEmail"></span>
-      <kb-button variant="icon" onclick="toggleTheme()" title="Toggle theme">🌓</kb-button>
+      <kb-button variant="icon" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><span id="theme-icon"></span></kb-button>
       <kb-button variant="secondary" onclick="run(logout)">Log out</kb-button>
     </header>
 
     <section id="knowledgeTab" class="tab active">
       <aside>
-        <h1>Knowledge</h1>
+        <h1>Documents</h1>
         <input id="q" placeholder="Semantic search query" />
         <input id="filterTags" placeholder="Filter tags: k8s, qdrant" />
         <kb-field label="Updated after" for="start">

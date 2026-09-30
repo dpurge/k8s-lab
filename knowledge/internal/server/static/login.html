@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="/auth.css" />
   </head>
   <body>
-    <kb-button class="top" variant="icon" onclick="toggleTheme()" title="Toggle theme">🌓</kb-button>
+    <kb-button class="top" variant="icon" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><span id="theme-icon"></span></kb-button>
     <form id="form">
       <h1>Log in</h1>
       <kb-field label="Email" for="email">

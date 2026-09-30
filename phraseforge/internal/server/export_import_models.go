@@ -1,7 +1,7 @@
 // Models' half of export_import.go — see that file's package doc comment,
 // and export_import_vocabulary.go's own doc comment, for why Vocabulary and
 // Models each get their own types/handlers here despite sharing
-// listMetaFields/listMetaUnchanged/decideItemBackfill/enqueueItemBackfill.
+// listMetaFields/listMetaUnchanged/enqueueItemBackfill.
 // This file mirrors export_import_vocabulary.go closely; the only structural
 // difference is that a models item has no grammar or notes field.
 package server
@@ -285,7 +285,10 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 	existing, err := s.models.Get(ctx, list.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: "models list not found"})
+			// The id was deleted since export (or never existed here): create it
+			// as a new row rather than failing, so an export of since-deleted
+			// content can be re-imported to restore it (under a new id).
+			s.importCreateModelsList(ctx, u, index, list, res)
 			return
 		}
 		res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
@@ -420,7 +423,7 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 			return
 		}
 		for _, spec := range specs {
-			if err := s.enqueueItemBackfill(ctx, "models_item", list.ID, spec.position, language, spec.phrase, spec.transcription, spec.providedTranslations); err != nil {
+			if err := s.enqueueItemBackfill(ctx, "models_item", list.ID, spec.position, language, spec.phrase, "", spec.transcription, spec.providedTranslations); err != nil {
 				res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 				return
 			}
@@ -519,7 +522,7 @@ func (s *Server) addModelsItemsAndBackfill(ctx context.Context, listID int64, la
 				return err
 			}
 		}
-		if err := s.enqueueItemBackfill(ctx, "models_item", listID, position, language, it.Phrase, it.Transcription, providedTranslations); err != nil {
+		if err := s.enqueueItemBackfill(ctx, "models_item", listID, position, language, it.Phrase, "", it.Transcription, providedTranslations); err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
 			return err
 		}

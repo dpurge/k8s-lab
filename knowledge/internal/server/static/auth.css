@@ -2,9 +2,10 @@
    kb-button/kb-field own their own component.css. */
 
 body {
-  font-family: system-ui, sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 17px;
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,11 +13,13 @@ body {
   margin: 0;
 }
 
+/* Card look matches phraseforge's .form-card. */
 form {
   width: 320px;
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.5rem;
+  border-radius: 0.6rem;
+  padding: 2rem;
 }
 
 h1 {
@@ -30,8 +33,8 @@ input {
   padding: 0.5rem;
   margin-top: 0.25rem;
   font: inherit;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--surface);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
 }

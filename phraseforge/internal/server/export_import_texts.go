@@ -124,7 +124,8 @@ func (s *Server) apiExportTexts(w http.ResponseWriter, r *http.Request) {
 // item, in order:
 //  1. delete:true + id: deletes that row if the caller CanEdit its language
 //     (a per-item error if not); a missing id is a no-op, not an error.
-//  2. id present, not delete: found + CanEdit required (otherwise a
+//  2. id present, not delete: an id not found is handled exactly like
+//     case 3 (created under a new id); found requires CanEdit (otherwise a
 //     per-item error); identical-in-every-respect to what's stored is
 //     "unchanged" (no write, no backfill); otherwise updated, then
 //     backfilled.
@@ -201,7 +202,10 @@ func (s *Server) importUpdateText(ctx context.Context, u auth.User, index int, i
 	existing, err := s.texts.Get(ctx, item.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			res.Errors = append(res.Errors, importError{Index: index, ID: item.ID, Message: "text not found"})
+			// The id was deleted since export (or never existed here): create it
+			// as a new row rather than failing, so an export of since-deleted
+			// content can be re-imported to restore it (under a new id).
+			s.importCreateText(ctx, u, index, item, res)
 			return
 		}
 		res.Errors = append(res.Errors, importError{Index: index, ID: item.ID, Message: err.Error()})

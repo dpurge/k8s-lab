@@ -7,10 +7,10 @@ kb-status-bar {
 }
 
 kb-status-bar .kb-status-job {
-  color: var(--muted, #666);
+  color: var(--muted, #6b7280);
   font-size: 0.85rem;
 }
 
 kb-status-bar .kb-status-message.error {
-  color: var(--danger, #b00020);
+  color: var(--danger, #b3453f);
 }

@@ -33,6 +33,9 @@ LLM configuration is file-based with per-purpose (transcription/translation) def
 
 **Configuration file:** mounted at `CONFIG_FILE` (default `/etc/phraseforge/config.yaml`), containing:
 - `providers.ollama.baseURL` and `providers.openrouter.baseURL` — provider connection URLs.
+- `providers.ollama.firstTokenTimeoutSeconds` (default 300) and `providers.ollama.idleTimeoutSeconds` (default 60) — Ollama calls stream, and fail if no output arrives within the first limit (model load + prompt processing) or if output then stops for longer than the idle limit. They belong to the provider because they reflect how fast that host runs a model.
+- `<purpose>.timeoutSeconds` (default 1800) — overall cap on one call, a backstop against runaway output; the streaming limits above are what catch a hung call. An admin LLM rule's own timeout overrides it.
+- `vocabularyItem.{provider, model, think, timeoutSeconds, prompt}` and `modelsItem.{...}` — one structured (JSON) call per vocabulary/models item per site locale. `prompt` is a template with the placeholders `{{sourceLanguage}}`, `{{targetLanguage}}`, `{{phrase}}`, `{{grammarPrompt}}`, `{{transcriptionPrompt}}` (the same names as the prompt-eval setup, so a tuned template can be pasted in unchanged); the reply is constrained by a JSON schema and validated before any field is stored, and only blank fields are written.
 - `transcription.{provider, model, think}` and `translation.{provider, model, think}` — per-purpose defaults (provider is `"ollama"` or `"openrouter"`; model examples: `"gemma4:12b"` for Ollama, `"meta-llama/llama-2-70b"` for OpenRouter; think is boolean, default false).
 
 **Credentials:** API keys come from environment variables only, never from the config file:
@@ -41,21 +44,27 @@ LLM configuration is file-based with per-purpose (transcription/translation) def
 
 **Admin overrides:** in the admin panel's LLM tab, admins can set provider, model, and think (enable/disable thinking) per prompt, overriding the purpose defaults for that specific (kind, source_language, target_language) combination. A newly saved row inherits the purpose default.
 
+**Language sections:** Admin > LLM > Language sections holds optional per-language text rendered into the item templates as `{{grammarPrompt}}` (grammar-tag conventions) and `{{transcriptionPrompt}}` (transcription system). Grammar and transcription are only generated for a language that has the matching section; a language whose IME config needs transcription but has no section gets "Transcribe using the standard romanization for this language.". Sections are part of the admin configuration export/import.
+
 **Example config.yaml:**
 ```yaml
 providers:
   ollama:
     baseURL: http://host.docker.internal:11434
+    firstTokenTimeoutSeconds: 300
+    idleTimeoutSeconds: 60
   openrouter:
     baseURL: https://openrouter.ai/api/v1
 transcription:
   provider: ollama
   model: gemma4:12b
   think: false
+  timeoutSeconds: 1800
 translation:
   provider: ollama
   model: gemma4:12b
   think: false
+  timeoutSeconds: 1800
 ```
 
 ## Ingress host

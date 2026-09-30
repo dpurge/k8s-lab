@@ -113,55 +113,73 @@ qdrant:
   searchMinScore: 0.4          # min Qdrant cosine-similarity score to keep a semantic search
                                 # result; 0 (or negative) disables filtering. Applies to general
                                 # search and chat retrieval alike.
+providers:                     # one entry per LLM provider; every purpose below names one
+  ollama:
+    baseURL: http://localhost:11434
+    firstTokenTimeoutSeconds: 300  # streamed calls fail if no output arrives within this
+                                   # (model load + prompt processing) ...
+    idleTimeoutSeconds: 60         # ... or if output then stops for this long
+  openrouter:
+    baseURL: https://openrouter.ai/api/v1
+  openai:
+    baseURL: https://api.openai.com/v1
 embeddings:
-  provider: ollama              # ollama, openai, or fake
-  baseURL: http://localhost:11434
-  model: nomic-embed-text
-  dimension: 768                # must match the model and the existing Qdrant collection
+  provider: ollama              # a providers key (ollama, openrouter, openai), or fake
+  model: bge-m3
+  dimension: 1024               # must match the model and the existing Qdrant collection
 chat:
   provider: ollama
-  baseURL: http://localhost:11434
-  model: gemma4:12b              # the client always sends think: false — a thinking-capable
-                                  # model otherwise incurs a large hidden-reasoning latency cost
-                                  # (confirmed: ~150s vs ~14s on the same request)
-  numCtx: 0                      # Ollama options.num_ctx; 0 omits it (Ollama's own default
-                                  # applies). Set to the model's real trained context when full
-                                  # documents in the prompt need more room than that default.
-generate:
-  provider: ollama                # used by the knowledge-item "Generate" title/summary buttons;
-  baseURL: http://localhost:11434 # independently configurable from chat because not every model
-  model: gemma4:12b                # can do this — llama3-chatqa:8b (completion-only QA) hallucinated
-  numCtx: 0                        # an unrelated continuation instead of a title when tried
-knowledgeLanguage: English         # the knowledge base's target language; fixed per deployment
-translate:
-  provider: ollama
-  baseURL: http://localhost:11434
-  model: gemma4:12b  # same model used for chat/generate; chosen after live comparison showed comparable translation quality
-  numCtx: 0
-prompts:
-  chat: |
+  model: gemma4:12b
+  numCtx: 8192                  # Ollama options.num_ctx; 0 omits it (Ollama's own default
+                                # applies). Full retrieved documents go into the prompt, so this
+                                # needs more room than gemma4:12b's 4096 runtime default.
+  think: false                  # a thinking-capable model otherwise incurs a large hidden-
+                                # reasoning latency cost (confirmed: ~150s vs ~14s)
+  timeoutSeconds: 1800          # overall cap on one call (a backstop, every purpose)
+  prompt: |
     You answer using only the retrieved knowledge documents below.
 
     If unsupported by the retrieved knowledge documents, say you do not know.
-  generateTitle: >-
+generateTitle:                  # the knowledge-item "Generate" title button; its own model
+  provider: ollama              # because not every model can do this — llama3-chatqa:8b
+  model: gemma4:12b             # (completion-only QA) hallucinated an unrelated continuation
+  timeoutSeconds: 1800
+  prompt: >-
     You write a short, specific title for the given Markdown document.
     Respond with only the title text on a single line — no quotes, no
     punctuation at the end, no preamble like "Title:".
-  generateSummary: >-
+generateSummary:                # the "Generate" summary button
+  provider: ollama
+  model: gemma4:12b
+  timeoutSeconds: 1800
+  prompt: >-
     You write a one-paragraph summary of the given Markdown document,
     for use as a search-result preview. Respond with only the summary
     text — no preamble like "Summary:", no quotes.
-  translate: >-
+knowledgeLanguage: English      # the knowledge base's target language; fixed per deployment
+translate:
+  provider: ollama
+  model: gemma4:12b             # chosen after a live comparison showed comparable quality
+  timeoutSeconds: 1800
+  prompt: >-
     If the following text is already in {{language}}, return it
     unchanged. Otherwise, translate it into {{language}}. Respond with
     only the resulting text — no preamble, no explanation.
 ```
 
+Every purpose accepts `provider`, `model`, `numCtx`, `think`, `timeoutSeconds`, and `prompt`.
+The shape matches phraseforge's. The pre-registry shape is rejected at startup with a message
+saying where each value moved: a per-section `baseURL` (now `providers.<name>.baseURL`), the
+`generate:` section (now `generateTitle`/`generateSummary`), and the `prompts:` block (now each
+purpose's `prompt`). So is a purpose naming a provider that isn't in `providers`.
+
 **Credentials and connection settings are never in this file** — they stay as plain (or
 Kubernetes-Secret-sourced) env vars: `PGUSER`/`PGPASSWORD` (from the `postgres-credentials`
-Secret in k8s), `PGHOST`/`PGPORT`/`PGDATABASE`, `QDRANT_URL`, and
-`EMBEDDINGS_API_KEY`/`CHAT_API_KEY`/`GENERATE_API_KEY` (empty by default; needed for
-OpenAI/OpenRouter) — this is what lets the migrate Job run before the ConfigMap exists.
+Secret in k8s), `PGHOST`/`PGPORT`/`PGDATABASE`, `QDRANT_URL`, and one API key per provider:
+`OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` (empty by default; needed for
+OpenAI/OpenRouter) — this is what lets the migrate Job run before the ConfigMap exists. The old
+per-purpose `CHAT_API_KEY`/`GENERATE_API_KEY`/`TRANSLATE_API_KEY`/`EMBEDDINGS_API_KEY` are
+rejected at startup, so a key is never silently ignored.
 
 The migration validates collection vector size. If the collection already exists with a different
 size, migration fails; use a matching model/dimension or recreate the collection.
@@ -171,7 +189,7 @@ size, migration fails; use a matching model/dimension or recreate the collection
 For local testing on the host:
 
 ```sh
-ollama pull nomic-embed-text
+ollama pull bge-m3
 ```
 
 The k8s manifest points at Docker Desktop/Rancher Desktop's host alias:
@@ -188,38 +206,40 @@ example:
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
 ```
 
-Or edit `embeddings.baseURL`/`chat.baseURL`/`generate.baseURL` in
-`knowledge/k8s/configmap.yaml` (shared by the Deployment and the migrate Job) to point at an
-Ollama server on your LAN.
+Or edit `providers.ollama.baseURL` in `knowledge/k8s/configmap.yaml` (shared by the Deployment
+and the migrate Job) to point at an Ollama server on your LAN.
+
+Calls to Ollama stream their response, so a slow-but-working model (e.g. CPU-only) isn't cut off
+by a fixed timeout: a call fails only if no output arrives within
+`providers.ollama.firstTokenTimeoutSeconds`, output stops for `idleTimeoutSeconds`, or the
+purpose's `timeoutSeconds` passes overall.
 
 ### OpenAI / OpenRouter-compatible embeddings
 
-Set the provider to `openai` in the config file; the app calls `<embeddings.baseURL>/embeddings`
-with a bearer token from the `EMBEDDINGS_API_KEY` env var (a credential — never in the config
-file). For OpenAI:
+Point `embeddings.provider` at the `openai` or `openrouter` provider; the app calls
+`<providers.<name>.baseURL>/embeddings` with a bearer token from that provider's API-key env var
+(a credential — never in the config file). For OpenAI:
 
 ```yaml
 embeddings:
   provider: openai
-  baseURL: https://api.openai.com/v1
   model: text-embedding-3-small
   dimension: 1536
 ```
 ```env
-EMBEDDINGS_API_KEY=sk-...
+OPENAI_API_KEY=sk-...
 ```
 
-For OpenRouter, use its OpenAI-compatible base URL and the embedding model ID/dimension you choose:
+For OpenRouter, use the embedding model ID/dimension you choose:
 
 ```yaml
 embeddings:
-  provider: openai
-  baseURL: https://openrouter.ai/api/v1
+  provider: openrouter
   model: <openrouter-embedding-model>
   dimension: <model-dimension>
 ```
 ```env
-EMBEDDINGS_API_KEY=...
+OPENROUTER_API_KEY=...
 ```
 
 ## Deploy
@@ -239,7 +259,7 @@ Open:
 http://knowledge.localhost:8080/
 ```
 
-The GUI also includes a link to the Qdrant console:
+The Qdrant console (not linked from the GUI) is at:
 
 ```text
 http://qdrant.localhost:8080/dashboard

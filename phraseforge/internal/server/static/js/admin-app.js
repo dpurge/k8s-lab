@@ -28,6 +28,7 @@
   // vocabulary-app.js/models-app.js).
   let editingIme = null; // "{language}|{script}" or null
   let editingLlm = null; // "{kind}|{sourceLanguage}|{targetLanguage}" or null
+  let editingSections = null; // language code or null
 
   function esc(s) {
     return String(s == null ? "" : s).replace(
@@ -68,6 +69,12 @@
   }
   function providerOptions() {
     return (data.providers || []).map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  }
+  // Kinds keyed by a real target locale; every other kind stores its own
+  // name as a sentinel target_language (see refreshLLMTarget).
+  const TARGETED_LLM_KINDS = ["translation", "vocabulary_item", "models_item"];
+  function hasTargetLanguage(kind) {
+    return TARGETED_LLM_KINDS.includes(kind);
   }
   // llmKindLabel/llmKindOptions derive the LLM-prompt kind <select> and its
   // row labels from the backend's own ai.ValidKinds list (data.llmKinds)
@@ -362,7 +369,7 @@
       <tr>
         <td>${esc(llmKindLabel(p.kind))}</td>
         <td>${esc(p.source_language)}</td>
-        <td>${p.kind === "translation" ? esc(p.target_language) : `<em>${esc(T("admin.llm_target_not_applicable"))}</em>`}</td>
+        <td>${hasTargetLanguage(p.kind) ? esc(p.target_language) : `<em>${esc(T("admin.llm_target_not_applicable"))}</em>`}</td>
         <td>${esc(p.provider)}</td>
         <td>${p.model ? esc(p.model) : `<em>${esc(T("admin.llm_model_default"))}</em>`}</td>
         <td>${p.think ? "✓" : "—"}</td>
@@ -417,7 +424,7 @@
           </div>
         </form>
       </div>
-      <div class="card">
+      <div class="card" style="margin-bottom:1.5rem;">
         <h2 style="margin-top:0;">${esc(T("admin.llm_configs_heading"))}</h2>
         <div style="overflow-x:auto;">
           <table class="admin-table">
@@ -426,6 +433,7 @@
           </table>
         </div>
       </div>
+      ${renderLanguageSectionsCards()}
     `;
 
     const kindSelect = document.getElementById("llm-kind");
@@ -436,15 +444,15 @@
     // toggling the `hidden` attribute on it would silently do nothing —
     // must set inline style directly instead, same as admin.html's original
     // inline script did.
-    // Every kind except "translation" has no real target language of its
+    // Every kind except TARGETED_LLM_KINDS has no real target language of its
     // own — its target_language is a fixed sentinel equal to the kind's own
     // name (see phraseforge/internal/ingest's transcriptionTargetLanguage
-    // doc comment for the full rationale), so only "translation" shows/needs
+    // doc comment for the full rationale), so only those kinds show/need
     // this field.
     function refreshLLMTarget() {
-      const isTranslation = kindSelect.value === "translation";
-      targetField.style.display = isTranslation ? "" : "none";
-      targetSelect.required = isTranslation;
+      const isTargeted = hasTargetLanguage(kindSelect.value);
+      targetField.style.display = isTargeted ? "" : "none";
+      targetSelect.required = isTargeted;
     }
     kindSelect.addEventListener("change", refreshLLMTarget);
 
@@ -462,7 +470,7 @@
       document.getElementById("llm-prompt").value = editingPrompt.prompt;
     }
     refreshLLMTarget();
-    if (editingPrompt && editingPrompt.kind === "translation") {
+    if (editingPrompt && hasTargetLanguage(editingPrompt.kind)) {
       targetSelect.value = editingPrompt.target_language;
     }
 
@@ -482,9 +490,9 @@
       const payload = {
         kind,
         sourceLanguage: document.getElementById("llm-source-language").value,
-        // Sentinel convention: every non-"translation" kind's target_language
+        // Sentinel convention: every non-targeted kind's target_language
         // is fixed to its own kind name (see refreshLLMTarget's comment).
-        targetLanguage: kind === "translation" ? targetSelect.value : kind,
+        targetLanguage: hasTargetLanguage(kind) ? targetSelect.value : kind,
         provider: providerSelect.value,
         model: document.getElementById("llm-model").value,
         think: document.getElementById("llm-think").checked,
@@ -527,6 +535,120 @@
           await loadAndRender("llm");
         } catch (e) {
           statusBar.setMessage(e.message, true);
+        }
+      });
+    });
+
+    bindLanguageSections();
+  }
+
+  function languageName(code) {
+    const l = BOOT.languages.find((x) => x.Code === code);
+    return l ? l.Name : code;
+  }
+
+  // renderLanguageSectionsCards: per-source-language {{grammarPrompt}}/
+  // {{transcriptionPrompt}} sections for the vocabulary/models item
+  // prompts (phraseforge-structured-item-translation).
+  function renderLanguageSectionsCards() {
+    const sections = data.languageSections || [];
+    const rows =
+      sections
+        .map(
+          (ls) => `
+      <tr>
+        <td>${esc(languageName(ls.language))}</td>
+        <td style="white-space:pre-wrap;">${esc(ls.grammar_prompt)}</td>
+        <td style="white-space:pre-wrap;">${esc(ls.transcription_prompt)}</td>
+        <td style="white-space:nowrap;">
+          <a href="#" data-edit-sections="${esc(ls.language)}">${esc(T("texts.edit"))}</a>
+          <button class="link-btn" type="button" data-delete-sections="${esc(ls.language)}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
+        </td>
+      </tr>`,
+        )
+        .join("") || `<tr><td colspan="4"><em>${esc(T("admin.sections_no_configs"))}</em></td></tr>`;
+    return `
+      <div class="card" style="margin-bottom:1.5rem;">
+        <h2 style="margin-top:0;">${esc(T("admin.sections_heading"))}</h2>
+        <p class="muted">${esc(T("admin.sections_hint"))}</p>
+        <form id="sectionsForm">
+          <pf-field label="${esc(T("texts.field_language"))}" for="sections-language">
+            <select id="sections-language" required>${languageOptions()}</select>
+          </pf-field>
+          <pf-field label="${esc(T("admin.sections_grammar"))}" for="sections-grammar">
+            <textarea id="sections-grammar" style="height:8rem;"></textarea>
+          </pf-field>
+          <pf-field label="${esc(T("admin.sections_transcription"))}" for="sections-transcription">
+            <textarea id="sections-transcription" style="height:4rem;"></textarea>
+          </pf-field>
+          <div class="form-actions">
+            <pf-button variant="primary" type="submit">${esc(T("admin.sections_save"))}</pf-button>
+            ${editingSections ? `<a href="#" id="sectionsCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <h2 style="margin-top:0;">${esc(T("admin.sections_configs_heading"))}</h2>
+        <div style="overflow-x:auto;">
+          <table class="admin-table">
+            <thead><tr><th>${esc(T("texts.field_language"))}</th><th>${esc(T("admin.sections_grammar"))}</th><th>${esc(T("admin.sections_transcription"))}</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  function bindLanguageSections() {
+    const sections = data.languageSections || [];
+    const editing = editingSections ? sections.find((ls) => ls.language === editingSections) : null;
+    const languageSelect = document.getElementById("sections-language");
+    if (editing) {
+      languageSelect.value = editing.language;
+      document.getElementById("sections-grammar").value = editing.grammar_prompt;
+      document.getElementById("sections-transcription").value = editing.transcription_prompt;
+    }
+    const cancelLink = document.getElementById("sectionsCancelEdit");
+    if (cancelLink) {
+      cancelLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        editingSections = null;
+        renderLLMTab();
+      });
+    }
+    document.getElementById("sectionsForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const payload = {
+        language: languageSelect.value,
+        grammarPrompt: document.getElementById("sections-grammar").value,
+        transcriptionPrompt: document.getElementById("sections-transcription").value,
+      };
+      try {
+        await apiFetch("/api/v1/admin/language-sections", { method: "POST", body: JSON.stringify(payload) });
+        editingSections = null;
+        await loadAndRender("llm");
+      } catch (err) {
+        statusBar.setMessage(err.message, true);
+      }
+    });
+    const tab = document.getElementById("tabLlm");
+    tab.querySelectorAll("[data-edit-sections]").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        editingSections = a.dataset.editSections;
+        renderLLMTab();
+      });
+    });
+    tab.querySelectorAll("[data-delete-sections]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const confirmDialog = document.getElementById("confirmDialog");
+        const ok = await confirmDialog.confirm(T("admin.sections_delete_confirm"), { danger: true });
+        if (!ok) return;
+        try {
+          await apiFetch(`/api/v1/admin/language-sections/${encodeURIComponent(btn.dataset.deleteSections)}`, { method: "DELETE" });
+          editingSections = null;
+          await loadAndRender("llm");
+        } catch (err) {
+          statusBar.setMessage(err.message, true);
         }
       });
     });

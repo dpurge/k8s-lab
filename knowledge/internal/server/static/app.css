@@ -2,10 +2,14 @@
    in theme.css; kb-button/kb-nav/kb-status-bar/kb-dialog/kb-card/kb-field
    each own their own component.css. */
 
+/* Typography and header match phraseforge's (templates/layout.html:
+   body, header.topnav) — see specs/features/knowledge-theme-parity-
+   phraseforge.md. */
 body {
-  font-family: system-ui, sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 17px;
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   margin: 0;
   height: 100vh;
   display: grid;
@@ -13,19 +17,28 @@ body {
 }
 
 header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-sizing: border-box;
+  height: 3.5rem;
   display: flex;
-  gap: 0.5rem;
+  gap: 1.5rem;
   align-items: center;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 0.5rem 1rem;
+  padding: 0 1.5rem;
+}
+
+header .brand {
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--text);
+  text-decoration: none;
 }
 
 header .spacer {
   flex: 1;
-}
-
-header a {
-  color: var(--fg);
 }
 
 /* Actual <button> elements now only ever exist inside kb-button's own
@@ -34,8 +47,8 @@ header a {
 input,
 textarea {
   font: inherit;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--surface);
+  color: var(--text);
   width: 100%;
   box-sizing: border-box;
   margin: 0.25rem 0 0.75rem;
@@ -129,7 +142,7 @@ main {
 }
 
 .back-link:hover {
-  color: var(--fg);
+  color: var(--text);
 }
 
 .muted {
@@ -139,7 +152,7 @@ main {
 
 .tag {
   display: inline-block;
-  background: var(--tag-bg);
+  background: var(--surface-alt);
   border-radius: 999px;
   padding: 0.1rem 0.45rem;
   margin: 0.15rem 0.15rem 0 0;

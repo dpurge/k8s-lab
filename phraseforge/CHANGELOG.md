@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- one structured LLM call per vocabulary/models item per site locale (job kinds
+  `generate_vocabulary_item`/`generate_models_item`): new `vocabularyItem`/`modelsItem` purposes whose
+  prompt is a template with `{{sourceLanguage}}`, `{{targetLanguage}}`, `{{phrase}}`,
+  `{{grammarPrompt}}`, `{{transcriptionPrompt}}` (the prompt-eval setup's placeholders); the reply is
+  JSON constrained by a schema and validated before anything is stored, and fills translation, notes,
+  grammar, and transcription — each only where still blank.
+- Admin > LLM > Language sections: per-language grammar-tag and transcription-system text for the item
+  prompts, included in the admin configuration export/import. A language that needs transcription but has
+  no section uses a built-in default ("Transcribe using the standard romanization for this language.").
 - Cancel action on the Jobs page for pending/running jobs — interrupts an in-flight LLM call rather than only being able to wait it out or restart the pod; Retry and Delete now also work on a cancelled job.
 - Generate Vocabulary/Generate Models buttons on the Texts view page — submits a background job that extracts vocabulary/grammar items from the text and creates or updates one dedicated linked list.
 - Generate Vocabulary/Generate Models buttons on the Dialogs view page, matching Texts; the Text/Dialog view page now shows a right-aligned row of links to any linked Vocabulary/Models list next to the Source/Transcription/Translation tabs.
@@ -22,6 +31,18 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- vocabulary/models item generation (per-item Generate buttons, Generate missing translations, import
+  backfill, and the follow-ups after generating from a text) now queues the single structured item call
+  instead of separate transcription and translation jobs; Generate missing translations also fills blank
+  grammar/transcription where the language has a section.
+- LLM calls to Ollama now stream and fail on lack of progress instead of on one fixed timeout:
+  `providers.ollama.firstTokenTimeoutSeconds` (default 300 — model load + prompt processing) and
+  `providers.ollama.idleTimeoutSeconds` (default 60 — longest allowed gap in output). Each
+  purpose's `timeoutSeconds` is now an overall backstop, default 1800 for every purpose (was
+  120/300/600), so slow-but-healthy CPU-only translations (~300s) no longer fail at 120s. The
+  `llm call` log line reports which limit fired (`limit=first_token|idle|overall`).
+- importing a Text/Dialog/Vocabulary list/Models list whose `id` no longer exists (e.g. deleted
+  since the export) now creates it as new, under a new id, instead of failing with "not found".
 - exporting Texts/Dialogs/Vocabulary/Models now requires both language and script (previously
   language alone, optional); an optional tags filter (comma-separated, matches items carrying
   every given tag) narrows further.
@@ -73,6 +94,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Admin > LLM showed raw keys instead of labels for the Generate vocabulary / Generate models kinds, in
+  both English and Polish.
+- Text/Dialog/Vocabulary/Models detail views show their action buttons in a wrapping row above
+  the title, so several buttons no longer squeeze the title into a narrow column.
+- Polish labels for Ingest and YAML Import were the same verb ("Importuj"/"Zaimportuj"); Ingest is
+  now "Dodaj z pliku/URL" (dialog titles "Dodaj tekst"/"Dodaj dialog"), and Import/Export are
+  "Importuj YAML"/"Eksportuj YAML".
 - the Text/Dialog view page's enlarged-script display (for Han/Arabic/Hebrew/Syriac/Japanese/Korean
   scripts) now actually takes effect on the Source tab — a CSS specificity bug silently defeated it
   even though the class was already correctly applied; Transcription/Translation are unaffected and

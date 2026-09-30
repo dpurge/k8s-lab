@@ -156,68 +156,6 @@ func TestValidateVocabImportItemsAcceptsAllValid(t *testing.T) {
 	}
 }
 
-// TestDecideItemBackfillAllProvided covers the no-op case: a transcription
-// (language needs one) and both site locales' translations are present —
-// decideItemBackfill must return nothing (and, in particular, no "title"
-// decision — vocabulary/models items have no title field at all).
-func TestDecideItemBackfillAllProvided(t *testing.T) {
-	provided := map[string]string{"en": "hello", "pl": "cześć"}
-	got := decideItemBackfill("Transcription", true, provided, siteLocalesForTest)
-	if len(got) != 0 {
-		t.Errorf("decideItemBackfill with everything provided = %+v, want empty", got)
-	}
-}
-
-// TestDecideItemBackfillTranscriptionOnlyWhenNeeded covers that a blank
-// transcription is only a decision when needsTranscription is true.
-func TestDecideItemBackfillTranscriptionOnlyWhenNeeded(t *testing.T) {
-	provided := map[string]string{"en": "hello", "pl": "cześć"}
-	got := decideItemBackfill("", false, provided, siteLocalesForTest)
-	for _, d := range got {
-		if d.Kind == "transcription" {
-			t.Fatalf("decideItemBackfill with needsTranscription=false = %+v, want no transcription decision", got)
-		}
-	}
-
-	got = decideItemBackfill("", true, provided, siteLocalesForTest)
-	found := false
-	for _, d := range got {
-		if d.Kind == "transcription" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("decideItemBackfill with needsTranscription=true and blank transcription = %+v, want a transcription decision", got)
-	}
-}
-
-// TestDecideItemBackfillMissingLocalesOnly covers the one-job-per-missing-
-// locale rule, and that a provided locale is never re-generated.
-func TestDecideItemBackfillMissingLocalesOnly(t *testing.T) {
-	provided := map[string]string{"en": "hello"} // "pl" missing
-	got := decideItemBackfill("Transcription", false, provided, siteLocalesForTest)
-	if len(got) != 1 {
-		t.Fatalf("decideItemBackfill with one missing locale = %+v, want exactly one decision", got)
-	}
-	if got[0].Kind != "translation" || got[0].Locale != "pl" {
-		t.Errorf("decideItemBackfill missing-locale decision = %+v, want {Kind: translation, Locale: pl}", got[0])
-	}
-}
-
-// TestDecideItemBackfillNoLocalesProvided covers a brand-new item with no
-// translations at all — every site locale is missing.
-func TestDecideItemBackfillNoLocalesProvided(t *testing.T) {
-	got := decideItemBackfill("Transcription", false, nil, siteLocalesForTest)
-	if len(got) != len(siteLocalesForTest) {
-		t.Fatalf("decideItemBackfill with no locales provided = %+v, want one decision per site locale", got)
-	}
-	for _, d := range got {
-		if d.Kind != "translation" {
-			t.Errorf("decideItemBackfill decision = %+v, want Kind translation", d)
-		}
-	}
-}
-
 // TestToVocabTranslationFieldsEmptyIsNil covers that an empty/nil input
 // yields a nil map, matching vocabItemFields.Translations' "restricted to
 // provided locales" convention (a nil map and an empty map behave the same

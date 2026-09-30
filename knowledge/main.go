@@ -38,7 +38,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	emb, err := embeddings.New(cfg.EmbeddingsProvider, cfg.EmbeddingsBaseURL, cfg.EmbeddingsAPIKey, cfg.EmbeddingsModel, cfg.EmbeddingsDimension)
+	embStyle, embBaseURL, embAPIKey := cfg.EmbeddingsConnection()
+	emb, err := embeddings.New(embStyle, embBaseURL, embAPIKey, cfg.Embeddings.Model, cfg.Embeddings.Dimension)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -96,6 +97,9 @@ func main() {
 	queueSvc.Register(ingest.KindChunk, ingestSvc.HandleChunk)
 	go queueSvc.Run(ctx)
 
-	log.Printf("knowledge listening on %s, embeddings=%s/%s dim=%d chat=%s/%s generate=%s/%s", cfg.BindAddr, cfg.EmbeddingsProvider, emb.Model(), emb.Dimension(), cfg.ChatProvider, cfg.ChatModel, cfg.GenerateProvider, cfg.GenerateModel)
+	log.Printf("knowledge listening on %s, embeddings=%s/%s dim=%d chat=%s/%s generateTitle=%s/%s generateSummary=%s/%s translate=%s/%s",
+		cfg.BindAddr, cfg.Embeddings.Provider, emb.Model(), emb.Dimension(),
+		cfg.Chat.Provider, cfg.Chat.Model, cfg.GenerateTitle.Provider, cfg.GenerateTitle.Model,
+		cfg.GenerateSummary.Provider, cfg.GenerateSummary.Model, cfg.Translate.Provider, cfg.Translate.Model)
 	log.Fatal(http.ListenAndServe(cfg.BindAddr, server.New(kb, chatSvc, authSvc, generateSvc, jobsSvc, ingestSvc).Router()))
 }

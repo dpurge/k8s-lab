@@ -3,7 +3,7 @@
 // types/handlers instead of a shared abstraction across all four. Vocabulary
 // and Models are structurally similar to each other (a list plus an ordered
 // items array), so they share listMetaFields/listMetaUnchanged/
-// decideItemBackfill/enqueueItemBackfill from export_import.go, but each
+// enqueueItemBackfill from export_import.go, but each
 // still gets its own request/response types and handler functions here and
 // in export_import_models.go, mirroring apiVocabDetail/apiModelsDetail's
 // existing duplication in vocabulary.go/models.go.
@@ -241,7 +241,8 @@ func (s *Server) vocabTranslationsByLocale(ctx context.Context, listID int64) (m
 // Criteria). Each list, in order:
 //  1. delete:true + id: deletes that list if the caller CanEdit its language
 //     (a per-list error if not); a missing id is a no-op, not an error.
-//  2. id present, not delete: found + CanEdit required (otherwise a
+//  2. id present, not delete: an id not found is handled exactly like
+//     case 3 (created under a new id); found requires CanEdit (otherwise a
 //     per-list error); identical-in-every-respect (metadata, tags, and every
 //     item including translations) to what's stored is "unchanged" (no
 //     write, no item replacement, no backfill); otherwise list metadata is
@@ -349,7 +350,10 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 	existing, err := s.vocab.Get(ctx, list.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: "vocabulary list not found"})
+			// The id was deleted since export (or never existed here): create it
+			// as a new row rather than failing, so an export of since-deleted
+			// content can be re-imported to restore it (under a new id).
+			s.importCreateVocabList(ctx, u, index, list, res)
 			return
 		}
 		res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
@@ -491,7 +495,7 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 			return
 		}
 		for _, spec := range specs {
-			if err := s.enqueueItemBackfill(ctx, "vocabulary_item", list.ID, spec.position, language, spec.phrase, spec.transcription, spec.providedTranslations); err != nil {
+			if err := s.enqueueItemBackfill(ctx, "vocabulary_item", list.ID, spec.position, language, spec.phrase, spec.grammar, spec.transcription, spec.providedTranslations); err != nil {
 				res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 				return
 			}
@@ -538,7 +542,7 @@ func (s *Server) replaceVocabItemsTx(ctx context.Context, listID int64, existing
 				return nil, err
 			}
 		}
-		specs = append(specs, itemBackfillSpec{position: position, phrase: it.Phrase, transcription: it.Transcription, providedTranslations: providedTranslations})
+		specs = append(specs, itemBackfillSpec{position: position, phrase: it.Phrase, grammar: it.Grammar, transcription: it.Transcription, providedTranslations: providedTranslations})
 	}
 	if err := tx.Commit(txCtx); err != nil {
 		return nil, err
@@ -605,7 +609,7 @@ func (s *Server) addVocabItemsAndBackfill(ctx context.Context, listID int64, lan
 				return err
 			}
 		}
-		if err := s.enqueueItemBackfill(ctx, "vocabulary_item", listID, position, language, it.Phrase, it.Transcription, providedTranslations); err != nil {
+		if err := s.enqueueItemBackfill(ctx, "vocabulary_item", listID, position, language, it.Phrase, it.Grammar, it.Transcription, providedTranslations); err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
 			return err
 		}

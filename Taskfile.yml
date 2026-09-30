@@ -8,9 +8,7 @@
 
 version: "3"
 
-# Applies `set -o errexit -o nounset -o pipefail` to every cmd's shell —
-# equivalent to the `set -euo pipefail` this file used to repeat at the top
-# of every script block.
+# Applies `set -o errexit -o nounset -o pipefail` to every cmd's shell
 set: [errexit, nounset, pipefail]
 
 vars:
@@ -21,13 +19,7 @@ vars:
   KUBECONFIG_PATH: .k3d/kubeconfig
   # Every kubectl call below goes through this instead of bare `kubectl`, so
   # it always targets this project's cluster only — via kubectl's own
-  # --kubeconfig flag, not the KUBECONFIG env var. That matters: Task's env:
-  # merging lets an inherited shell env var of the same name silently win
-  # over a Taskfile-set one (see https://taskfile.dev/docs/experiments/env-precedence),
-  # so setting KUBECONFIG globally here would be a no-op for anyone whose
-  # shell already exports it — exactly the case this project most needs to
-  # guard, since that's their real kubeconfig. A CLI flag has no such
-  # ambiguity: it always wins, so this repo never touches ~/.kube/config.
+  # --kubeconfig flag, not the KUBECONFIG env var.
   KUBECTL: 'kubectl --kubeconfig={{.KUBECONFIG_PATH}}'
   # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
   CORP_CA_BUNDLE: /usr/local/munki/certs.pem
@@ -154,8 +146,6 @@ tasks:
 
   # Corporate network: copies CORP_CA_BUNDLE into .docker/corp-ca/ (gitignored)
   # so the Dockerfile's bind mount can trust it inside the Alpine build stage.
-  # Nothing to do when the bundle is absent — the Dockerfile tolerates that
-  # directory being empty (see dictionary/Dockerfile and phraseforge/Dockerfile).
   _build-image:
     internal: true
     requires:

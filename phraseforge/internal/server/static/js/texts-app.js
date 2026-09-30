@@ -545,12 +545,7 @@
     ].filter(Boolean).join("");
     root.innerHTML = `
       <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
-        <div>
-          <h1 style="margin-bottom:0.25rem;">${esc(text.title)}</h1>
-          <span class="badge">${esc(text.language)} / ${esc(text.script)}</span>
-          ${tags}
-        </div>
+      <div class="resource-header">
         <div class="resource-actions">
           <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
           ${text.canEdit && !text.title ? `<pf-button variant="secondary" type="button" id="generateTitleBtn">${esc(T("texts.generate_title"))}</pf-button>` : ""}
@@ -558,6 +553,11 @@
           ${text.canEdit && !text.hasTranslation ? `<pf-button variant="secondary" type="button" id="generateTranslationBtn">${esc(T("texts.generate_translation"))}</pf-button>` : ""}
           ${text.canEdit ? `<pf-button variant="secondary" type="button" id="generateVocabBtn">${esc(T("texts.generate_vocabulary"))}</pf-button><pf-button variant="secondary" type="button" id="generateModelsBtn">${esc(T("texts.generate_models"))}</pf-button>` : ""}
           ${text.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
+        </div>
+        <div>
+          <h1 style="margin-bottom:0.25rem;">${esc(text.title)}</h1>
+          <span class="badge">${esc(text.language)} / ${esc(text.script)}</span>
+          ${tags}
         </div>
       </div>
       <textarea id="copy-source-markdown" class="copy-source" readonly>${esc(text.sourceMarkdown)}</textarea>

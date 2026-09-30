@@ -13,9 +13,9 @@ kb-dialog.open {
 }
 
 kb-dialog .kb-dialog-box {
-  background: var(--bg, #fff);
-  color: var(--fg, #1a1a1a);
-  border: 1px solid var(--border, #ddd);
+  background: var(--surface, #ffffff);
+  color: var(--text, #1f2430);
+  border: 1px solid var(--border, #d7dae0);
   border-radius: 10px;
   padding: 1.25rem;
   max-width: 28rem;

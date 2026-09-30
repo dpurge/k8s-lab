@@ -29,7 +29,7 @@ type Service struct {
 }
 
 func New(db *pgxpool.Pool, kb *qdrant.Client, cfg config.Config, q *queue.Service) *Service {
-	return &Service{db: db, kb: kb, cfg: cfg, queue: q, llm: llm.New(llm.Config{Provider: cfg.ChatProvider, BaseURL: cfg.ChatBaseURL, APIKey: cfg.ChatAPIKey, Model: cfg.ChatModel, NumCtx: cfg.ChatNumCtx})}
+	return &Service{db: db, kb: kb, cfg: cfg, queue: q, llm: llm.New(cfg.LLM(cfg.Chat))}
 }
 
 // replyPayload is the queue.Operation payload for a KindReply operation. It
@@ -206,7 +206,7 @@ func (s *Service) HandleReply(ctx context.Context, rawPayload json.RawMessage) (
 	if err != nil {
 		outcome = "error"
 	}
-	slog.Info("chat llm call", "model", s.cfg.ChatModel, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("chat llm call", "model", s.cfg.Chat.Model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func (s *Service) sources(ctx context.Context, msgID string) ([]Source, error) {
 const maxDocumentChars = 4000
 
 func (s *Service) answer(ctx context.Context, history []Message, question string, sources []Source) (string, error) {
-	sys := strings.TrimSpace(s.cfg.ChatPrompt)
+	sys := strings.TrimSpace(s.cfg.Chat.Prompt)
 	// Plain concatenated document text, deliberately with no id/score/title/
 	// tags annotations: llama3-chatqa (NVIDIA ChatQA) is a completion-style
 	// QA model trained on flowing context passages, not an enumerated

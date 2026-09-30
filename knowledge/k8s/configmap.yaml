@@ -8,45 +8,58 @@ data:
     qdrant:
       collection: knowledge
       searchMinScore: 0.4
+    # One entry per LLM provider; every purpose below names one. API keys
+    # come only from env (OLLAMA_API_KEY, OPENROUTER_API_KEY,
+    # OPENAI_API_KEY). Ollama calls stream and fail if no output arrives
+    # within firstTokenTimeoutSeconds (model load + prompt processing) or
+    # stops for idleTimeoutSeconds.
+    providers:
+      ollama:
+        baseURL: http://host.docker.internal:11434
+        firstTokenTimeoutSeconds: 300
+        idleTimeoutSeconds: 60
     embeddings:
       provider: ollama
-      baseURL: http://host.docker.internal:11434
       model: bge-m3
       # bge-m3 produces 1024-dim dense embeddings — verified directly
       # against Ollama's /api/embeddings, not assumed.
       dimension: 1024
+    # timeoutSeconds is each purpose's overall cap (a backstop).
     chat:
       provider: ollama
-      baseURL: http://host.docker.internal:11434
       model: gemma4:12b
       # gemma4:12b's Ollama runtime default context is 4096 tokens
       # (verified via `ollama show` / `/api/ps`), far below its trained
       # max. Full retrieved documents go straight into the prompt (see
       # knowledge/internal/chat/chat.go), so the larger window matters.
       numCtx: 8192
-    generate:
-      provider: ollama
-      baseURL: http://host.docker.internal:11434
-      model: gemma4:12b
-    knowledgeLanguage: English
-    translate:
-      provider: ollama
-      baseURL: http://host.docker.internal:11434
-      model: gemma4:12b
-    prompts:
-      chat: |
+      timeoutSeconds: 1800
+      prompt: |
         You answer using only the retrieved knowledge documents below.
 
         If unsupported by the retrieved knowledge documents, say you do not know.
-      generateTitle: >-
+    generateTitle:
+      provider: ollama
+      model: gemma4:12b
+      timeoutSeconds: 1800
+      prompt: >-
         You write a short, specific title for the given Markdown document.
         Respond with only the title text on a single line — no quotes, no
         punctuation at the end, no preamble like "Title:".
-      generateSummary: >-
+    generateSummary:
+      provider: ollama
+      model: gemma4:12b
+      timeoutSeconds: 1800
+      prompt: >-
         You write a one-paragraph summary of the given Markdown document,
         for use as a search-result preview. Respond with only the summary
         text — no preamble like "Summary:", no quotes.
-      translate: >-
+    knowledgeLanguage: English
+    translate:
+      provider: ollama
+      model: gemma4:12b
+      timeoutSeconds: 1800
+      prompt: >-
         If the following text is already in {{language}}, return it
         unchanged. Otherwise, translate it into {{language}}. Respond with
         only the resulting text — no preamble, no explanation.

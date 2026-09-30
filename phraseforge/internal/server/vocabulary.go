@@ -464,9 +464,10 @@ func (s *Server) apiDeleteVocabItem(w http.ResponseWriter, r *http.Request) {
 
 // apiGenerateMissingVocabTranslations handles POST
 // /api/v1/vocabulary/{id}/generate-missing-translations: enqueues one
-// background translation job (see background-generate-title-transcription-
-// translation) per item that doesn't yet have one for the viewer's own site
-// locale — no locale select, same "own locale only" decision already made
+// structured item job (ai.KindGenerateVocabularyItem) per item that doesn't
+// yet have a translation for the viewer's own site locale, or is missing
+// grammar/transcription its language has a section for — no locale select,
+// same "own locale only" decision already made
 // for the per-item Translate button and the Text/Dialog View page's
 // Generate Translation button. A stale enqueue racing a since-completed
 // translation still safely no-ops at the job's own guarded writeback
@@ -503,23 +504,34 @@ func (s *Server) apiGenerateMissingVocabTranslations(w http.ResponseWriter, r *h
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	sections, err := s.ai.EffectiveSections(r.Context(), l.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	// Only the caller's own locale: one structured call per item still
+	// missing its translation there, or missing grammar/transcription the
+	// language has a section for (so existing items get grammar too).
+	callerLocale := []i18n.Locale{{Code: u.Locale}}
 	enqueued := 0
 	for _, it := range items {
-		if t, ok := existing[it.Position]; ok && strings.TrimSpace(t.Translation) != "" {
-			continue
+		t, ok := existing[it.Position]
+		state := ai.ItemState{
+			ResourceType: "vocabulary_item", Grammar: it.Grammar, Transcription: it.Transcription,
+			Translated: map[string]bool{u.Locale: ok && strings.TrimSpace(t.Translation) != ""},
 		}
-		payload := buildBackfillPayload(backfillDecision{Kind: "translation", Locale: u.Locale}, "vocabulary_item", l.ID, l.Language, it.Phrase)
-		payload.ItemPosition = it.Position
-		raw, err := json.Marshal(payload)
+		itemJobs, err := s.ai.ItemJobsFor(r.Context(), state, l.ID, it.Position, l.Language, it.Phrase, &sections, callerLocale)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		if _, err := s.jobs.Enqueue(r.Context(), ai.JobKind(payload.Kind), jobs.PriorityBackground, raw); err != nil {
-			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-			return
+		for _, j := range itemJobs {
+			if _, err := s.jobs.Enqueue(r.Context(), j.Kind, jobs.PriorityBackground, j.Payload); err != nil {
+				writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+			enqueued++
 		}
-		enqueued++
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"enqueued": enqueued})
 }

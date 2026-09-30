@@ -348,6 +348,40 @@ func (s *Store) SetItemTranscriptionIfBlank(ctx context.Context, listID int64, p
 	return true, nil
 }
 
+// SetItemGrammarIfBlank sets one item's grammar tags at (listID,
+// position), with exactly SetItemTranscriptionIfBlank's guards: the item
+// must still have phrase (else ErrItemNotFound), and an already non-blank
+// grammar is left alone (applied false, not an error).
+func (s *Store) SetItemGrammarIfBlank(ctx context.Context, listID int64, position int, phrase, grammar string) (applied bool, err error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
+
+	var storedPhrase, storedGrammar string
+	err = tx.QueryRow(ctx, `SELECT phrase, coalesce(grammar, '') FROM vocabulary_items WHERE list_id = $1 AND position = $2 FOR UPDATE`, listID, position).Scan(&storedPhrase, &storedGrammar)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrItemNotFound
+		}
+		return false, err
+	}
+	if storedPhrase != phrase {
+		return false, ErrItemNotFound
+	}
+	if strings.TrimSpace(storedGrammar) != "" {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE vocabulary_items SET grammar = $1 WHERE list_id = $2 AND position = $3`, nullIfEmpty(grammar), listID, position); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SetItemTranslationIfAbsent upserts one item's translation/notes at
 // (listID, position), but only if the item still has the given phrase
 // (stale-target guard, B3 fix) AND no translation already exists for this

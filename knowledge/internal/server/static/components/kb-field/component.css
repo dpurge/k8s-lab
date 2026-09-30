@@ -6,6 +6,6 @@ kb-field {
 kb-field .kb-field-label {
   display: block;
   font-size: 0.85rem;
-  color: var(--muted, #666);
+  color: var(--muted, #6b7280);
   margin-bottom: 0.25rem;
 }

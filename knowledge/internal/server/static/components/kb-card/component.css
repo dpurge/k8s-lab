@@ -1,6 +1,6 @@
 kb-card {
   display: block;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--border, #d7dae0);
   border-radius: 8px;
   padding: 0.7rem;
   margin: 0.5rem 0;
@@ -8,7 +8,7 @@ kb-card {
 }
 
 kb-card:hover {
-  background: var(--hover-bg, #f7f7f7);
+  background: var(--surface-alt, #e9ebee);
 }
 
 #list kb-card,

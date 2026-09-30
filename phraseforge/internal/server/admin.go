@@ -31,11 +31,14 @@ var adminAppI18nKeys = []string{
 	"admin.ime_configs_heading", "admin.ime_remove_confirm", "admin.ime_no_configs",
 	"admin.llm_heading", "admin.llm_kind", "admin.llm_kind_translation", "admin.llm_kind_transcription",
 	"admin.llm_kind_title", "admin.llm_kind_process_text", "admin.llm_kind_process_dialog",
+	"admin.llm_kind_generate_vocabulary", "admin.llm_kind_generate_models", "admin.llm_kind_vocabulary_item", "admin.llm_kind_models_item",
 	"admin.llm_source_language", "admin.llm_target_language", "admin.llm_target_not_applicable",
 	"admin.llm_provider", "admin.llm_model", "admin.llm_model_placeholder", "admin.llm_model_default",
 	"admin.llm_think", "admin.llm_timeout_seconds", "admin.llm_timeout_default", "admin.llm_timeout_placeholder",
 	"admin.llm_prompt", "admin.llm_prompt_placeholder", "admin.llm_save",
 	"admin.llm_configs_heading", "admin.llm_delete_confirm", "admin.llm_no_configs",
+	"admin.sections_heading", "admin.sections_hint", "admin.sections_grammar", "admin.sections_transcription",
+	"admin.sections_save", "admin.sections_configs_heading", "admin.sections_delete_confirm", "admin.sections_no_configs",
 	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_config",
 	"texts.edit", "texts.delete", "vocabulary.cancel_edit",
 }
@@ -72,6 +75,9 @@ type apiAdminBootstrap struct {
 	Grants     []apiAdminGrant `json:"grants"`
 	IMEConfigs []ime.Config    `json:"imeConfigs"`
 	LLMPrompts []ai.Prompt     `json:"llmPrompts"`
+	// LanguageSections backs the LLM tab's per-language grammar/
+	// transcription section editor (phraseforge-structured-item-translation).
+	LanguageSections []ai.LanguageSections `json:"languageSections"`
 	// Providers lists the configured LLM provider registry's keys (e.g.
 	// "ollama", "openrouter"), sorted — the admin UI's LLM tab uses this to
 	// populate the per-prompt provider dropdown.
@@ -107,6 +113,11 @@ func (s *Server) apiGetAdminBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	languageSections, err := s.ai.ListLanguageSections(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	apiUsers := make([]apiAdminUser, len(users))
 	for i, u := range users {
 		apiUsers[i] = apiAdminUser{ID: u.ID, Username: u.Username}
@@ -120,8 +131,9 @@ func (s *Server) apiGetAdminBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, apiAdminBootstrap{
 		Users: apiUsers, Grants: apiGrants, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts,
-		Providers: s.ai.Providers(),
-		LLMKinds:  ai.ValidKinds,
+		LanguageSections: languageSections,
+		Providers:        s.ai.Providers(),
+		LLMKinds:         ai.ValidKinds,
 	})
 }
 
@@ -282,10 +294,47 @@ func (s *Server) apiDeleteAdminLLMPrompt(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// apiAdminLanguageSectionsRequest is the LLM tab's language-sections form.
+type apiAdminLanguageSectionsRequest struct {
+	Language            string `json:"language"`
+	GrammarPrompt       string `json:"grammarPrompt"`
+	TranscriptionPrompt string `json:"transcriptionPrompt"`
+}
+
+func (s *Server) apiSetAdminLanguageSections(w http.ResponseWriter, r *http.Request) {
+	var req apiAdminLanguageSectionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Language) == "" {
+		writeErr(w, http.StatusBadRequest, "validation_error", "language is required")
+		return
+	}
+	ls := ai.LanguageSections{Language: req.Language, GrammarPrompt: req.GrammarPrompt, TranscriptionPrompt: req.TranscriptionPrompt}
+	if err := s.ai.SetLanguageSections(r.Context(), ls); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) apiDeleteAdminLanguageSections(w http.ResponseWriter, r *http.Request) {
+	if err := s.ai.DeleteLanguageSections(r.Context(), chi.URLParam(r, "language")); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type adminConfigExport struct {
 	Version    int          `json:"version"`
 	IMEConfigs []ime.Config `json:"ime_configs"`
 	LLMPrompts []ai.Prompt  `json:"llm_prompts"`
+	// LanguageSections is nil when an imported file predates this field —
+	// the import then leaves the stored sections untouched instead of
+	// wiping them; an explicit [] still clears them.
+	LanguageSections []ai.LanguageSections `json:"language_sections"`
 }
 
 // handleAdminExportConfig is unchanged from before this feature — it stays
@@ -304,9 +353,14 @@ func (s *Server) handleAdminExportConfig(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	languageSections, err := s.ai.ListLanguageSections(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="phraseforge-admin-config.json"`)
-	if err := json.NewEncoder(w).Encode(adminConfigExport{Version: 1, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts}); err != nil {
+	if err := json.NewEncoder(w).Encode(adminConfigExport{Version: 1, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts, LanguageSections: languageSections}); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 }
@@ -372,6 +426,12 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	for _, ls := range cfg.LanguageSections {
+		if strings.TrimSpace(ls.Language) == "" {
+			writeErr(w, http.StatusBadRequest, "validation_error", "each language section requires language")
+			return
+		}
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -396,6 +456,18 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(ctx, `INSERT INTO ime_config(language, script, source_ime, transcription_ime, needs_transcription) VALUES($1,$2,$3,$4,$5)`, c.Language, c.Script, toNull(c.SourceIME), toNull(c.TranscriptionIME), c.NeedsTranscription); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
+		}
+	}
+	if cfg.LanguageSections != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM language_llm_sections`); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		for _, ls := range cfg.LanguageSections {
+			if _, err := tx.Exec(ctx, `INSERT INTO language_llm_sections(language, grammar_prompt, transcription_prompt) VALUES($1,$2,$3)`, ls.Language, ls.GrammarPrompt, ls.TranscriptionPrompt); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
+				return
+			}
 		}
 	}
 	for _, p := range cfg.LLMPrompts {

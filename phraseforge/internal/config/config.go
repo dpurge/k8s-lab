@@ -29,6 +29,12 @@ type Config struct {
 	ProcessDialog      PurposeConfig
 	GenerateVocabulary PurposeConfig
 	GenerateModels     PurposeConfig
+	// VocabularyItem and ModelsItem translate one list item into one site
+	// locale in a single structured (JSON) call; their prompts are
+	// templates with the prompt-eval setup's camelCase placeholders (see
+	// specs/features/phraseforge-structured-item-translation.md).
+	VocabularyItem PurposeConfig
+	ModelsItem     PurposeConfig
 
 	// SessionKey signs the login session cookie. Must be set in production;
 	// a fixed dev default is used only so `go run` works with zero setup.
@@ -41,6 +47,13 @@ type Config struct {
 type ProviderConfig struct {
 	BaseURL string
 	APIKey  string
+	// FirstTokenTimeoutSeconds and IdleTimeoutSeconds bound a streamed
+	// call's wait for its first output (model load + prompt eval) and the
+	// gap between outputs afterwards. They belong to the provider, not the
+	// purpose, because they reflect how fast that host runs a model. 0
+	// means shared/llm's own default. Only the Ollama path streams.
+	FirstTokenTimeoutSeconds int
+	IdleTimeoutSeconds       int
 }
 
 // PurposeConfig is a per-purpose (transcription/translation) LLM default,
@@ -73,7 +86,9 @@ type fileConfig struct {
 	BindAddr  string `yaml:"bindAddr"`
 	Providers struct {
 		Ollama struct {
-			BaseURL string `yaml:"baseURL"`
+			BaseURL                  string `yaml:"baseURL"`
+			FirstTokenTimeoutSeconds int    `yaml:"firstTokenTimeoutSeconds"`
+			IdleTimeoutSeconds       int    `yaml:"idleTimeoutSeconds"`
 		} `yaml:"ollama"`
 		OpenRouter struct {
 			BaseURL string `yaml:"baseURL"`
@@ -86,6 +101,8 @@ type fileConfig struct {
 	ProcessDialog      purposeFileConfig `yaml:"processDialog"`
 	GenerateVocabulary purposeFileConfig `yaml:"generateVocabulary"`
 	GenerateModels     purposeFileConfig `yaml:"generateModels"`
+	VocabularyItem     purposeFileConfig `yaml:"vocabularyItem"`
+	ModelsItem         purposeFileConfig `yaml:"modelsItem"`
 }
 
 type purposeFileConfig struct {
@@ -101,43 +118,96 @@ func defaultFileConfig() fileConfig {
 	var f fileConfig
 	f.BindAddr = "0.0.0.0:8090"
 	f.Providers.Ollama.BaseURL = "http://host.docker.internal:11434"
+	f.Providers.Ollama.FirstTokenTimeoutSeconds = 300
+	f.Providers.Ollama.IdleTimeoutSeconds = 60
 	f.Providers.OpenRouter.BaseURL = "https://openrouter.ai/api/v1"
-	// TimeoutSeconds: 120s for transcription/translation/title, 300s for
-	// process_text/process_dialog, 600s for generate_vocabulary/
-	// generate_models — the latter two are the ones observed exceeding the
-	// old fixed 2-minute client timeout (see this feature's Problem/
-	// Motivation). Prompt text is copied verbatim from ai.go's former
-	// hardcoded switch so upgrading doesn't change any existing behavior.
+	// TimeoutSeconds is only an overall backstop (1800s for every purpose):
+	// streamed Ollama calls are primarily bounded by the provider's
+	// first-token/idle limits, since a CPU-only node legitimately needs
+	// ~300s for one short translation (see
+	// specs/features/llm-streaming-progress-timeout.md). Prompt text is
+	// copied verbatim from ai.go's former hardcoded switch so upgrading
+	// doesn't change any existing behavior.
 	f.Transcription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 120,
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
 		Prompt: "Create a romanized transcription for the source language content. Return only the transcription, preserving line breaks and structure. Do not add explanations.",
 	}
 	f.Translation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 120,
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
 		Prompt: "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations.",
 	}
 	f.Title = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 120,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
 		Prompt: "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble.",
 	}
 	f.ProcessText = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 300,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
 		Prompt: "You reformat raw extracted text into clean Markdown prose suitable as a language-learning reading text. Remove navigation menus, ads, boilerplate, and unrelated content. Preserve the actual article/passage content and its paragraph structure. Do not translate or summarize. Respond with only the cleaned Markdown.",
 	}
 	f.ProcessDialog = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 300,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
 		Prompt: "You reformat raw extracted text into a clean dialog transcript in Markdown. Identify distinct speakers/turns and format each turn on its own line. Remove navigation, ads, and unrelated content. Respond with only the cleaned dialog content.",
 	}
 	f.GenerateVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 600,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
 		Prompt: "You extract vocabulary and grammar items from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase {grammar} [transcription] = translation — where {grammar} is a short grammar tag (e.g. part of speech), [transcription] is a romanized reading, and = translation is the item's translation; each of {grammar}, [transcription], and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves.",
 	}
 	f.GenerateModels = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 600,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
 		Prompt: "You extract short grammar/sentence-pattern models from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase [transcription] = translation — where [transcription] is a romanized reading and = translation is the item's translation; each of [transcription] and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves.",
+	}
+	// NumCtx left 0 (Ollama's default) to match the prompt-eval request.
+	f.VocabularyItem = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
+		Prompt: DefaultVocabularyItemPrompt,
+	}
+	f.ModelsItem = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
+		Prompt: DefaultModelsItemPrompt,
 	}
 	return f
 }
+
+// DefaultVocabularyItemPrompt is prompt-eval's
+// vocabulary-translation/prompts/system.txt with one wording fix: grammar
+// tags describe the original phrase, not the translation (the eval's
+// "translated phrase" made gemma4:12b tag der Koffer "N f", after Polish
+// walizka, instead of "N m").
+const DefaultVocabularyItemPrompt = `You are a translation system.
+
+Return ONLY valid JSON without code fence, do not add explanations:
+
+{
+  "phrase": "repeat the original phrase",
+  "grammar": "grammar tags attached to the original phrase, follow the description below; empty if unsure",
+  "transcription": "only include if transcription described below, otherwise empty",
+  "translation": "translation of the phrase into the specified language",
+  "notes": "usually empty, only used if translation requires clarification"
+}
+
+{{grammarPrompt}}
+
+{{transcriptionPrompt}}
+
+Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
+`
+
+// DefaultModelsItemPrompt is DefaultVocabularyItemPrompt reduced to the
+// fields a models item stores (no grammar, no notes).
+const DefaultModelsItemPrompt = `You are a translation system.
+
+Return ONLY valid JSON without code fence, do not add explanations:
+
+{
+  "phrase": "repeat the original phrase",
+  "transcription": "only include if transcription described below, otherwise empty",
+  "translation": "translation of the phrase into the specified language"
+}
+
+{{transcriptionPrompt}}
+
+Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
+`
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -175,7 +245,11 @@ func Load() (Config, error) {
 		PGPassword: env("PGPASSWORD", ""),
 
 		Providers: map[string]ProviderConfig{
-			"ollama":     {BaseURL: fc.Providers.Ollama.BaseURL, APIKey: env("OLLAMA_API_KEY", "")},
+			"ollama": {
+				BaseURL: fc.Providers.Ollama.BaseURL, APIKey: env("OLLAMA_API_KEY", ""),
+				FirstTokenTimeoutSeconds: fc.Providers.Ollama.FirstTokenTimeoutSeconds,
+				IdleTimeoutSeconds:       fc.Providers.Ollama.IdleTimeoutSeconds,
+			},
 			"openrouter": {BaseURL: fc.Providers.OpenRouter.BaseURL, APIKey: env("OPENROUTER_API_KEY", "")},
 		},
 
@@ -186,6 +260,8 @@ func Load() (Config, error) {
 		ProcessDialog:      PurposeConfig(fc.ProcessDialog),
 		GenerateVocabulary: PurposeConfig(fc.GenerateVocabulary),
 		GenerateModels:     PurposeConfig(fc.GenerateModels),
+		VocabularyItem:     PurposeConfig(fc.VocabularyItem),
+		ModelsItem:         PurposeConfig(fc.ModelsItem),
 
 		SessionKey: env("SESSION_KEY", "dev-only-insecure-key-change-me"),
 	}, nil
