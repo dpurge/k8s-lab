@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"k8s-lab/shared/llm"
 
 	"phraseforge/internal/catalog"
+	"phraseforge/internal/config"
 	"phraseforge/internal/i18n"
 )
 
@@ -77,7 +79,8 @@ func (s *Service) HandleItemTranslation(ctx context.Context, id string, payload 
 	}
 	// One user message, no system message — how promptfoo sends a text
 	// prompt file, so a template tuned in prompt-eval behaves the same here.
-	raw, err := s.callLLM(ctx, p.ResourceType, prompt, def, []llm.Message{{Role: "user", Content: renderItemPrompt(prompt.Prompt, vars)}}, schema)
+	msgs := []llm.Message{{Role: "user", Content: renderItemPrompt(prompt.Prompt, vars)}}
+	raw, err := s.callItemWithCorrection(ctx, p, prompt, def, schema, msgs, sections)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +93,29 @@ func (s *Service) HandleItemTranslation(ctx context.Context, id string, payload 
 		return nil, err
 	}
 	return json.Marshal(itemJobResult{Response: json.RawMessage(strings.TrimSpace(raw)), Applied: applied})
+}
+
+// callItemWithCorrection calls the model and validates its reply, sending a
+// rejected reply back with the exact error for correction (see
+// runWithCorrection) instead of failing the job outright. The attempt budget
+// is the purpose's MaxAttempts.
+func (s *Service) callItemWithCorrection(ctx context.Context, p ItemJobPayload, prompt Prompt, def config.PurposeConfig, schema json.RawMessage, msgs []llm.Message, sections LanguageSections) (string, error) {
+	maxAttempts := effectiveMaxAttempts(def.MaxAttempts)
+	attempt := 0
+	return runWithCorrection(ctx, maxAttempts, s.sleeper(),
+		func(ctx context.Context, m []llm.Message) (string, error) {
+			attempt++
+			return s.callLLM(ctx, p.ResourceType, prompt, def, m, schema, attempt, maxAttempts)
+		},
+		func(raw string) error {
+			_, err := decideItemWrites(p, raw, sections)
+			if err != nil {
+				// Telemetry only — the error text embeds the model's reply.
+				slog.Info("llm reply rejected", "kind", p.ResourceType, "outcome", "invalid_reply", "attempt", attempt, "max_attempts", maxAttempts)
+			}
+			return err
+		},
+		msgs)
 }
 
 func (p ItemJobPayload) validate() error {

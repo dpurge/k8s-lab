@@ -79,11 +79,19 @@ type Server struct {
 	translations *translations.Store
 	ai           *ai.Service
 	jobs         *jobs.Service
+
+	// ingestMaxContentBytes is the ingest content cap from config; zero means
+	// defaultIngestMaxContentBytes (see ingestMaxBytes).
+	ingestMaxContentBytes int
 }
 
 func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store, aiSvc *ai.Service, jobsSvc *jobs.Service) *Server {
 	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc, jobs: jobsSvc}
 }
+
+// SetIngestMaxContentBytes sets the ingest content cap (config's
+// ingest.maxContentBytes); call it before serving. Non-positive keeps the default.
+func (s *Server) SetIngestMaxContentBytes(n int) { s.ingestMaxContentBytes = n }
 
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()

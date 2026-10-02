@@ -70,3 +70,34 @@ func TestIsDisallowedIngestTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestIngestMaxBytesDefaultsAndOverrides(t *testing.T) {
+	if got := (&Server{}).ingestMaxBytes(); got != 24*1024 {
+		t.Errorf("bare Server cap = %d, want the 24 KiB default", got)
+	}
+	s := &Server{}
+	s.SetIngestMaxContentBytes(200 * 1024)
+	if got := s.ingestMaxBytes(); got != 200*1024 {
+		t.Errorf("configured cap = %d, want 204800", got)
+	}
+	s.SetIngestMaxContentBytes(0)
+	if got := s.ingestMaxBytes(); got != 24*1024 {
+		t.Errorf("non-positive cap = %d, want the default back", got)
+	}
+}
+
+func TestIngestBodyLimit(t *testing.T) {
+	cases := []struct {
+		maxContent int
+		want       int64
+	}{
+		{24 * 1024, 24*1024 + 16*1024},   // unchanged from before the cap was configurable
+		{64 * 1024, 64*1024 + 16*1024},   // a quarter is exactly the 16 KiB minimum
+		{200 * 1024, 200*1024 + 50*1024}, // a quarter exceeds the minimum
+	}
+	for _, c := range cases {
+		if got := ingestBodyLimit(c.maxContent); got != c.want {
+			t.Errorf("ingestBodyLimit(%d) = %d, want %d", c.maxContent, got, c.want)
+		}
+	}
+}

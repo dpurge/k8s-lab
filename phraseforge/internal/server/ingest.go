@@ -33,8 +33,10 @@ const (
 )
 
 const (
-	// ingestMaxContentBytes caps the resolved raw content the ingest endpoint
-	// will enqueue, checked after any HTML-stripping. This is deliberately
+	// defaultIngestMaxContentBytes is the cap on the resolved raw content the
+	// ingest endpoint accepts when config sets none (ingest.maxContentBytes
+	// overrides it; see Server.SetIngestMaxContentBytes). It applies to the content
+	// the endpoint will enqueue, checked after any HTML-stripping. This is deliberately
 	// far below the 200 KB the feature's spec first named: process_text/
 	// process_dialog/title's configured NumCtx is 8192 tokens (see
 	// config.go's Title/ProcessText/ProcessDialog defaults), and Ollama
@@ -50,9 +52,11 @@ const (
 	// it — the two are directly linked, not independent knobs, and changing
 	// one without the other silently reintroduces the truncation risk this
 	// comment exists to prevent.
-	ingestMaxContentBytes = 24 * 1024
+	// A configured cap above this default is only safe together with chunked
+	// processing of the content (specs/features/phraseforge-long-text-ingest.md).
+	defaultIngestMaxContentBytes = 24 * 1024
 
-	// ingestRequestBodyHeadroom is added to ingestMaxContentBytes to size
+	// ingestRequestBodyHeadroom is the minimum headroom added to the content cap to size
 	// the http.MaxBytesReader wrapping the ingest endpoint's raw request
 	// body — enough slack for the request's other JSON fields and for the
 	// content field's own JSON-string escaping overhead, without letting an
@@ -119,12 +123,13 @@ func (s *Server) apiIngestDialog(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiIngest(w http.ResponseWriter, r *http.Request, kind, forbiddenKey string) {
 	// Bound the request body before anything else touches it: without this,
 	// an oversized (or malicious) "content" field is fully decoded and
-	// buffered into memory before the ingestMaxContentBytes check below ever
+	// buffered into memory before the content-cap check below ever
 	// runs. The cap is content's own limit plus a small headroom for the
 	// request's other fields and JSON-string escaping overhead (see
 	// ingestRequestBodyHeadroom's doc comment) — not simply
-	// ingestMaxContentBytes itself.
-	r.Body = http.MaxBytesReader(w, r.Body, ingestMaxContentBytes+ingestRequestBodyHeadroom)
+	// the content cap itself.
+	maxContentBytes := s.ingestMaxBytes()
+	r.Body = http.MaxBytesReader(w, r.Body, ingestBodyLimit(maxContentBytes))
 
 	u := currentUser(r)
 	var req apiIngestRequest
@@ -171,8 +176,8 @@ func (s *Server) apiIngest(w http.ResponseWriter, r *http.Request, kind, forbidd
 		writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
-	if len(content) > ingestMaxContentBytes {
-		writeErr(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("content of %d bytes exceeds %d byte limit", len(content), ingestMaxContentBytes))
+	if len(content) > maxContentBytes {
+		writeErr(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("content of %d bytes exceeds %d byte limit", len(content), maxContentBytes))
 		return
 	}
 
@@ -389,4 +394,21 @@ func stripHTML(source string) string {
 	text = runOfSpaces.ReplaceAllString(text, " ")
 	text = runOfNewlines.ReplaceAllString(text, "\n\n")
 	return strings.TrimSpace(text)
+}
+
+// ingestMaxBytes is the configured content cap, or the default when none was
+// set (as in tests that build a bare Server).
+func (s *Server) ingestMaxBytes() int {
+	if s.ingestMaxContentBytes > 0 {
+		return s.ingestMaxContentBytes
+	}
+	return defaultIngestMaxContentBytes
+}
+
+// ingestBodyLimit sizes the request-body bound for a content cap: the cap plus
+// headroom for the request's other fields and JSON string escaping, which
+// grows with the content, hence a quarter of it once that exceeds the fixed
+// minimum.
+func ingestBodyLimit(maxContentBytes int) int64 {
+	return int64(maxContentBytes + max(ingestRequestBodyHeadroom, maxContentBytes/4))
 }

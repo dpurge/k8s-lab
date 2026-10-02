@@ -167,6 +167,10 @@ type Service struct {
 	itemTranslations ItemTranslationWriteback
 	// itemReplies backs HandleItemTranslation's structured-reply writes.
 	itemReplies ItemReplyWriteback
+
+	// sleep waits out the backoff between retries of a transient LLM failure;
+	// nil means defaultSleep. Tests swap it so they never really wait.
+	sleep sleepFunc
 }
 
 func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, translations TranslationWriteback, vocabItems, modelsItems ItemTranscriptionWriteback, itemTranslations ItemTranslationWriteback, itemReplies ItemReplyWriteback) *Service {
@@ -309,14 +313,29 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 		"{{content_type}}", contentType,
 		"{{content}}", content,
 	).Replace(userMessageTemplate)
-	return s.callLLM(ctx, kind, prompt, def, []llm.Message{{Role: "system", Content: prompt.Prompt}, {Role: "user", Content: user}}, nil)
+	return s.callWithRetry(ctx, kind, prompt, def, []llm.Message{{Role: "system", Content: prompt.Prompt}, {Role: "user", Content: user}})
+}
+
+// callWithRetry is callLLM with a retry of transient failures (see
+// runWithCorrection) within the purpose's MaxAttempts budget. Any reply is
+// accepted: Generate's output is free text with nothing to validate.
+func (s *Service) callWithRetry(ctx context.Context, kind string, prompt Prompt, def config.PurposeConfig, messages []llm.Message) (string, error) {
+	maxAttempts := effectiveMaxAttempts(def.MaxAttempts)
+	attempt := 0
+	return runWithCorrection(ctx, maxAttempts, s.sleeper(),
+		func(ctx context.Context, m []llm.Message) (string, error) {
+			attempt++
+			return s.callLLM(ctx, kind, prompt, def, m, nil, attempt, maxAttempts)
+		},
+		nil, messages)
 }
 
 // callLLM sends messages with prompt's resolved provider/model/think and
 // timeouts (def supplies NumCtx and the purpose timeout), constraining the
 // reply to format's JSON schema when non-nil, and logs one telemetry line.
+// attempt and maxAttempts (1-based) are only reported in that line.
 // Shared by Generate and HandleItemTranslation.
-func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def config.PurposeConfig, messages []llm.Message, format json.RawMessage) (string, error) {
+func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def config.PurposeConfig, messages []llm.Message, format json.RawMessage, attempt, maxAttempts int) (string, error) {
 	provider, ok := s.cfg.Providers[prompt.Provider]
 	if !ok {
 		return "", fmt.Errorf("llm provider %q is not in the configured provider registry", prompt.Provider)
@@ -346,7 +365,7 @@ func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def c
 		}
 	}
 	// Telemetry only — never log content or the response text.
-	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit)
+	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit, "attempt", attempt, "max_attempts", maxAttempts)
 	return out, err
 }
 
@@ -402,7 +421,7 @@ func (s *Service) HandleGenerate(ctx context.Context, id string, payload json.Ra
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, err
 	}
-	text, err := s.Generate(ctx, p.Kind, p.SourceLanguage, p.TargetLanguage, p.ContentType, p.Content)
+	text, err := s.GenerateChunked(ctx, p.Kind, p.SourceLanguage, p.TargetLanguage, p.ContentType, p.Content)
 	if err != nil {
 		return nil, err
 	}

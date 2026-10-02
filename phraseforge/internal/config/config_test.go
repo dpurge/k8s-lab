@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -84,6 +85,30 @@ func TestLoadDefaultsWhenFileMissing(t *testing.T) {
 			t.Errorf("%s = %d, want %d (default)", c.name, c.got, c.want)
 		}
 	}
+	if cfg.IngestMaxContentBytes != 24576 {
+		t.Errorf("IngestMaxContentBytes = %d, want 24576 (default)", cfg.IngestMaxContentBytes)
+	}
+	// MaxAttempts: one shared budget of 3 attempts per LLM call, every purpose
+	// (see specs/features/phraseforge-item-correction-retry-budget.md).
+	maxAttemptsCases := []struct {
+		name string
+		got  int
+	}{
+		{"Transcription.MaxAttempts", cfg.Transcription.MaxAttempts},
+		{"Translation.MaxAttempts", cfg.Translation.MaxAttempts},
+		{"Title.MaxAttempts", cfg.Title.MaxAttempts},
+		{"ProcessText.MaxAttempts", cfg.ProcessText.MaxAttempts},
+		{"ProcessDialog.MaxAttempts", cfg.ProcessDialog.MaxAttempts},
+		{"GenerateVocabulary.MaxAttempts", cfg.GenerateVocabulary.MaxAttempts},
+		{"GenerateModels.MaxAttempts", cfg.GenerateModels.MaxAttempts},
+		{"VocabularyItem.MaxAttempts", cfg.VocabularyItem.MaxAttempts},
+		{"ModelsItem.MaxAttempts", cfg.ModelsItem.MaxAttempts},
+	}
+	for _, c := range maxAttemptsCases {
+		if c.got != 3 {
+			t.Errorf("%s = %d, want 3 (default)", c.name, c.got)
+		}
+	}
 	if got := cfg.Providers["ollama"].FirstTokenTimeoutSeconds; got != 300 {
 		t.Errorf("Providers[ollama].FirstTokenTimeoutSeconds = %d, want 300 (default)", got)
 	}
@@ -124,7 +149,10 @@ func TestLoadOverridesFromFile(t *testing.T) {
 		"transcription:\n" +
 		"  model: custom-model\n" +
 		"  timeoutSeconds: 45\n" +
-		"  prompt: custom transcription prompt\n"
+		"  prompt: custom transcription prompt\n" +
+		"  maxAttempts: 5\n" +
+		"ingest:\n" +
+		"  maxContentBytes: 204800\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +179,16 @@ func TestLoadOverridesFromFile(t *testing.T) {
 	if cfg.Transcription.Prompt != "custom transcription prompt" {
 		t.Errorf("Transcription.Prompt = %q, want %q (from file)", cfg.Transcription.Prompt, "custom transcription prompt")
 	}
+	if cfg.IngestMaxContentBytes != 204800 {
+		t.Errorf("IngestMaxContentBytes = %d, want 204800 (from file)", cfg.IngestMaxContentBytes)
+	}
+	if cfg.Transcription.MaxAttempts != 5 {
+		t.Errorf("Transcription.MaxAttempts = %d, want 5 (from file)", cfg.Transcription.MaxAttempts)
+	}
 	// Fields left unset in the file must keep their Go defaults.
+	if cfg.Translation.MaxAttempts != 3 {
+		t.Errorf("Translation.MaxAttempts = %d, want 3 (default, unset in file)", cfg.Translation.MaxAttempts)
+	}
 	if cfg.Translation.Model != "gemma4:12b" {
 		t.Errorf("Translation.Model = %q, want gemma4:12b (default, unset in file)", cfg.Translation.Model)
 	}
@@ -297,5 +334,24 @@ func TestConfigMapItemPromptsMatchDefaults(t *testing.T) {
 	}
 	if cfg.ModelsItem.Prompt != DefaultModelsItemPrompt {
 		t.Errorf("configmap modelsItem.prompt differs from DefaultModelsItemPrompt:\n%q\nvs\n%q", cfg.ModelsItem.Prompt, DefaultModelsItemPrompt)
+	}
+	// Long pages are accepted in prod only through this value, so a typo in the
+	// key must not fall back silently to the 24 KiB default.
+	if cfg.IngestMaxContentBytes != 204800 {
+		t.Errorf("configmap ingest.maxContentBytes = %d, want 204800", cfg.IngestMaxContentBytes)
+	}
+}
+
+func TestLoadRejectsNonPositiveIngestMaxContentBytes(t *testing.T) {
+	for _, value := range []string{"0", "-5"} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("ingest:\n  maxContentBytes: "+value+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CONFIG_FILE", path)
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "ingest.maxContentBytes must be greater than 0") {
+			t.Errorf("maxContentBytes %s: err = %v, want a 'must be greater than 0' error", value, err)
+		}
 	}
 }

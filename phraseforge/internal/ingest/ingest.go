@@ -180,13 +180,15 @@ func (s *Service) handleProcess(ctx context.Context, jobID string, payload json.
 		// another language. target_language is fixed to the kind's own name
 		// (not p.Language) — see buildCleaningCall's doc comment.
 		cc := buildCleaningCall(processKind, p.Language, p.Content)
-		cleaned, err := s.ai.Generate(ctx, cc.Kind, cc.SourceLanguage, cc.TargetLanguage, resourceType, cc.Content)
+		cleaned, err := s.ai.GenerateChunked(ctx, cc.Kind, cc.SourceLanguage, cc.TargetLanguage, resourceType, cc.Content)
 		if err != nil {
 			return nil, fmt.Errorf("ingest: clean content: %w", err)
 		}
 
+		// GenerateChunked sends a title call only the first chunk of the cleaned
+		// text, so a long page is not titled from its whole body.
 		tc := buildTitleCall(p.Language, cleaned)
-		title, err := s.ai.Generate(ctx, tc.Kind, tc.SourceLanguage, tc.TargetLanguage, resourceType, tc.Content)
+		title, err := s.ai.GenerateChunked(ctx, tc.Kind, tc.SourceLanguage, tc.TargetLanguage, resourceType, tc.Content)
 		if err != nil {
 			return nil, fmt.Errorf("ingest: generate title: %w", err)
 		}

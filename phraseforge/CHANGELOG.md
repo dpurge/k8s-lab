@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- The size limit for ingested content is configurable (`ingest.maxContentBytes`; the default stays 24 KiB, and
+  the prod ConfigMap sets 200 KiB). Long texts and dialogs are cleaned in chunks that fit each purpose's
+  context window, one LLM call per chunk, and long-text translation and transcription are chunked the same
+  way; a title is derived from the first chunk. A long ingest occupies the single job worker until it
+  finishes.
 - one structured LLM call per vocabulary/models item per site locale (job kinds
   `generate_vocabulary_item`/`generate_models_item`): new `vocabularyItem`/`modelsItem` purposes whose
   prompt is a template with `{{sourceLanguage}}`, `{{targetLanguage}}`, `{{phrase}}`,
@@ -94,6 +99,12 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- An LLM call that fails with a transient error (HTTP 5xx, a connection error, a stream that ends early, or
+  an idle stall) is now retried within the same `maxAttempts` budget (default 3), waiting 5s and then 15s;
+  first-token and overall timeouts are not retried.
+- An item job whose reply fails validation (invalid JSON, a missing field, or a phrase that differs from the
+  item's) now sends the reply and the exact error back to the model for correction, up to `maxAttempts`
+  attempts per call (default 3), instead of failing at once.
 - Admin > LLM showed raw keys instead of labels for the Generate vocabulary / Generate models kinds, in
   both English and Polish.
 - Text/Dialog/Vocabulary/Models detail views show their action buttons in a wrapping row above

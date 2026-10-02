@@ -186,6 +186,7 @@ func runServe(ctx context.Context, cfg config.Config) {
 	go jobsSvc.Run(ctx)
 
 	srv := server.New(pool, authSvc, textStore, dialogStore, vocabStore, modelsStore, rolesSvc, tagsSvc, translationsSvc, aiSvc, jobsSvc)
+	srv.SetIngestMaxContentBytes(cfg.IngestMaxContentBytes)
 
 	log.Printf("phraseforge listening on %s, transcription=%s/%s, translation=%s/%s", cfg.BindAddr, cfg.Transcription.Provider, cfg.Transcription.Model, cfg.Translation.Provider, cfg.Translation.Model)
 	log.Fatal(http.ListenAndServe(cfg.BindAddr, srv.Router()))

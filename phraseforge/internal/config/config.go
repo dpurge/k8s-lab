@@ -36,6 +36,11 @@ type Config struct {
 	VocabularyItem PurposeConfig
 	ModelsItem     PurposeConfig
 
+	// IngestMaxContentBytes caps the raw content one ingest request may carry
+	// (yaml ingest.maxContentBytes). Raising it above what one LLM call can
+	// hold relies on the content being processed in chunks.
+	IngestMaxContentBytes int
+
 	// SessionKey signs the login session cookie. Must be set in production;
 	// a fixed dev default is used only so `go run` works with zero setup.
 	SessionKey string
@@ -75,6 +80,10 @@ type PurposeConfig struct {
 	// inspectable/editable without a rebuild (see
 	// specs/features/llm-purpose-timeout-and-prompt-config.md).
 	Prompt string
+	// MaxAttempts is the total attempts (first try included) one LLM call
+	// gets when its reply fails validation and is sent back to the model for
+	// correction; <= 0 means the built-in default of 3 (see ai/retry.go).
+	MaxAttempts int
 }
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
@@ -94,6 +103,9 @@ type fileConfig struct {
 			BaseURL string `yaml:"baseURL"`
 		} `yaml:"openrouter"`
 	} `yaml:"providers"`
+	Ingest struct {
+		MaxContentBytes int `yaml:"maxContentBytes"`
+	} `yaml:"ingest"`
 	Transcription      purposeFileConfig `yaml:"transcription"`
 	Translation        purposeFileConfig `yaml:"translation"`
 	Title              purposeFileConfig `yaml:"title"`
@@ -112,6 +124,7 @@ type purposeFileConfig struct {
 	Think          bool   `yaml:"think"`
 	TimeoutSeconds int    `yaml:"timeoutSeconds"`
 	Prompt         string `yaml:"prompt"`
+	MaxAttempts    int    `yaml:"maxAttempts"`
 }
 
 func defaultFileConfig() fileConfig {
@@ -121,6 +134,7 @@ func defaultFileConfig() fileConfig {
 	f.Providers.Ollama.FirstTokenTimeoutSeconds = 300
 	f.Providers.Ollama.IdleTimeoutSeconds = 60
 	f.Providers.OpenRouter.BaseURL = "https://openrouter.ai/api/v1"
+	f.Ingest.MaxContentBytes = 24 * 1024
 	// TimeoutSeconds is only an overall backstop (1800s for every purpose):
 	// streamed Ollama calls are primarily bounded by the provider's
 	// first-token/idle limits, since a CPU-only node legitimately needs
@@ -129,40 +143,40 @@ func defaultFileConfig() fileConfig {
 	// copied verbatim from ai.go's former hardcoded switch so upgrading
 	// doesn't change any existing behavior.
 	f.Transcription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "Create a romanized transcription for the source language content. Return only the transcription, preserving line breaks and structure. Do not add explanations.",
 	}
 	f.Translation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations.",
 	}
 	f.Title = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble.",
 	}
 	f.ProcessText = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "You reformat raw extracted text into clean Markdown prose suitable as a language-learning reading text. Remove navigation menus, ads, boilerplate, and unrelated content. Preserve the actual article/passage content and its paragraph structure. Do not translate or summarize. Respond with only the cleaned Markdown.",
 	}
 	f.ProcessDialog = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "You reformat raw extracted text into a clean dialog transcript in Markdown. Identify distinct speakers/turns and format each turn on its own line. Remove navigation, ads, and unrelated content. Respond with only the cleaned dialog content.",
 	}
 	f.GenerateVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "You extract vocabulary and grammar items from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase {grammar} [transcription] = translation — where {grammar} is a short grammar tag (e.g. part of speech), [transcription] is a romanized reading, and = translation is the item's translation; each of {grammar}, [transcription], and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves.",
 	}
 	f.GenerateModels = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: "You extract short grammar/sentence-pattern models from the given text for a language learner. Respond ONLY with one item per line, in this exact format: phrase [transcription] = translation — where [transcription] is a romanized reading and = translation is the item's translation; each of [transcription] and = translation is optional and must be omitted entirely (not left as empty brackets) when not applicable. Do not add commentary, a preamble, numbering, or code fences — only the item lines themselves.",
 	}
 	// NumCtx left 0 (Ollama's default) to match the prompt-eval request.
 	f.VocabularyItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultVocabularyItemPrompt,
 	}
 	f.ModelsItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800,
+		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultModelsItemPrompt,
 	}
 	return f
@@ -234,6 +248,9 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
+	if fc.Ingest.MaxContentBytes <= 0 {
+		return Config{}, fmt.Errorf("config file %s: ingest.maxContentBytes must be greater than 0, got %d", path, fc.Ingest.MaxContentBytes)
+	}
 
 	return Config{
 		BindAddr: fc.BindAddr,
@@ -262,6 +279,8 @@ func Load() (Config, error) {
 		GenerateModels:     PurposeConfig(fc.GenerateModels),
 		VocabularyItem:     PurposeConfig(fc.VocabularyItem),
 		ModelsItem:         PurposeConfig(fc.ModelsItem),
+
+		IngestMaxContentBytes: fc.Ingest.MaxContentBytes,
 
 		SessionKey: env("SESSION_KEY", "dev-only-insecure-key-change-me"),
 	}, nil

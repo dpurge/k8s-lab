@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -103,6 +104,54 @@ func (e *TimeoutError) Error() string {
 	default:
 		return fmt.Sprintf("model %s exceeded overall timeout of %gs", e.Model, e.After.Seconds())
 	}
+}
+
+// StatusError is a non-2xx reply from the provider. Its text is the one callers
+// have always seen; the type lets IsRetryable tell a 5xx from a 4xx.
+type StatusError struct {
+	StatusCode int
+	Status     string
+	Body       []byte
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("chat provider returned %s: %s", e.Status, e.Body)
+}
+
+// ErrStreamIncomplete matches (errors.Is) a streamed reply that ended early or
+// carried an error chunk, without changing those errors' text.
+var ErrStreamIncomplete = errors.New("chat provider stream incomplete")
+
+type streamError struct{ msg string }
+
+func (e streamError) Error() string        { return e.msg }
+func (e streamError) Is(target error) bool { return target == ErrStreamIncomplete }
+
+// IsRetryable reports whether err is a transient failure worth another
+// attempt: a 5xx, a stream that ended early or errored, an idle stall, or a
+// connection-level failure. First-token and overall timeouts are not retried
+// (another attempt would only cost another long wait), nor are 4xx replies or
+// the caller's own cancellation.
+func IsRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var te *TimeoutError
+	if errors.As(err, &te) {
+		return te.Limit == LimitIdle
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.StatusCode >= 500
+	}
+	if errors.Is(err, ErrStreamIncomplete) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && !ne.Timeout()
 }
 
 // New creates an LLM client, applying the default for each zero timeout.
@@ -218,12 +267,12 @@ func (c *Client) ollamaStream(ctx context.Context, url string, in map[string]any
 		var chunk ollamaStreamChunk
 		if err := dec.Decode(&chunk); err != nil {
 			if errors.Is(err, io.EOF) {
-				return Response{}, fmt.Errorf("chat provider stream ended before completion")
+				return Response{}, streamError{"chat provider stream ended before completion"}
 			}
 			return Response{}, limitOr(ctx, err)
 		}
 		if chunk.Error != "" {
-			return Response{}, fmt.Errorf("chat provider stream error: %s", chunk.Error)
+			return Response{}, streamError{"chat provider stream error: " + chunk.Error}
 		}
 		if chunk.Message.Content != "" || chunk.Message.Thinking != "" || len(chunk.Message.ToolCalls) > 0 {
 			started.Store(true)
@@ -306,7 +355,7 @@ func (c *Client) do(ctx context.Context, hc *http.Client, url string, in any) (*
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		bb, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("chat provider returned %s: %s", resp.Status, bb)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, Body: bb}
 	}
 	return resp, nil
 }
