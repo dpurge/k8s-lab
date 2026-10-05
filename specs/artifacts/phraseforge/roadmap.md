@@ -1,10 +1,13 @@
 ---
-version: 20
+version: 26
 status: approved
-updated: 2026-09-26
+updated: 2026-10-05
 ---
 
 ## Now
+
+- `phraseforge-better-vocabulary-prompts` — Better transcription, grammar, translation, notes and models prompts: measured in prompt-eval first, then ported to the app and the Helm values.
+- `phraseforge-ingest-very-long-texts` — Make ingestion of very long texts reliable: context-safe chunk sizing for dense scripts, truncation guard, resumable chunks, visible progress.
 
 ## Next
 

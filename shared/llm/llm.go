@@ -58,6 +58,13 @@ type ToolCall struct {
 type Response struct {
 	Content   string
 	ToolCalls []ToolCall
+
+	// PromptTokens and ReplyTokens are the token counts Ollama reports for
+	// the call (prompt_eval_count, eval_count), zero when the provider did
+	// not report them. Their sum reaching the context window means Ollama
+	// silently cut the prompt or shifted the context during the reply.
+	PromptTokens int
+	ReplyTokens  int
 }
 type Client struct {
 	cfg Config
@@ -227,8 +234,10 @@ type ollamaStreamChunk struct {
 		Thinking  string     `json:"thinking"`
 		ToolCalls []ToolCall `json:"tool_calls"`
 	} `json:"message"`
-	Done  bool   `json:"done"`
-	Error string `json:"error"`
+	Done         bool   `json:"done"`
+	Error        string `json:"error"`
+	PromptTokens int    `json:"prompt_eval_count"`
+	ReplyTokens  int    `json:"eval_count"`
 }
 
 // ollamaStream reads a streaming /api/chat response under three limits: a
@@ -281,7 +290,7 @@ func (c *Client) ollamaStream(ctx context.Context, url string, in map[string]any
 		content.WriteString(chunk.Message.Content)
 		toolCalls = append(toolCalls, chunk.Message.ToolCalls...)
 		if chunk.Done {
-			return Response{Content: content.String(), ToolCalls: toolCalls}, nil
+			return Response{Content: content.String(), ToolCalls: toolCalls, PromptTokens: chunk.PromptTokens, ReplyTokens: chunk.ReplyTokens}, nil
 		}
 	}
 }

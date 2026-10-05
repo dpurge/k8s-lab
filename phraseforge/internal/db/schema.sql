@@ -66,14 +66,18 @@ INSERT INTO language (code, iso1, name) VALUES
     ('dan', 'da', 'Danish'),
     ('deu', 'de', 'German'),
     ('ell', 'el', 'Modern Greek'),
+    ('eng', 'en', 'English'),
     ('fas', 'fa', 'Persian'),
+    ('fin', 'fi', 'Finnish'),
     ('fra', 'fr', 'French'),
     ('grc', 'el', 'Ancient Greek'),
     ('heb', 'he', 'Hebrew'),
     ('hin', 'hi', 'Hindi'),
     ('ind', 'id', 'Indonesian'),
     ('ita', 'it', 'Italian'),
+    ('jpn', 'ja', 'Japanese'),
     ('kaz', 'kk', 'Kazakh'),
+    ('kor', 'ko', 'Korean'),
     ('lat', 'la', 'Latin'),
     ('lit', 'lt', 'Lithuanian'),
     ('mon', 'mn', 'Mongolian'),
@@ -82,7 +86,10 @@ INSERT INTO language (code, iso1, name) VALUES
     ('ron', 'ro', 'Romanian'),
     ('spa', 'es', 'Spanish'),
     ('srp', 'sr', 'Serbian'),
+    ('swa', 'sw', 'Swahili'),
+    ('swe', 'sv', 'Swedish'),
     ('tgk', 'tg', 'Tajik'),
+    ('tgl', 'tl', 'Tagalog'),
     ('tha', 'th', 'Thai'),
     ('tur', 'tr', 'Turkish'),
     ('uig', 'ug', 'Uyghur'),
@@ -549,6 +556,17 @@ CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (created_at ASC) WHERE status 
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
 ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
     CHECK (status IN ('pending', 'running', 'done', 'failed', 'cancelled'));
+
+-- phraseforge-ingest-very-long-texts: the results of the chunks a job has
+-- finished, {key: [result, ...]}, so a Retry (which copies it onto the new
+-- job, see jobs.Service.Retry) resumes at the first unfinished chunk instead
+-- of repeating hours of LLM calls. Cleared when the job is done.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checkpoint jsonb;
+
+-- phraseforge-ingest-very-long-texts: how far a chunked job has got, "3/12"
+-- (finished chunks / all chunks), shown in the Jobs menu while it runs.
+-- Cleared when the job is done; a failed job keeps it to show where it stopped.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS progress text;
 
 -- phraseforge-structured-item-translation: optional per-language prompt
 -- sections rendered into the vocabularyItem/modelsItem templates as

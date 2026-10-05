@@ -59,8 +59,8 @@
 
   // buildJobView renders job's full detail as structured content for
   // pf-dialog's showContent() — metadata fields, then Payload/Result each
-  // in their own pretty-printed block, with Step/Error included only when
-  // the job actually has one. Returns a DocumentFragment (not a wrapping
+  // in their own pretty-printed block, with Step/Progress/Error included
+  // only when the job actually has one. Returns a DocumentFragment (not a wrapping
   // <div>) so its pieces land as .pf-dialog-content's own direct
   // children — that's what component.css's "> * + *" spacing rule
   // between blocks actually targets; nested one level deeper inside an
@@ -75,6 +75,7 @@
     field(dl, T("jobs.col_created"), job.created_at);
     field(dl, T("jobs.view_updated"), job.updated_at);
     if (job.step) field(dl, T("jobs.view_step"), job.step);
+    if (job.progress) field(dl, T("jobs.view_progress"), job.progress);
     if (job.error) field(dl, T("jobs.col_error"), job.error);
     root.append(dl);
     root.append(jsonBlock(T("jobs.view_payload"), job.payload));
@@ -138,7 +139,7 @@
       <tr>
         <td>${esc(j.kind)}</td>
         <td>${esc(j.priority)}</td>
-        <td>${esc(j.status)}</td>
+        <td>${esc(j.status)}${j.progress ? ` (${esc(j.progress)})` : ""}</td>
         <td>${esc(j.createdAt)}</td>
         <td>${esc(truncate(j.error, 80))}</td>
         <td><a href="#" data-view-id="${esc(j.id)}">${esc(T("jobs.view"))}</a></td>

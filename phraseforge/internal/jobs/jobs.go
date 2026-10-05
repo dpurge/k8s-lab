@@ -28,6 +28,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"phraseforge/internal/checkpoint"
 )
 
 type Priority string
@@ -63,6 +65,7 @@ type Job struct {
 	Result    json.RawMessage `json:"result,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	Step      string          `json:"step,omitempty"`
+	Progress  string          `json:"progress,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }
@@ -194,13 +197,15 @@ func uuid() (string, error) {
 // reads the result later (the Jobs page, or a resource's own view once
 // reopened), matching the background-job UX every "Generate" action uses.
 func (s *Service) Enqueue(ctx context.Context, kind string, priority Priority, payload json.RawMessage) (string, error) {
-	return s.enqueue(ctx, kind, priority, payload, "")
+	return s.enqueue(ctx, kind, priority, payload, "", "")
 }
 
-// enqueue is Enqueue's real body, plus an initial step value — only Retry
-// (below) ever passes a non-empty one, to carry a failed job's recorded
-// progress forward onto the new job it creates.
-func (s *Service) enqueue(ctx context.Context, kind string, priority Priority, payload json.RawMessage, step string) (string, error) {
+// enqueue is Enqueue's real body, plus an initial step value and the id of a
+// job whose checkpoint to copy — only Retry (below) ever passes non-empty
+// ones, to carry a failed job's recorded progress forward onto the new job it
+// creates. The checkpoint is copied by the INSERT itself, so the worker can
+// never claim the new job before it has it.
+func (s *Service) enqueue(ctx context.Context, kind string, priority Priority, payload json.RawMessage, step, checkpointFrom string) (string, error) {
 	if payload == nil {
 		payload = json.RawMessage("{}")
 	}
@@ -212,7 +217,11 @@ func (s *Service) enqueue(ctx context.Context, kind string, priority Priority, p
 	if step != "" {
 		stepArg = step
 	}
-	_, err = s.db.Exec(ctx, "INSERT INTO jobs(id,kind,priority,status,payload,step) VALUES($1,$2,$3,'pending',$4,$5)", id, kind, priority, payload, stepArg)
+	var fromArg any
+	if checkpointFrom != "" {
+		fromArg = checkpointFrom
+	}
+	_, err = s.db.Exec(ctx, "INSERT INTO jobs(id,kind,priority,status,payload,step,checkpoint) VALUES($1,$2,$3,'pending',$4,$5,(SELECT checkpoint FROM jobs WHERE id=$6::uuid))", id, kind, priority, payload, stepArg, fromArg)
 	if err != nil {
 		return "", err
 	}
@@ -239,7 +248,7 @@ func (s *Service) nudge() {
 
 // jobColumns is the column list every full-row Job query scans, factored out
 // so Get/List/claim's RETURNING stay in sync by construction.
-const jobColumns = "id,kind,priority,status,payload,coalesce(result,'null'),coalesce(error,''),coalesce(step,''),created_at,updated_at"
+const jobColumns = "id,kind,priority,status,payload,coalesce(result,'null'),coalesce(error,''),coalesce(step,''),coalesce(progress,''),created_at,updated_at"
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -248,7 +257,7 @@ type scanner interface {
 func scanJob(row scanner) (Job, error) {
 	var j Job
 	var payload, result []byte
-	err := row.Scan(&j.ID, &j.Kind, &j.Priority, &j.Status, &payload, &result, &j.Error, &j.Step, &j.CreatedAt, &j.UpdatedAt)
+	err := row.Scan(&j.ID, &j.Kind, &j.Priority, &j.Status, &payload, &result, &j.Error, &j.Step, &j.Progress, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return Job{}, err
 	}
@@ -293,7 +302,8 @@ func (s *Service) List(ctx context.Context) ([]Job, error) {
 // jobs are enqueued) relies on that marker being visible to the job that
 // actually re-runs the work — which, since Retry mints a brand-new job id
 // rather than resubmitting this same row, would otherwise be a fresh job
-// with no memory of it, defeating the whole point of recording it.
+// with no memory of it, defeating the whole point of recording it. The same
+// goes for the checkpoint of finished chunks (see the checkpoint package).
 func (s *Service) Retry(ctx context.Context, id string) (string, error) {
 	j, err := s.Get(ctx, id)
 	if err != nil {
@@ -302,7 +312,7 @@ func (s *Service) Retry(ctx context.Context, id string) (string, error) {
 	if j.Status != StatusFailed && j.Status != StatusCancelled {
 		return "", fmt.Errorf("jobs: cannot retry job %s: status is %q, not %q or %q", id, j.Status, StatusFailed, StatusCancelled)
 	}
-	return s.enqueue(ctx, j.Kind, j.Priority, j.Payload, j.Step)
+	return s.enqueue(ctx, j.Kind, j.Priority, j.Payload, j.Step, id)
 }
 
 // Delete removes a done/failed/cancelled job's row. It refuses to delete a
@@ -538,7 +548,7 @@ func (s *Service) runOne(ctx context.Context) bool {
 	}
 
 	start := time.Now()
-	result, runErr := fn(jobCtx, j.ID, j.Payload)
+	result, runErr := fn(checkpoint.With(jobCtx, jobCheckpoint{db: s.db, id: j.ID}), j.ID, j.Payload)
 	outcome := "success"
 	if runErr != nil {
 		outcome = "error"
@@ -620,7 +630,10 @@ func (s *Service) complete(ctx context.Context, id string, result json.RawMessag
 	// AND status='running' makes this a no-op rather than a clobber if
 	// something else (e.g. a concurrent FailStale from another pod during a
 	// bad rollout) already moved the row out of 'running'.
-	tag, err := s.db.Exec(ctx, "UPDATE jobs SET status=$1, result=$2, error=$3, updated_at=now() WHERE id=$4 AND status='running'", status, result, errText, id)
+	// A done job needs no checkpoint or progress any more; a failed or
+	// cancelled one keeps the checkpoint for its Retry and the progress to
+	// show where it stopped.
+	tag, err := s.db.Exec(ctx, "UPDATE jobs SET status=$1, result=$2, error=$3, checkpoint=CASE WHEN $1::text='done' THEN NULL ELSE checkpoint END, progress=CASE WHEN $1::text='done' THEN NULL ELSE progress END, updated_at=now() WHERE id=$4 AND status='running'", status, result, errText, id)
 	if err != nil {
 		log.Printf("jobs: failed to record completion for job %s: %v", id, err)
 		return
@@ -628,4 +641,47 @@ func (s *Service) complete(ctx context.Context, id string, result json.RawMessag
 	if tag.RowsAffected() == 0 {
 		slog.Info("jobs: completion skipped, job no longer running", "id", id)
 	}
+}
+
+// jobCheckpoint is checkpoint.Store for one job, kept in its checkpoint column.
+type jobCheckpoint struct {
+	db *pgxpool.Pool
+	id string
+}
+
+func (c jobCheckpoint) Load(ctx context.Context, key string) ([]json.RawMessage, error) {
+	var raw []byte
+	if err := c.db.QueryRow(ctx, "SELECT checkpoint -> $2::text FROM jobs WHERE id=$1::uuid", c.id, key).Scan(&raw); err != nil {
+		return nil, fmt.Errorf("jobs: load checkpoint %q of job %s: %w", key, c.id, err)
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var results []json.RawMessage
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil, fmt.Errorf("jobs: decode checkpoint %q of job %s: %w", key, c.id, err)
+	}
+	return results, nil
+}
+
+func (c jobCheckpoint) Save(ctx context.Context, key string, results []json.RawMessage) error {
+	raw, err := json.Marshal(results)
+	if err != nil {
+		return fmt.Errorf("jobs: encode checkpoint %q of job %s: %w", key, c.id, err)
+	}
+	_, err = c.db.Exec(ctx, "UPDATE jobs SET checkpoint=jsonb_set(coalesce(checkpoint,'{}'::jsonb), ARRAY[$2::text], $3::jsonb, true) WHERE id=$1::uuid", c.id, key, raw)
+	if err != nil {
+		return fmt.Errorf("jobs: save checkpoint %q of job %s: %w", key, c.id, err)
+	}
+	return nil
+}
+
+// SetProgress records how many of a chunked job's chunks are finished, for the
+// Jobs menu. It also moves updated_at, which tells a viewer the job is alive.
+func (c jobCheckpoint) SetProgress(ctx context.Context, done, total int) error {
+	_, err := c.db.Exec(ctx, "UPDATE jobs SET progress=$2, updated_at=now() WHERE id=$1::uuid", c.id, fmt.Sprintf("%d/%d", done, total))
+	if err != nil {
+		return fmt.Errorf("jobs: record progress of job %s: %w", c.id, err)
+	}
+	return nil
 }

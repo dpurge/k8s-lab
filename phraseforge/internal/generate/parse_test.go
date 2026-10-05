@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"reflect"
 	"testing"
 
 	"phraseforge/internal/models"
@@ -41,7 +42,11 @@ func TestParseVocabularyLine(t *testing.T) {
 
 func TestParseVocabularyLines(t *testing.T) {
 	body := "cat {noun} [kat] = kot\n\n{noun} = kot\nrun {verb}\n   \nkot [kot]"
-	got := ParseVocabularyLines(body)
+	got, rejected := ParseVocabularyLines(body)
+	wantRejected := []RejectedLine{{Line: "{noun} = kot", Reason: "the line must start with the phrase, before any {, [ or ="}}
+	if !reflect.DeepEqual(rejected, wantRejected) {
+		t.Fatalf("ParseVocabularyLines(%q) rejected = %+v, want %+v", body, rejected, wantRejected)
+	}
 	want := []vocabulary.Item{
 		{Phrase: "cat", Grammar: "noun", Transcription: "kat"},
 		{Phrase: "run", Grammar: "verb"},
@@ -87,7 +92,11 @@ func TestParseModelsLine(t *testing.T) {
 
 func TestParseModelsLines(t *testing.T) {
 	body := "I am ___ [ai æm] = jestem ___\n\n= jestem ___\nYou are ___"
-	got := ParseModelsLines(body)
+	got, rejected := ParseModelsLines(body)
+	wantRejected := []RejectedLine{{Line: "= jestem ___", Reason: "the line must start with the phrase, before any {, [ or ="}}
+	if !reflect.DeepEqual(rejected, wantRejected) {
+		t.Fatalf("ParseModelsLines(%q) rejected = %+v, want %+v", body, rejected, wantRejected)
+	}
 	want := []models.Item{
 		{Phrase: "I am ___", Transcription: "ai æm"},
 		{Phrase: "You are ___"},
@@ -99,5 +108,39 @@ func TestParseModelsLines(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("ParseModelsLines(%q)[%d] = %+v, want %+v", body, i, got[i], want[i])
 		}
+	}
+}
+
+// Lines captured from gemma4:12b for a diacritized Arabic text in production:
+// grammar in square brackets instead of curly braces. The whole reply was
+// silently dropped before rejected lines were reported.
+func TestParseVocabularyLinesRejectsBracketGrammar(t *testing.T) {
+	body := "وُلِدَ [verb] [wulida] = was born\nدِمَشْقَ [noun] [Dimashqa] = Damascus\nحَصَلَ {verb} [haṣala] = obtained"
+	got, rejected := ParseVocabularyLines(body)
+	wantItems := []vocabulary.Item{{Phrase: "حَصَلَ", Grammar: "verb", Transcription: "haṣala"}}
+	if !reflect.DeepEqual(got, wantItems) {
+		t.Fatalf("items = %+v, want %+v", got, wantItems)
+	}
+	const reason = "grammar must be in curly braces {...} before the [transcription]; found two [...] groups"
+	wantRejected := []RejectedLine{
+		{Line: "وُلِدَ [verb] [wulida] = was born", Reason: reason},
+		{Line: "دِمَشْقَ [noun] [Dimashqa] = Damascus", Reason: reason},
+	}
+	if !reflect.DeepEqual(rejected, wantRejected) {
+		t.Fatalf("rejected = %+v, want %+v", rejected, wantRejected)
+	}
+}
+
+func TestParseModelsLinesRejectsTwoBracketGroups(t *testing.T) {
+	got, rejected := ParseModelsLines("I am ___ [x] [ai æm] = jestem ___\nlost phrase [ok = broken")
+	if len(got) != 0 {
+		t.Fatalf("items = %+v, want none", got)
+	}
+	wantRejected := []RejectedLine{
+		{Line: "I am ___ [x] [ai æm] = jestem ___", Reason: "only one [transcription] group is allowed; found two [...] groups"},
+		{Line: "lost phrase [ok = broken", Reason: "does not match the format `phrase [transcription] = translation`"},
+	}
+	if !reflect.DeepEqual(rejected, wantRejected) {
+		t.Fatalf("rejected = %+v, want %+v", rejected, wantRejected)
 	}
 }

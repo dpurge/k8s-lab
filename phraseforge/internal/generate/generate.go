@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"phraseforge/internal/ai"
+	"phraseforge/internal/checkpoint"
 	"phraseforge/internal/dialogs"
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/jobs"
@@ -139,6 +140,9 @@ func (s *Service) resolveSource(ctx context.Context, p payload) (source, error) 
 type result struct {
 	ListID    int64 `json:"list_id"`
 	ItemCount int   `json:"item_count"`
+	// SkippedLines counts model output lines that stayed malformed after the
+	// correction rounds and were dropped; omitted when none were.
+	SkippedLines int `json:"skipped_lines,omitempty"`
 }
 
 // Service implements the generate_vocab_from_*/generate_models_from_*
@@ -242,11 +246,20 @@ func (s *Service) HandleGenerateVocab(ctx context.Context, id string, raw json.R
 	// (see that function's doc comment) — generate_vocabulary has no real
 	// target language of its own, and the admin LLM-prompt editor already
 	// fixes this field the same way for every non-"translation" kind.
-	out, err := s.ai.Generate(ctx, aiKindGenerateVocabulary, src.Language, aiKindGenerateVocabulary, contentTypeText, src.Body)
+	chunks := s.ai.ChunksFor(aiKindGenerateVocabulary, src.Body)
+	items, skipped, err := generateItems(ctx, chunks, s.ai.CorrectionRounds(aiKindGenerateVocabulary),
+		func(ctx context.Context, chunk string) (string, error) {
+			return s.ai.GenerateLines(ctx, aiKindGenerateVocabulary, src.Language, aiKindGenerateVocabulary, contentTypeText, chunk)
+		},
+		ParseVocabularyLines,
+		func(ctx context.Context, rejected []RejectedLine) (string, error) {
+			return s.ai.CorrectLines(ctx, aiKindGenerateVocabulary, src.Language, vocabularyFormatHelp, rejected)
+		},
+		func(it vocabulary.Item) string { return it.Phrase },
+		checkpoint.Start(ctx, "items/"+aiKindGenerateVocabulary+"/"+src.Language, chunks))
 	if err != nil {
-		return nil, fmt.Errorf("generate: llm call: %w", err)
+		return nil, fmt.Errorf("generate: vocabulary: %w", err)
 	}
-	items := ParseVocabularyLines(out)
 
 	existingID, found, err := s.lookupExistingVocab(ctx, p)
 	if err != nil {
@@ -278,7 +291,7 @@ func (s *Service) HandleGenerateVocab(ctx context.Context, id string, raw json.R
 			s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, position, src.Language, it.Phrase, it.Grammar, it.Transcription)
 		}
 	}
-	return json.Marshal(result{ListID: listID, ItemCount: len(items)})
+	return json.Marshal(result{ListID: listID, ItemCount: len(items), SkippedLines: skipped})
 }
 
 // HandleGenerateModels is the jobs.HandlerFunc registered for both
@@ -293,11 +306,20 @@ func (s *Service) HandleGenerateModels(ctx context.Context, id string, raw json.
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.ai.Generate(ctx, aiKindGenerateModels, src.Language, aiKindGenerateModels, contentTypeText, src.Body)
+	chunks := s.ai.ChunksFor(aiKindGenerateModels, src.Body)
+	items, skipped, err := generateItems(ctx, chunks, s.ai.CorrectionRounds(aiKindGenerateModels),
+		func(ctx context.Context, chunk string) (string, error) {
+			return s.ai.GenerateLines(ctx, aiKindGenerateModels, src.Language, aiKindGenerateModels, contentTypeText, chunk)
+		},
+		ParseModelsLines,
+		func(ctx context.Context, rejected []RejectedLine) (string, error) {
+			return s.ai.CorrectLines(ctx, aiKindGenerateModels, src.Language, modelsFormatHelp, rejected)
+		},
+		func(it models.Item) string { return it.Phrase },
+		checkpoint.Start(ctx, "items/"+aiKindGenerateModels+"/"+src.Language, chunks))
 	if err != nil {
-		return nil, fmt.Errorf("generate: llm call: %w", err)
+		return nil, fmt.Errorf("generate: models: %w", err)
 	}
-	items := ParseModelsLines(out)
 
 	existingID, found, err := s.lookupExistingModels(ctx, p)
 	if err != nil {
@@ -324,7 +346,7 @@ func (s *Service) HandleGenerateModels(ctx context.Context, id string, raw json.
 			s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, position, src.Language, it.Phrase, "", it.Transcription)
 		}
 	}
-	return json.Marshal(result{ListID: listID, ItemCount: len(items)})
+	return json.Marshal(result{ListID: listID, ItemCount: len(items), SkippedLines: skipped})
 }
 
 // replaceVocabItems wholesale-replaces listID's items — deleting every

@@ -301,11 +301,20 @@ func resolveTimeoutSeconds(override *int, purposeDefaultSeconds int) int {
 // {{language}} convention.
 const userMessageTemplate = "Source language: {{source_language}}\nTarget language: {{target_language}}\nContent type: {{content_type}}\n\n{{content}}"
 
+// generateDefault is kind's config default as Generate calls it: with the
+// context window explicit, so the window the chunks were sized for is the
+// window the call runs under (see defaultNumCtx).
+func (s *Service) generateDefault(kind string) config.PurposeConfig {
+	def := s.purposeDefault(kind)
+	def.NumCtx = effectiveNumCtx(def.NumCtx)
+	return def
+}
+
 func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLanguage, contentType, content string) (string, error) {
 	if strings.TrimSpace(content) == "" {
 		return "", fmt.Errorf("content is required")
 	}
-	def := s.purposeDefault(kind)
+	def := s.generateDefault(kind)
 	prompt := s.prompt(ctx, kind, sourceLanguage, targetLanguage)
 	user := strings.NewReplacer(
 		"{{source_language}}", sourceLanguage,
@@ -355,9 +364,14 @@ func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def c
 		Format:            format,
 	}
 	start := time.Now()
-	out, err := llm.New(clientCfg).Complete(ctx, messages)
+	resp, err := llm.New(clientCfg).Chat(ctx, messages, nil)
+	out := resp.Content
 	outcome, limit := "success", ""
-	if err != nil {
+	if err == nil {
+		if overflow := contextOverflow(resp, def.NumCtx); overflow != nil {
+			out, err, outcome = "", overflow, "context_overflow"
+		}
+	} else {
 		outcome = "error"
 		var te *llm.TimeoutError
 		if errors.As(err, &te) {
@@ -365,7 +379,7 @@ func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def c
 		}
 	}
 	// Telemetry only — never log content or the response text.
-	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit, "attempt", attempt, "max_attempts", maxAttempts)
+	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit, "attempt", attempt, "max_attempts", maxAttempts, "prompt_tokens", resp.PromptTokens, "reply_tokens", resp.ReplyTokens, "num_ctx", def.NumCtx)
 	return out, err
 }
 

@@ -75,3 +75,6 @@
 2026-09-30T16:04:38Z [env] Prod jdpct101 Ollama is CPU-only (6 CPU limit): gemma4:12b cold load ~27s, generation ~4 tok/s; a 942-char translation took ~300s.
 2026-09-30T17:26:06Z [domain] promptfoo 0.123.1 sends a plain-text prompt file to ollama:chat as ONE user message (nunjucks, autoescape off); format only if provider config sets it.
 2026-09-30T17:26:06Z [gotcha] phraseforge's language table has no English row; use i18n.Locale.PromptName for a site locale's English name in prompts, not an ISO1 lookup.
+2026-10-05T13:36:49Z [gotcha] gemma4:12b can answer generate_vocabulary with `phrase [tag] [translit]` for Arabic; the strict parser in phraseforge/internal/generate/parse.go rejects those lines.
+2026-10-05T13:36:49Z [gotcha] phraseforge runs one job at a time: a vocabulary list of N items enqueues about N item jobs (~4s each), and a newly queued job waits behind all of them.
+2026-10-05T15:16:42Z [gotcha] phraseforge language seed has English (eng) now, Polish (pol) already; prompts take a site locale name from i18n.Locale.PromptName. Supersedes the older no-English note.

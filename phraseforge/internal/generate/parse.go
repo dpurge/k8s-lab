@@ -23,10 +23,9 @@ var vocabularyLinePattern = regexp.MustCompile(`^([^{\[=]+?)\s*(?:\{([^}]*)\})?\
 var modelsLinePattern = regexp.MustCompile(`^([^\[=]+?)\s*(?:\[([^\]]*)\])?\s*(?:=.*)?$`)
 
 // ParseVocabularyLine parses one line of generate_vocabulary's LLM output
-// into a vocabulary item. Returns ok=false for a blank line or a line with
-// no recognizable phrase (e.g. one that starts with "{"/"["/"=", or is
-// otherwise malformed) — the caller skips these rather than failing the
-// whole job (a partial extraction beats a failed job over one bad line).
+// into a vocabulary item. Returns ok=false for a blank line or a line that
+// does not match the format (e.g. one that starts with "{"/"["/"=", has its
+// grammar in square brackets, or is otherwise malformed).
 func ParseVocabularyLine(line string) (vocabulary.Item, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -43,16 +42,54 @@ func ParseVocabularyLine(line string) (vocabulary.Item, bool) {
 	return vocabulary.Item{Phrase: phrase, Grammar: strings.TrimSpace(m[2]), Transcription: strings.TrimSpace(m[3])}, true
 }
 
-// ParseVocabularyLines parses every line of body, skipping blank/malformed
-// lines (see ParseVocabularyLine) rather than failing the whole job.
-func ParseVocabularyLines(body string) []vocabulary.Item {
+// twoBracketGroups spots the format drift seen in production: a grammar tag
+// written in square brackets ahead of the transcription (`phrase [noun]
+// [translit]`) instead of in curly braces.
+var twoBracketGroups = regexp.MustCompile(`\[[^\]]*\]\s*\[`)
+
+const (
+	vocabularyFormat = "phrase {grammar} [transcription] = translation"
+	modelsFormat     = "phrase [transcription] = translation"
+
+	// The *FormatHelp texts are what a correction call shows the model; they
+	// match the format the generate_* prompts ask for.
+	vocabularyFormatHelp = vocabularyFormat + " — {grammar} is a short grammar tag in curly braces, [transcription] is a romanized reading in square brackets, and = translation is the item's translation; each of the three is optional and must be omitted entirely (not left empty) when not applicable"
+	modelsFormatHelp     = modelsFormat + " — [transcription] is a romanized reading in square brackets and = translation is the item's translation; each of the two is optional and must be omitted entirely (not left empty) when not applicable"
+)
+
+// rejectionReason explains why line failed to parse as format. hasGrammar is
+// true for the vocabulary format, where a grammar tag belongs in curly braces.
+func rejectionReason(line, format string, hasGrammar bool) string {
+	switch {
+	case strings.ContainsAny(line[:1], "{[="):
+		return "the line must start with the phrase, before any {, [ or ="
+	case twoBracketGroups.MatchString(line) && hasGrammar:
+		return "grammar must be in curly braces {...} before the [transcription]; found two [...] groups"
+	case twoBracketGroups.MatchString(line):
+		return "only one [transcription] group is allowed; found two [...] groups"
+	}
+	return "does not match the format `" + format + "`"
+}
+
+// ParseVocabularyLines parses every line of body. Blank lines are ignored;
+// every other line that does not match the format is returned as a
+// RejectedLine, so the caller can send it back to the model instead of
+// silently losing it.
+func ParseVocabularyLines(body string) ([]vocabulary.Item, []RejectedLine) {
 	var out []vocabulary.Item
+	var rejected []RejectedLine
 	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		if it, ok := ParseVocabularyLine(line); ok {
 			out = append(out, it)
+		} else {
+			rejected = append(rejected, RejectedLine{Line: line, Reason: rejectionReason(line, vocabularyFormat, true)})
 		}
 	}
-	return out
+	return out, rejected
 }
 
 // ParseModelsLine mirrors ParseVocabularyLine for the models line format
@@ -75,12 +112,19 @@ func ParseModelsLine(line string) (models.Item, bool) {
 
 // ParseModelsLines mirrors ParseVocabularyLines — see that function's doc
 // comment.
-func ParseModelsLines(body string) []models.Item {
+func ParseModelsLines(body string) ([]models.Item, []RejectedLine) {
 	var out []models.Item
+	var rejected []RejectedLine
 	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		if it, ok := ParseModelsLine(line); ok {
 			out = append(out, it)
+		} else {
+			rejected = append(rejected, RejectedLine{Line: line, Reason: rejectionReason(line, modelsFormat, false)})
 		}
 	}
-	return out
+	return out, rejected
 }

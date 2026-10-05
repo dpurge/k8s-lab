@@ -299,3 +299,26 @@ func TestStreamSendsFormatOnlyWhenSet(t *testing.T) {
 		t.Errorf("format = %s, want the field omitted when Format is empty", body["format"])
 	}
 }
+
+// Ollama reports the token counts on the final chunk; callers use them to
+// notice a call that ran past its context window.
+func TestStreamReportsTokenCounts(t *testing.T) {
+	done := `{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":616,"eval_count":958}`
+	server := streamServer(t, []streamStep{{0, contentLine("Hi")}, {0, done}})
+	c := New(Config{Provider: "ollama", Model: "test-model", BaseURL: server.URL})
+	r, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Content != "Hi" || r.PromptTokens != 616 || r.ReplyTokens != 958 {
+		t.Errorf("got %+v, want content Hi with 616 prompt and 958 reply tokens", r)
+	}
+}
+
+func TestStreamWithoutTokenCountsReportsZero(t *testing.T) {
+	server := streamServer(t, []streamStep{{0, contentLine("Hi")}, {0, doneLine}})
+	r, err := New(Config{Provider: "ollama", Model: "test-model", BaseURL: server.URL}).Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil || r.PromptTokens != 0 || r.ReplyTokens != 0 {
+		t.Fatalf("got (%+v, %v), want zero token counts", r, err)
+	}
+}

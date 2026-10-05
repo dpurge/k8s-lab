@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"phraseforge/internal/i18n"
+	"phraseforge/internal/jobs"
 )
 
 // jobsAppI18nKeys mirrors adminAppI18nKeys/modelsAppI18nKeys for the Jobs SPA
@@ -19,7 +20,7 @@ var jobsAppI18nKeys = []string{
 	"jobs.title", "jobs.refresh", "jobs.clear", "jobs.clear_confirm", "jobs.clear_done",
 	"jobs.col_kind", "jobs.col_priority", "jobs.col_status", "jobs.col_created", "jobs.col_error",
 	"jobs.view", "jobs.retry", "texts.delete",
-	"jobs.view_close", "jobs.view_id", "jobs.view_updated", "jobs.view_step",
+	"jobs.view_close", "jobs.view_id", "jobs.view_updated", "jobs.view_step", "jobs.view_progress",
 	"jobs.view_payload", "jobs.view_result",
 	"jobs.cancel", "jobs.cancel_confirm",
 	"jobs.retry_confirm", "jobs.delete_confirm", "jobs.empty",
@@ -42,6 +43,7 @@ type apiJobSummary struct {
 	Kind      string `json:"kind"`
 	Priority  string `json:"priority"`
 	Status    string `json:"status"`
+	Progress  string `json:"progress,omitempty"` // "3/12" finished chunks of a long job
 	Error     string `json:"error,omitempty"`
 	CreatedAt string `json:"createdAt"`
 }
@@ -57,12 +59,17 @@ func (s *Server) apiListAdminJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]apiJobSummary, len(list))
 	for i, j := range list {
-		out[i] = apiJobSummary{
-			ID: j.ID, Kind: j.Kind, Priority: string(j.Priority), Status: string(j.Status),
-			Error: j.Error, CreatedAt: j.CreatedAt.Format("Jan 2, 2006 · 15:04"),
-		}
+		out[i] = jobSummary(j)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// jobSummary is one job's row in the list endpoint.
+func jobSummary(j jobs.Job) apiJobSummary {
+	return apiJobSummary{
+		ID: j.ID, Kind: j.Kind, Priority: string(j.Priority), Status: string(j.Status), Progress: j.Progress,
+		Error: j.Error, CreatedAt: j.CreatedAt.Format("Jan 2, 2006 · 15:04"),
+	}
 }
 
 // apiGetAdminJob returns one job's full detail — payload/result/step/error
