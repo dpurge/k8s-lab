@@ -71,6 +71,27 @@ func IsValidKind(kind string) bool {
 	return slices.Contains(ValidKinds, kind)
 }
 
+// DefaultPrompts maps every kind in ValidKinds to the system prompt it uses
+// when no admin row overrides it (config.yaml's, else the embedded default),
+// so the admin UI can start a new prompt from it.
+func (s *Service) DefaultPrompts() map[string]string {
+	defaults := make(map[string]string, len(ValidKinds))
+	for _, kind := range ValidKinds {
+		defaults[kind] = s.purposeDefault(kind).Prompt
+	}
+	return defaults
+}
+
+// PromptPlaceholders lists the {{placeholders}} a kind's prompt may use: the
+// item prompts take the item vars too, every other kind only the two snippets.
+func PromptPlaceholders(kind string) []string {
+	snippets := []string{"grammarPrompt", "transcriptionPrompt"}
+	if kind == "vocabulary_item" || kind == "models_item" {
+		return append([]string{"sourceLanguage", "targetLanguage", "phrase"}, snippets...)
+	}
+	return snippets
+}
+
 type Prompt struct {
 	Kind           string `json:"kind"`
 	SourceLanguage string `json:"source_language"`
@@ -316,13 +337,17 @@ func (s *Service) Generate(ctx context.Context, kind, sourceLanguage, targetLang
 	}
 	def := s.generateDefault(kind)
 	prompt := s.prompt(ctx, kind, sourceLanguage, targetLanguage)
+	system, err := s.renderSystemPrompt(ctx, prompt.Prompt, sourceLanguage)
+	if err != nil {
+		return "", err
+	}
 	user := strings.NewReplacer(
 		"{{source_language}}", sourceLanguage,
 		"{{target_language}}", targetLanguage,
 		"{{content_type}}", contentType,
 		"{{content}}", content,
 	).Replace(userMessageTemplate)
-	return s.callWithRetry(ctx, kind, prompt, def, []llm.Message{{Role: "system", Content: prompt.Prompt}, {Role: "user", Content: user}})
+	return s.callWithRetry(ctx, kind, prompt, def, []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: user}})
 }
 
 // callWithRetry is callLLM with a retry of transient failures (see

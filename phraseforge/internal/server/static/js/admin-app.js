@@ -17,7 +17,7 @@
   const root = document.getElementById("admin-app");
   const statusBar = document.getElementById("statusBar");
 
-  const TABS = ["grants", "ime", "llm", "config"];
+  const TABS = ["grants", "ime", "llm", "languages", "config"];
   let activeTab = "grants";
   let data = null;
   // In-page "which row, if any, is being edited" state for IME/LLM — pure
@@ -28,7 +28,7 @@
   // vocabulary-app.js/models-app.js).
   let editingIme = null; // "{language}|{script}" or null
   let editingLlm = null; // "{kind}|{sourceLanguage}|{targetLanguage}" or null
-  let editingSections = null; // language code or null
+  let editingSnippet = null; // "{language}|{grammar|transcription}" or null
 
   function esc(s) {
     return String(s == null ? "" : s).replace(
@@ -107,6 +107,7 @@
       <div id="tabGrants"></div>
       <div id="tabIme"></div>
       <div id="tabLlm"></div>
+      <div id="tabLanguages"></div>
       <div id="tabConfig"></div>
     `;
     const tabs = document.getElementById("adminTabs");
@@ -114,6 +115,7 @@
       { id: "grants", label: T("admin.tab_grants") },
       { id: "ime", label: T("admin.tab_ime") },
       { id: "llm", label: T("admin.tab_llm") },
+      { id: "languages", label: T("admin.tab_languages") },
       { id: "config", label: T("admin.tab_config") },
     ];
     tabs.active = activeTab;
@@ -122,6 +124,7 @@
     renderGrantsTab();
     renderIMETab();
     renderLLMTab();
+    renderLanguagesTab();
     renderConfigTab();
     showTab(activeTab);
   }
@@ -416,8 +419,9 @@
             </pf-field>
           </div>
           <pf-field label="${esc(T("admin.llm_prompt"))}" for="llm-prompt">
-            <textarea id="llm-prompt" required style="height:10rem;" placeholder="${esc(T("admin.llm_prompt_placeholder"))}"></textarea>
+            <textarea id="llm-prompt" required style="height:16rem;" placeholder="${esc(T("admin.llm_prompt_placeholder"))}"></textarea>
           </pf-field>
+          <p class="muted" id="llm-placeholders-hint"></p>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("admin.llm_save"))}</pf-button>
             ${editingLlm ? `<a href="#" id="llmCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
@@ -433,7 +437,6 @@
           </table>
         </div>
       </div>
-      ${renderLanguageSectionsCards()}
     `;
 
     const kindSelect = document.getElementById("llm-kind");
@@ -456,6 +459,23 @@
     }
     kindSelect.addEventListener("change", refreshLLMTarget);
 
+    // A new prompt starts from its kind's default, with the placeholders
+    // visible; changing the kind swaps the text only while the box still holds
+    // the default put there (never over the admin's own edits). A saved row
+    // always shows its stored prompt.
+    const promptArea = document.getElementById("llm-prompt");
+    let prefilledDefault = null;
+    function refreshLLMPrompt() {
+      const kind = kindSelect.value;
+      if (!editingPrompt && (promptArea.value === "" || promptArea.value === prefilledDefault)) {
+        prefilledDefault = (data.llmDefaults || {})[kind] || "";
+        promptArea.value = prefilledDefault;
+      }
+      const names = ((data.llmPlaceholders || {})[kind] || []).map((n) => "{{" + n + "}}").join(", ");
+      document.getElementById("llm-placeholders-hint").textContent = T("admin.llm_placeholders_hint").replace("%s", names);
+    }
+    kindSelect.addEventListener("change", refreshLLMPrompt);
+
     // A saved row's provider is always explicit (unlike model, where empty
     // means "use the purpose default") — default a new row to "ollama"
     // since this bootstrap data doesn't expose the purpose's own default.
@@ -470,6 +490,7 @@
       document.getElementById("llm-prompt").value = editingPrompt.prompt;
     }
     refreshLLMTarget();
+    refreshLLMPrompt();
     if (editingPrompt && hasTargetLanguage(editingPrompt.kind)) {
       targetSelect.value = editingPrompt.target_language;
     }
@@ -539,7 +560,6 @@
       });
     });
 
-    bindLanguageSections();
   }
 
   function languageName(code) {
@@ -547,43 +567,72 @@
     return l ? l.Name : code;
   }
 
-  // renderLanguageSectionsCards: per-source-language {{grammarPrompt}}/
-  // {{transcriptionPrompt}} sections for the vocabulary/models item
-  // prompts (phraseforge-structured-item-translation).
-  function renderLanguageSectionsCards() {
-    const sections = data.languageSections || [];
+  // The Languages tab: one table row per (language, snippet). A snippet is the
+  // text a prompt receives where it has {{grammarPrompt}} or
+  // {{transcriptionPrompt}}; it is stored per language in language_llm_sections
+  // (one row holding both), so saving or deleting one snippet re-sends the
+  // other unchanged.
+  const SNIPPET_FIELDS = [
+    { id: "grammar", prop: "grammar_prompt", payload: "grammarPrompt", label: "admin.sections_grammar" },
+    { id: "transcription", prop: "transcription_prompt", payload: "transcriptionPrompt", label: "admin.sections_transcription" },
+  ];
+
+  function snippetRows() {
+    return (data.languageSections || []).flatMap((ls) =>
+      SNIPPET_FIELDS.filter((f) => (ls[f.prop] || "").trim() !== "").map((f) => ({ language: ls.language, field: f, text: ls[f.prop] })),
+    );
+  }
+
+  // saveSnippet stores text as language's snippet of the given field, keeping
+  // the language's other snippet; when both end up blank the language's row is
+  // deleted instead.
+  async function saveSnippet(language, field, text) {
+    const current = (data.languageSections || []).find((ls) => ls.language === language) || {};
+    const payload = { language };
+    for (const f of SNIPPET_FIELDS) payload[f.payload] = f === field ? text : current[f.prop] || "";
+    if (SNIPPET_FIELDS.every((f) => payload[f.payload].trim() === "")) {
+      await apiFetch(`/api/v1/admin/language-sections/${encodeURIComponent(language)}`, { method: "DELETE" });
+    } else {
+      await apiFetch("/api/v1/admin/language-sections", { method: "POST", body: JSON.stringify(payload) });
+    }
+  }
+
+  function renderLanguagesTab() {
     const rows =
-      sections
-        .map(
-          (ls) => `
+      snippetRows()
+        .map((r) => {
+          const key = `${r.language}|${r.field.id}`;
+          return `
       <tr>
-        <td>${esc(languageName(ls.language))}</td>
-        <td style="white-space:pre-wrap;">${esc(ls.grammar_prompt)}</td>
-        <td style="white-space:pre-wrap;">${esc(ls.transcription_prompt)}</td>
+        <td>${esc(languageName(r.language))}</td>
+        <td>${esc(T(r.field.label))}</td>
+        <td style="white-space:pre-wrap;">${esc(r.text)}</td>
         <td style="white-space:nowrap;">
-          <a href="#" data-edit-sections="${esc(ls.language)}">${esc(T("texts.edit"))}</a>
-          <button class="link-btn" type="button" data-delete-sections="${esc(ls.language)}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
+          <a href="#" data-edit-snippet="${esc(key)}">${esc(T("texts.edit"))}</a>
+          <button class="link-btn" type="button" data-delete-snippet="${esc(key)}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
         </td>
-      </tr>`,
-        )
+      </tr>`;
+        })
         .join("") || `<tr><td colspan="4"><em>${esc(T("admin.sections_no_configs"))}</em></td></tr>`;
-    return `
+    document.getElementById("tabLanguages").innerHTML = `
       <div class="card" style="margin-bottom:1.5rem;">
         <h2 style="margin-top:0;">${esc(T("admin.sections_heading"))}</h2>
         <p class="muted">${esc(T("admin.sections_hint"))}</p>
-        <form id="sectionsForm">
-          <pf-field label="${esc(T("texts.field_language"))}" for="sections-language">
-            <select id="sections-language" required>${languageOptions()}</select>
-          </pf-field>
-          <pf-field label="${esc(T("admin.sections_grammar"))}" for="sections-grammar">
-            <textarea id="sections-grammar" style="height:8rem;"></textarea>
-          </pf-field>
-          <pf-field label="${esc(T("admin.sections_transcription"))}" for="sections-transcription">
-            <textarea id="sections-transcription" style="height:4rem;"></textarea>
+        <form id="snippetForm">
+          <div class="field-row">
+            <pf-field label="${esc(T("texts.field_language"))}" for="snippet-language">
+              <select id="snippet-language" required>${languageOptions()}</select>
+            </pf-field>
+            <pf-field label="${esc(T("admin.snippet_field"))}" for="snippet-field">
+              <select id="snippet-field" required>${SNIPPET_FIELDS.map((f) => `<option value="${f.id}">${esc(T(f.label))}</option>`).join("")}</select>
+            </pf-field>
+          </div>
+          <pf-field label="${esc(T("admin.snippet_text"))}" for="snippet-text">
+            <textarea id="snippet-text" required style="height:14rem;"></textarea>
           </pf-field>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("admin.sections_save"))}</pf-button>
-            ${editingSections ? `<a href="#" id="sectionsCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
+            ${editingSnippet ? `<a href="#" id="snippetCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
           </div>
         </form>
       </div>
@@ -591,62 +640,78 @@
         <h2 style="margin-top:0;">${esc(T("admin.sections_configs_heading"))}</h2>
         <div style="overflow-x:auto;">
           <table class="admin-table">
-            <thead><tr><th>${esc(T("texts.field_language"))}</th><th>${esc(T("admin.sections_grammar"))}</th><th>${esc(T("admin.sections_transcription"))}</th><th></th></tr></thead>
+            <thead><tr><th>${esc(T("texts.field_language"))}</th><th>${esc(T("admin.snippet_field"))}</th><th>${esc(T("admin.snippet_text"))}</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
       </div>`;
+    bindLanguagesTab();
   }
 
-  function bindLanguageSections() {
-    const sections = data.languageSections || [];
-    const editing = editingSections ? sections.find((ls) => ls.language === editingSections) : null;
-    const languageSelect = document.getElementById("sections-language");
-    if (editing) {
-      languageSelect.value = editing.language;
-      document.getElementById("sections-grammar").value = editing.grammar_prompt;
-      document.getElementById("sections-transcription").value = editing.transcription_prompt;
+  function bindLanguagesTab() {
+    const languageSelect = document.getElementById("snippet-language");
+    const fieldSelect = document.getElementById("snippet-field");
+    const textArea = document.getElementById("snippet-text");
+    const fieldOf = (id) => SNIPPET_FIELDS.find((f) => f.id === id);
+
+    // The box shows the language's own snippet; a language without one starts
+    // from the default snippet. Changing language or snippet swaps the text
+    // only while the box is untouched (it still holds what was put there).
+    let shown = null;
+    function refreshSnippetText() {
+      const field = fieldOf(fieldSelect.value);
+      const section = (data.languageSections || []).find((ls) => ls.language === languageSelect.value) || {};
+      const next = (section[field.prop] || "").trim() !== "" ? section[field.prop] : (data.snippetDefaults || {})[field.id] || "";
+      if (textArea.value === "" || textArea.value === shown) {
+        textArea.value = next;
+        shown = next;
+      }
     }
-    const cancelLink = document.getElementById("sectionsCancelEdit");
+    if (editingSnippet) {
+      const [language, fieldId] = editingSnippet.split("|");
+      languageSelect.value = language;
+      fieldSelect.value = fieldId;
+    }
+    refreshSnippetText();
+    languageSelect.addEventListener("change", refreshSnippetText);
+    fieldSelect.addEventListener("change", refreshSnippetText);
+
+    const cancelLink = document.getElementById("snippetCancelEdit");
     if (cancelLink) {
       cancelLink.addEventListener("click", (e) => {
         e.preventDefault();
-        editingSections = null;
-        renderLLMTab();
+        editingSnippet = null;
+        renderLanguagesTab();
       });
     }
-    document.getElementById("sectionsForm").addEventListener("submit", async (e) => {
+    document.getElementById("snippetForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const payload = {
-        language: languageSelect.value,
-        grammarPrompt: document.getElementById("sections-grammar").value,
-        transcriptionPrompt: document.getElementById("sections-transcription").value,
-      };
       try {
-        await apiFetch("/api/v1/admin/language-sections", { method: "POST", body: JSON.stringify(payload) });
-        editingSections = null;
-        await loadAndRender("llm");
+        await saveSnippet(languageSelect.value, fieldOf(fieldSelect.value), textArea.value);
+        editingSnippet = null;
+        await loadAndRender("languages");
       } catch (err) {
         statusBar.setMessage(err.message, true);
       }
     });
-    const tab = document.getElementById("tabLlm");
-    tab.querySelectorAll("[data-edit-sections]").forEach((a) => {
+    const tab = document.getElementById("tabLanguages");
+    tab.querySelectorAll("[data-edit-snippet]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        editingSections = a.dataset.editSections;
-        renderLLMTab();
+        editingSnippet = a.dataset.editSnippet;
+        renderLanguagesTab();
       });
     });
-    tab.querySelectorAll("[data-delete-sections]").forEach((btn) => {
+    tab.querySelectorAll("[data-delete-snippet]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const confirmDialog = document.getElementById("confirmDialog");
         const ok = await confirmDialog.confirm(T("admin.sections_delete_confirm"), { danger: true });
         if (!ok) return;
+        const [language, fieldId] = btn.dataset.deleteSnippet.split("|");
         try {
-          await apiFetch(`/api/v1/admin/language-sections/${encodeURIComponent(btn.dataset.deleteSections)}`, { method: "DELETE" });
-          editingSections = null;
-          await loadAndRender("llm");
+          await saveSnippet(language, fieldOf(fieldId), "");
+          editingSnippet = null;
+          await loadAndRender("languages");
         } catch (err) {
           statusBar.setMessage(err.message, true);
         }

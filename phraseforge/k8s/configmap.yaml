@@ -46,6 +46,8 @@ data:
         - Preserve the line breaks and structure. Do not translate, explain or comment.
         Respond with only the transcription.
 
+        {{transcriptionPrompt}}
+
         Example 1 (Arabic).
         Input: كتب الطالب الدرس في المدرسة.
         Output: Kataba ṭ-ṭālib ad-dars fī l-madrasa.
@@ -163,6 +165,10 @@ data:
         - translation after =: into Polish, as a dictionary gives it: lowercase unless a name that is normally capitalized, senses separated with "; " (never "/"), no parentheses, no notes.
         Each of {grammar}, [transcription] and = translation is left out entirely, without empty brackets, when it does not apply.
 
+        {{grammarPrompt}}
+
+        {{transcriptionPrompt}}
+
         Example 1.
         Input: كتب الطالب الدرس في المدرسة.
         Output:
@@ -197,6 +203,8 @@ data:
         - translation after =: into Polish, short and natural, with "; " between alternatives (never "/") and no parentheses.
         Each of [transcription] and = translation is left out entirely, without empty brackets, when it does not apply.
 
+        {{transcriptionPrompt}}
+
         Example 1.
         Input: Die Union verliert im Vergleich zum Vormonat an Zuspruch und liegt jetzt bei 21 Prozent. Viele Menschen sind mit der Lage unzufrieden.
         Output:
@@ -213,8 +221,12 @@ data:
     # One structured (JSON) call per vocabulary/models item per site
     # locale. Templates use the prompt-eval placeholders {{sourceLanguage}},
     # {{targetLanguage}}, {{phrase}}, {{grammarPrompt}},
-    # {{transcriptionPrompt}}; the two sections come from Admin > LLM >
-    # Language sections.
+    # {{transcriptionPrompt}}; the two snippets come from Admin > Languages.
+    # The transcription, generateVocabulary and generateModels prompts above
+    # carry the same two placeholders: a prompt in this file replaces the
+    # embedded default, so it must contain a placeholder to use its snippet.
+    # Keep these prompts equal to prompt-eval's prompt/default/system files
+    # (config_test.go checks it).
     vocabularyItem:
       provider: ollama
       model: gemma4:12b

@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"phraseforge/internal/ai"
+	"phraseforge/internal/config"
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/ime"
 	"phraseforge/internal/roles"
@@ -39,7 +40,8 @@ var adminAppI18nKeys = []string{
 	"admin.llm_configs_heading", "admin.llm_delete_confirm", "admin.llm_no_configs",
 	"admin.sections_heading", "admin.sections_hint", "admin.sections_grammar", "admin.sections_transcription",
 	"admin.sections_save", "admin.sections_configs_heading", "admin.sections_delete_confirm", "admin.sections_no_configs",
-	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_config",
+	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_languages", "admin.tab_config",
+	"admin.snippet_field", "admin.snippet_text", "admin.llm_placeholders_hint",
 	"texts.edit", "texts.delete", "vocabulary.cancel_edit",
 }
 
@@ -75,8 +77,8 @@ type apiAdminBootstrap struct {
 	Grants     []apiAdminGrant `json:"grants"`
 	IMEConfigs []ime.Config    `json:"imeConfigs"`
 	LLMPrompts []ai.Prompt     `json:"llmPrompts"`
-	// LanguageSections backs the LLM tab's per-language grammar/
-	// transcription section editor (phraseforge-structured-item-translation).
+	// LanguageSections backs the Languages tab's per-language grammar/
+	// transcription snippet editor (phraseforge-structured-item-translation).
 	LanguageSections []ai.LanguageSections `json:"languageSections"`
 	// Providers lists the configured LLM provider registry's keys (e.g.
 	// "ollama", "openrouter"), sorted — the admin UI's LLM tab uses this to
@@ -88,6 +90,14 @@ type apiAdminBootstrap struct {
 	// out of sync with what the API (and the schema's CHECK constraint)
 	// actually accept.
 	LLMKinds []string `json:"llmKinds"`
+	// LLMDefaults maps each kind to the prompt it uses without an override,
+	// the starting text of a new prompt in the LLM tab.
+	LLMDefaults map[string]string `json:"llmDefaults"`
+	// LLMPlaceholders maps each kind to the {{placeholders}} its prompt may use.
+	LLMPlaceholders map[string][]string `json:"llmPlaceholders"`
+	// SnippetDefaults holds the default grammar and transcription snippets,
+	// the starting text of a language's own snippet.
+	SnippetDefaults map[string]string `json:"snippetDefaults"`
 }
 
 // apiGetAdminBootstrap is handleAdmin's four DB reads (users, grants, IME
@@ -129,11 +139,18 @@ func (s *Server) apiGetAdminBootstrap(w http.ResponseWriter, r *http.Request) {
 			Language: g.Language, LanguageName: g.LanguageName,
 		}
 	}
+	placeholders := make(map[string][]string, len(ai.ValidKinds))
+	for _, kind := range ai.ValidKinds {
+		placeholders[kind] = ai.PromptPlaceholders(kind)
+	}
 	writeJSON(w, http.StatusOK, apiAdminBootstrap{
 		Users: apiUsers, Grants: apiGrants, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts,
 		LanguageSections: languageSections,
 		Providers:        s.ai.Providers(),
 		LLMKinds:         ai.ValidKinds,
+		LLMDefaults:      s.ai.DefaultPrompts(),
+		LLMPlaceholders:  placeholders,
+		SnippetDefaults:  map[string]string{"grammar": config.DefaultGrammarSnippet, "transcription": config.DefaultTranscriptionSnippet},
 	})
 }
 
@@ -294,7 +311,8 @@ func (s *Server) apiDeleteAdminLLMPrompt(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apiAdminLanguageSectionsRequest is the LLM tab's language-sections form.
+// apiAdminLanguageSectionsRequest is the Languages tab's save request: both
+// snippets of one language.
 type apiAdminLanguageSectionsRequest struct {
 	Language            string `json:"language"`
 	GrammarPrompt       string `json:"grammarPrompt"`

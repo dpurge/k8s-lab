@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"phraseforge/internal/config"
@@ -471,5 +472,35 @@ func TestWritebackTrimsResult(t *testing.T) {
 	}
 	if texts.transcription != "hello" {
 		t.Errorf("SetTranscription called with %q, want trimmed %q", texts.transcription, "hello")
+	}
+}
+
+// TestDefaultPrompts: every kind has a default (the admin form's starting
+// text), taken from that kind's purpose config.
+func TestDefaultPrompts(t *testing.T) {
+	svc := &Service{cfg: config.Config{
+		Title:          config.PurposeConfig{Prompt: "title prompt"},
+		Translation:    config.PurposeConfig{Prompt: "translation prompt"},
+		VocabularyItem: config.PurposeConfig{Prompt: "vocabulary item prompt"},
+	}}
+	defaults := svc.DefaultPrompts()
+	if len(defaults) != len(ValidKinds) {
+		t.Errorf("DefaultPrompts has %d kinds, want %d (ValidKinds)", len(defaults), len(ValidKinds))
+	}
+	for kind, want := range map[string]string{"title": "title prompt", "translation": "translation prompt", "vocabulary_item": "vocabulary item prompt"} {
+		if defaults[kind] != want {
+			t.Errorf("DefaultPrompts()[%q] = %q, want %q", kind, defaults[kind], want)
+		}
+	}
+}
+
+func TestPromptPlaceholders(t *testing.T) {
+	if got, want := strings.Join(PromptPlaceholders("title"), ","), "grammarPrompt,transcriptionPrompt"; got != want {
+		t.Errorf("title placeholders = %q, want %q", got, want)
+	}
+	for _, kind := range []string{"vocabulary_item", "models_item"} {
+		if got, want := strings.Join(PromptPlaceholders(kind), ","), "sourceLanguage,targetLanguage,phrase,grammarPrompt,transcriptionPrompt"; got != want {
+			t.Errorf("%s placeholders = %q, want %q", kind, got, want)
+		}
 	}
 }

@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Admin > Languages tab: each language's grammar-tag snippet and transcription snippet, one row per snippet. A snippet is defined once and used by every prompt that contains `{{grammarPrompt}}` / `{{transcriptionPrompt}}`; the transcription, generate vocabulary and generate models prompts now contain them, besides the item prompts.
+- Admin > LLM: a new prompt starts from the default prompt of its kind instead of an empty box, with a list of the placeholders that kind accepts.
 - English (`eng`), Finnish (`fin`), Japanese (`jpn`), Korean (`kor`), Swahili (`swa`), Swedish (`swe`) and Tagalog (`tgl`) are in the language list, so texts in them can be created (Polish and the other languages were already there). Existing databases get the rows when the schema is applied again (the migrate job).
 - The size limit for ingested content is configurable (`ingest.maxContentBytes`; the default stays 24 KiB, and
   the prod ConfigMap sets 200 KiB). Long texts and dialogs are cleaned in chunks that fit each purpose's
@@ -37,6 +39,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Language sections moved from the Admin > LLM tab to the new Languages tab, shown one snippet per row instead of two columns in one table; the stored data and the configuration export/import format are unchanged.
+- Admin > LLM prompt kinds are named after the default prompt files: "Generate translation", "Generate transcription", "Generate title", "Process text", "Process dialog", "Generate vocabulary", "Generate models", "Generate vocabulary item", "Generate models item".
+- Default prompts are the files of prompt-eval's `prompt/default/system/`, embedded in the binary (`npm run sync-prompts` / `check-sync` in prompt-eval keep the copy equal); the default title and translation prompts are now the production-tuned text prompt-eval tests, which differs from the old one only in line breaks. A deployed prompt (`config.yaml` or an admin row) must contain a snippet placeholder to use the snippet.
 - The default prompts for transcription, text and dialog cleaning, vocabulary and models extraction, and the per-item vocabulary and models translations are rewritten, each with two worked examples: transcription follows the scholarly transliteration of the language, with every diacritic, sentence capitals and Latin punctuation; cleaning keeps only the text itself (no navigation, no introduction before it, no questions or links after it); vocabulary uses dictionary forms and the canonical part-of-speech tags (`Adj`, `Adv`, ...); translations read like a dictionary (lowercase, senses joined by `; `, never `/`, no parentheses); notes are rare and written in the target language; models are few, key sentence patterns ordered from simple to complex. A deployment that sets its own prompts in its config file keeps them (the Helm values are updated alongside).
 - vocabulary/models item generation (per-item Generate buttons, Generate missing translations, import
   backfill, and the follow-ups after generating from a text) now queues the single structured item call

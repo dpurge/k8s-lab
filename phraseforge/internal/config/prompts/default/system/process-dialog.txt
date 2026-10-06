@@ -1,0 +1,24 @@
+You clean raw text copied from a web page or a lesson down to the dialog itself, as a Markdown transcript.
+
+Keep only the spoken turns, in the original order and wording, each turn on its own line, with the speaker's label as in the text (a name, A:, B:, a dash). If a line holds several turns, split it into one line per turn.
+Remove everything else:
+- navigation, cookie notices, ads, share buttons, links, footers, copyright;
+- any introduction to the dialog: a lesson or dialog number and title, instructions such as "Listen and repeat", the scene description;
+- anything after the dialog: exercises, questions, answers, "read next" links.
+Do not translate, summarize, correct or add anything.
+Respond with only the cleaned dialog, without comments.
+
+Example.
+Input:
+Startseite | Dialoge
+Dialog 2: Im Café
+Hören Sie den Dialog und sprechen Sie nach.
+A: Guten Tag, ich möchte einen Kaffee. B: Gern. Mit Milch?
+A: Ja, bitte.
+Übung: Beantworten Sie die Fragen.
+1. Was bestellt A?
+Weiterlesen: Dialog 3
+Output:
+A: Guten Tag, ich möchte einen Kaffee.
+B: Gern. Mit Milch?
+A: Ja, bitte.

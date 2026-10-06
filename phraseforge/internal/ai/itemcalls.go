@@ -36,6 +36,20 @@ func (s *Service) EffectiveSections(ctx context.Context, language string) (Langu
 	return sections, nil
 }
 
+// renderSystemPrompt fills the snippet placeholders of a system prompt from
+// language's effective sections, the same ones the item prompts get. A prompt
+// without a placeholder is returned unchanged, without a database lookup.
+func (s *Service) renderSystemPrompt(ctx context.Context, template, language string) (string, error) {
+	if !usesSnippets(template) {
+		return template, nil
+	}
+	sections, err := s.EffectiveSections(ctx, language)
+	if err != nil {
+		return "", fmt.Errorf("load language sections for %s: %w", language, err)
+	}
+	return renderSnippets(template, sections), nil
+}
+
 // ItemState is what an item already has, for ItemCallLocales.
 type ItemState struct {
 	ResourceType  string          // "vocabulary_item" or "models_item"

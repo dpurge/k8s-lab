@@ -38,3 +38,65 @@ func TestRenderItemPromptIsSinglePass(t *testing.T) {
 		t.Errorf("got %q, want the phrase's own braces and unknown placeholders left untouched", got)
 	}
 }
+
+func TestRenderSnippetsFillsOnlyTheTwoSnippetPlaceholders(t *testing.T) {
+	sections := LanguageSections{GrammarPrompt: "G", TranscriptionPrompt: "T"}
+	got := renderSnippets("a {{grammarPrompt}} b {{transcriptionPrompt}} c {{phrase}} {{unknown}}", sections)
+	if want := "a G b T c {{phrase}} {{unknown}}"; got != want {
+		t.Errorf("renderSnippets = %q, want %q", got, want)
+	}
+}
+
+func TestRenderSnippetsBlankSectionRendersEmpty(t *testing.T) {
+	got := renderSnippets("x\n\n{{grammarPrompt}}\n\ny", LanguageSections{})
+	if want := "x\n\n\n\ny"; got != want {
+		t.Errorf("renderSnippets = %q, want %q", got, want)
+	}
+}
+
+func TestRenderSnippetsDoesNotExpandPlaceholdersInsideASnippet(t *testing.T) {
+	sections := LanguageSections{GrammarPrompt: "{{transcriptionPrompt}}", TranscriptionPrompt: "T"}
+	if got, want := renderSnippets("{{grammarPrompt}}", sections), "{{transcriptionPrompt}}"; got != want {
+		t.Errorf("renderSnippets = %q, want %q (one pass)", got, want)
+	}
+}
+
+func TestUsesSnippets(t *testing.T) {
+	cases := map[string]bool{
+		"plain prompt":                    false,
+		"has {{phrase}} only":             false,
+		"has {{grammarPrompt}}":           true,
+		"has {{transcriptionPrompt}} too": true,
+	}
+	for template, want := range cases {
+		if got := usesSnippets(template); got != want {
+			t.Errorf("usesSnippets(%q) = %v, want %v", template, got, want)
+		}
+	}
+}
+
+// The three generate prompts that use transcription or grammar tags carry the
+// placeholders, so the language's snippets reach them; the others do not.
+func TestDefaultGeneratePromptsCarrySnippetPlaceholders(t *testing.T) {
+	cases := []struct {
+		name   string
+		prompt string
+		want   []string
+	}{
+		{"transcription", config.DefaultTranscriptionPrompt, []string{"{{transcriptionPrompt}}"}},
+		{"generate_vocabulary", config.DefaultGenerateVocabularyPrompt, []string{"{{grammarPrompt}}", "{{transcriptionPrompt}}"}},
+		{"generate_models", config.DefaultGenerateModelsPrompt, []string{"{{transcriptionPrompt}}"}},
+		{"translation", config.DefaultTranslationPrompt, nil},
+		{"title", config.DefaultTitlePrompt, nil},
+	}
+	for _, c := range cases {
+		if got := usesSnippets(c.prompt); got != (len(c.want) > 0) {
+			t.Errorf("%s: usesSnippets = %v, want %v", c.name, got, len(c.want) > 0)
+		}
+		for _, placeholder := range c.want {
+			if !strings.Contains(c.prompt, placeholder) {
+				t.Errorf("%s default prompt lacks %s", c.name, placeholder)
+			}
+		}
+	}
+}

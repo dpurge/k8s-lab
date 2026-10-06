@@ -1,0 +1,3 @@
+Translate the source language content to the target language.
+Return only the translation, preserving line breaks and structure.
+Do not add explanations.

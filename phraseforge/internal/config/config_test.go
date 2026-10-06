@@ -329,11 +329,20 @@ func TestConfigMapItemPromptsMatchDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.VocabularyItem.Prompt != DefaultVocabularyItemPrompt {
-		t.Errorf("configmap vocabularyItem.prompt differs from DefaultVocabularyItemPrompt:\n%q\nvs\n%q", cfg.VocabularyItem.Prompt, DefaultVocabularyItemPrompt)
-	}
-	if cfg.ModelsItem.Prompt != DefaultModelsItemPrompt {
-		t.Errorf("configmap modelsItem.prompt differs from DefaultModelsItemPrompt:\n%q\nvs\n%q", cfg.ModelsItem.Prompt, DefaultModelsItemPrompt)
+	// translation and title are left out: the configmap keeps them as one-line
+	// strings, the defaults as the (line-wrapped) text prompt-eval tests.
+	for name, pair := range map[string][2]string{
+		"vocabularyItem":     {cfg.VocabularyItem.Prompt, DefaultVocabularyItemPrompt},
+		"modelsItem":         {cfg.ModelsItem.Prompt, DefaultModelsItemPrompt},
+		"transcription":      {cfg.Transcription.Prompt, DefaultTranscriptionPrompt},
+		"processText":        {cfg.ProcessText.Prompt, DefaultProcessTextPrompt},
+		"processDialog":      {cfg.ProcessDialog.Prompt, DefaultProcessDialogPrompt},
+		"generateVocabulary": {cfg.GenerateVocabulary.Prompt, DefaultGenerateVocabularyPrompt},
+		"generateModels":     {cfg.GenerateModels.Prompt, DefaultGenerateModelsPrompt},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("configmap %s.prompt differs from its compiled-in default (a prompt change must reach both):\n%q\nvs\n%q", name, pair[0], pair[1])
+		}
 	}
 	// Long pages are accepted in prod only through this value, so a typo in the
 	// key must not fall back silently to the 24 KiB default.

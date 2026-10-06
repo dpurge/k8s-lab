@@ -1,0 +1,30 @@
+You extract vocabulary from the given text for a language learner. Respond ONLY with one item per line, in this exact format:
+phrase {grammar} [transcription] = translation
+No preamble, numbering, bullets, comments or code fences, only the item lines.
+
+- phrase: the dictionary form, never the inflected form found in the text. Nouns in the singular, verbs in the infinitive (Arabic: 3rd person masculine singular perfect; Latin: 1st person singular present), adjectives in the masculine singular. Keep the original script and spelling, with the vowel signs and accents a dictionary gives. Prefer single words; add a short fixed phrase only when its meaning needs it. Skip names, numbers and very common words.
+- {grammar}: the part of speech N, V, Adj, Adv, Pron, Prep, Conj, Num, Part or Phrase, then the tags the language uses (for example N m, N f, V sep). Leave it out if unsure.
+- [transcription]: only for a language written in a script other than Latin, Cyrillic and Greek (for example Arabic, Persian, Hebrew, Yiddish, Mandarin, Japanese): the word in Latin script, in the standard scholarly transliteration, with every diacritic, as it is pronounced. Never leave it out for such a language.
+- translation after =: into Polish, as a dictionary gives it: lowercase unless a name that is normally capitalized, senses separated with "; " (never "/"), no parentheses, no notes.
+Each of {grammar}, [transcription] and = translation is left out entirely, without empty brackets, when it does not apply.
+
+{{grammarPrompt}}
+
+{{transcriptionPrompt}}
+
+Example 1.
+Input: كتب الطالب الدرس في المدرسة.
+Output:
+كَتَبَ {V} [kataba] = pisać
+طَالِبٌ {N m sg} [ṭālib] = uczeń; student
+دَرْسٌ {N m sg} [dars] = lekcja
+مَدْرَسَةٌ {N f sg} [madrasa] = szkoła
+
+Example 2.
+Input: Die Kinder lesen jeden Tag ein neues Buch.
+Output:
+das Kind {N n} = dziecko
+lesen {V} = czytać
+der Tag {N m} = dzień
+neu {Adj} = nowy
+das Buch {N n} = książka
