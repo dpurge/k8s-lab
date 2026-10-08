@@ -1,6 +1,6 @@
 // dialogs-app.js: client-side rendering for the Dialogs section of the
-// unified SPA shell (app.html). Mirrors texts-app.js exactly (single-URL
-// model, no deep-linking, per phraseforge-spa-shell-texts's decision) with
+// unified SPA shell (app.html). Mirrors texts-app.js exactly (routed list
+// and view URLs, per phraseforge-hash-navigation) with
 // two dialog-specific differences: renderedBody/etc. can come back with a
 // sibling *Error field instead (malformed turn syntax — a normal 200, not
 // an HTTP error), shown as the same inline notice dialogs-view.html used;
@@ -14,11 +14,17 @@
   const root = document.getElementById("dialogs-app");
   const statusBar = document.getElementById("statusBar");
 
-  // Keyset pagination state — see texts-app.js's showList for the full
-  // rationale (phraseforge-spa-pagination).
-  let pageCursors = [null];
-  let pageIndex = 0;
-  let latestNextCursor = null;
+  // listContext is the list page/tag the current list or view belongs to;
+  // forms and the view's back link return to it. Set by show(route). See
+  // texts-app.js for the routing model (specs/features/phraseforge-hash-
+  // navigation.md).
+  let listContext = { page: 1, tag: "" };
+
+  // goTo changes the URL (adding a history entry), which renders the route;
+  // the render functions below never touch the URL themselves.
+  function goTo(route) {
+    window.pfRouter.navigate({ section: "dialogs", ...route });
+  }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(
@@ -113,7 +119,7 @@
         statusBar.setMessage(err.message, true);
         return;
       }
-      await showList(tagFilter);
+      await showList(tagFilter, listContext.page);
       showImportResult(res);
     };
     reader.onerror = () => {
@@ -133,17 +139,9 @@
     }
   }
 
-  async function showList(tagFilter, pageDirection) {
+  async function showList(tagFilter, page = 1) {
     statusBar.setMessage("");
-    if (pageDirection === "next") {
-      pageCursors[pageIndex + 1] = latestNextCursor;
-      pageIndex++;
-    } else if (pageDirection === "prev") {
-      pageIndex--;
-    } else {
-      pageCursors = [null];
-      pageIndex = 0;
-    }
+    listContext = { page, tag: tagFilter || "" };
     const languageFilter = window.pfGetLanguageFilter();
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -182,20 +180,26 @@
       importFile.addEventListener("change", () => handleImportFile(importFile, "/api/v1/dialogs/import", tagFilter));
     }
     const clearLink = document.getElementById("clearTagFilter");
-    if (clearLink) clearLink.addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    if (clearLink) clearLink.addEventListener("click", (e) => { e.preventDefault(); goTo({}); });
 
     const query = new URLSearchParams();
     if (languageFilter) query.set("language", languageFilter);
     if (tagFilter) query.set("tag", tagFilter);
-    const cursor = pageCursors[pageIndex];
-    if (cursor) query.set("cursor", cursor);
+    query.set("page", String(page));
     let items;
+    let pageCount;
     try {
       const data = await apiFetch("/api/v1/dialogs?" + query.toString());
       items = data.items;
-      latestNextCursor = data.nextCursor || null;
+      pageCount = data.pageCount;
     } catch (e) {
       statusBar.setMessage(e.message, true);
+      return;
+    }
+    // A bookmarked page that no longer exists (items deleted since) lands on
+    // the last page instead of an empty one.
+    if (page > pageCount) {
+      window.pfRouter.replace({ section: "dialogs", page: pageCount, tag: tagFilter });
       return;
     }
 
@@ -214,33 +218,24 @@
     grid.querySelectorAll("[data-open]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showView(Number(a.dataset.open));
+        goTo({ id: Number(a.dataset.open), page, tag: tagFilter });
       });
     });
     grid.querySelectorAll("[data-tag-filter]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showList(a.dataset.tagFilter);
+        goTo({ tag: a.dataset.tagFilter });
       });
     });
 
-    if (pageIndex > 0 || latestNextCursor) {
-      const pager = document.createElement("div");
-      pager.style.cssText = "display:flex; justify-content:center; gap:0.75rem; margin-top:1.5rem;";
-      if (pageIndex > 0) {
-        const prevBtn = document.createElement("pf-button");
-        prevBtn.setAttribute("variant", "secondary");
-        prevBtn.textContent = T("texts.pagination_previous");
-        prevBtn.addEventListener("click", () => showList(tagFilter, "prev"));
-        pager.appendChild(prevBtn);
-      }
-      if (latestNextCursor) {
-        const nextBtn = document.createElement("pf-button");
-        nextBtn.setAttribute("variant", "secondary");
-        nextBtn.textContent = T("texts.pagination_next");
-        nextBtn.addEventListener("click", () => showList(tagFilter, "next"));
-        pager.appendChild(nextBtn);
-      }
+    if (pageCount > 1) {
+      const pager = document.createElement("pf-pager");
+      pager.style.marginTop = "1.5rem";
+      pager.setAttribute("page", String(page));
+      pager.setAttribute("page-count", String(pageCount));
+      pager.setAttribute("prev-label", T("texts.pagination_previous"));
+      pager.setAttribute("next-label", T("texts.pagination_next"));
+      pager.addEventListener("pf-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
       container.appendChild(pager);
     }
   }
@@ -300,7 +295,7 @@
     document.getElementById("backLink").addEventListener("click", (e) => {
       e.preventDefault();
       if (isEdit) showView(existing.id);
-      else showList();
+      else showList(listContext.tag, listContext.page);
     });
 
     pfInitEditor();
@@ -320,7 +315,8 @@
         const result = isEdit
           ? await apiFetch(`/api/v1/dialogs/${existing.id}`, { method: "PUT", body: JSON.stringify(payload) })
           : await apiFetch("/api/v1/dialogs", { method: "POST", body: JSON.stringify(payload) });
-        showView(result.id);
+        if (isEdit) showView(result.id);
+        else goTo({ id: result.id, ...listContext });
       } catch (err) {
         statusBar.setMessage(err.message, true);
       }
@@ -376,7 +372,7 @@
       </div>
     `;
 
-    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(listContext.tag, listContext.page); });
 
     const sourceSelect = document.getElementById("ingest-source");
     const contentField = document.getElementById("ingest-content");
@@ -438,7 +434,7 @@
       try {
         await apiFetch("/api/v1/dialogs/ingest", { method: "POST", body: JSON.stringify(payload) });
         statusBar.setMessage(T("texts.ingest_started"));
-        showList();
+        goTo({});
       } catch (err) {
         statusBar.setMessage(err.message, true);
       }
@@ -552,7 +548,7 @@
     // article; the rendered dialog markup itself already carries its own
     // dir attribute (see the real payload: dialog.s-latn dir="ltr"), so the
     // outer article doesn't need it duplicated here.
-    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
       phraseforgeCopyActiveMarkdown(e.currentTarget.querySelector("button"));
     });
@@ -590,7 +586,7 @@
         try {
           await apiFetch(`/api/v1/dialogs/${id}`, { method: "DELETE" });
           statusBar.setMessage("Deleted.");
-          showList();
+          goTo({ page: listContext.page, tag: listContext.tag });
         } catch (e) {
           statusBar.setMessage(e.message, true);
         }
@@ -599,7 +595,7 @@
     document.querySelectorAll("[data-tag-filter]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showList(a.dataset.tagFilter);
+        goTo({ tag: a.dataset.tagFilter });
       });
     });
     document.querySelectorAll("[data-goto-vocab]").forEach((a) => {
@@ -618,6 +614,15 @@
 
   window.pfSections.dialogs = {
     setBootstrap(b) { BOOT = b; },
-    show: showList,
+    // show renders a route: a view when it has an id, else a list page.
+    // The route's page/tag become the context forms and Back return to.
+    show(route) {
+      const { id = null, page = 1, tag = "" } = route || {};
+      if (id != null) {
+        listContext = { page, tag };
+        return showView(id);
+      }
+      return showList(tag, page);
+    },
   };
 })();

@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Every list and item screen has its own `#` URL, so it can be bookmarked and reloaded: `#/texts?page=3`, `#/texts/12?page=3&tag=x`, and the same for dialogs, vocabulary, models (`#/jobs?page=2` for the Jobs list). The browser's Back and Forward buttons move between the screens you visited.
+- Numbered page links between Previous and Next when a list has more than two pages, showing at most 10 numbers with an ellipsis where pages are hidden. The Jobs list is paged too (25 per page); its API returns the old array unless `?page=` is given, and the list APIs of texts, dialogs, vocabulary and models take `?page=N` and return `page`, `pageCount` and `total`.
 - Admin > Languages tab: each language's grammar-tag snippet and transcription snippet, one row per snippet. A snippet is defined once and used by every prompt that contains `{{grammarPrompt}}` / `{{transcriptionPrompt}}`; the transcription, generate vocabulary and generate models prompts now contain them, besides the item prompts.
 - Admin > LLM: a new prompt starts from the default prompt of its kind instead of an empty box, with a list of the placeholders that kind accepts.
 - English (`eng`), Finnish (`fin`), Japanese (`jpn`), Korean (`kor`), Swahili (`swa`), Swedish (`swe`) and Tagalog (`tgl`) are in the language list, so texts in them can be created (Polish and the other languages were already there). Existing databases get the rows when the schema is applied again (the migrate job).
@@ -106,6 +108,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Going back from a text, dialog, vocabulary list or models list returns to the list page it was opened from, not page 1.
 - Generating vocabulary or models no longer returns an empty list when the model writes lines in the wrong
   format (for example the grammar tag in square brackets, seen with Arabic): rejected lines are sent back to
   the model, and only those lines, for correction (up to `maxAttempts` rounds); lines still malformed are

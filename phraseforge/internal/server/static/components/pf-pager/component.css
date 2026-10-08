@@ -1,0 +1,44 @@
+pf-pager {
+  display: block;
+}
+
+pf-pager .pf-pager-items {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+pf-pager .pf-pager-item {
+  font: inherit;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  min-width: 2.25rem;
+  padding: 0.45rem 0.75rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.1s ease, color 0.1s ease;
+}
+
+pf-pager .pf-pager-item:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--text);
+}
+
+pf-pager .pf-pager-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+pf-pager .pf-pager-item.active {
+  background: var(--btn-bg);
+  color: #fff;
+  font-weight: 600;
+}
+
+pf-pager .pf-pager-gap {
+  color: var(--muted);
+  padding: 0 0.25rem;
+}

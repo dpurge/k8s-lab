@@ -1,10 +1,9 @@
 // texts-app.js: client-side rendering for the Texts section of the unified
-// SPA shell (app.html). Single-URL model (no deep-linking — matches
-// knowledge exactly, per the user's explicit decision in
-// phraseforge-spa-shell-texts): list/new/view/edit are all in-page states
-// inside #texts-app, never a URL change. Registers itself on
-// window.pfSections.texts for shell.js to call into — see
-// specs/features/phraseforge-spa-unified-shell.md.
+// SPA shell (app.html). List and view are routed (#/texts?page=N&tag=T and
+// #/texts/<id>?page=N&tag=T — specs/features/phraseforge-hash-navigation.md);
+// new/edit/ingest stay in-page states inside #texts-app under their parent's
+// URL. Registers itself on window.pfSections.texts for shell.js to call into
+// — see specs/features/phraseforge-spa-unified-shell.md.
 (function () {
   window.pfSections = window.pfSections || {};
   let BOOT = window.__PF_APP_BOOTSTRAP__.texts;
@@ -12,17 +11,15 @@
   const root = document.getElementById("texts-app");
   const statusBar = document.getElementById("statusBar");
 
-  // Keyset pagination state (phraseforge-spa-pagination) — module-level so
-  // it survives across the Previous/Next clicks that re-invoke showList,
-  // but reset to page 1 on every "fresh" call (no explicit pageDirection):
-  // initial section load, a sidebar language-filter change, or a tag-filter
-  // link/clear click all already call showList() this way. pageCursors[i]
-  // is the cursor used to fetch page i; latestNextCursor is the most
-  // recently fetched page's own nextCursor (undefined once there is no
-  // further page).
-  let pageCursors = [null];
-  let pageIndex = 0;
-  let latestNextCursor = null;
+  // listContext is the list page/tag the current list or view belongs to;
+  // forms and the view's back link return to it. Set by show(route).
+  let listContext = { page: 1, tag: "" };
+
+  // goTo changes the URL (adding a history entry), which renders the route;
+  // the render functions below never touch the URL themselves.
+  function goTo(route) {
+    window.pfRouter.navigate({ section: "texts", ...route });
+  }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(
@@ -130,7 +127,7 @@
         statusBar.setMessage(err.message, true);
         return;
       }
-      await showList(tagFilter);
+      await showList(tagFilter, listContext.page);
       showImportResult(res);
     };
     reader.onerror = () => {
@@ -156,17 +153,9 @@
     }
   }
 
-  async function showList(tagFilter, pageDirection) {
+  async function showList(tagFilter, page = 1) {
     statusBar.setMessage("");
-    if (pageDirection === "next") {
-      pageCursors[pageIndex + 1] = latestNextCursor;
-      pageIndex++;
-    } else if (pageDirection === "prev") {
-      pageIndex--;
-    } else {
-      pageCursors = [null];
-      pageIndex = 0;
-    }
+    listContext = { page, tag: tagFilter || "" };
     // Read fresh on every call (not just at initial load) — same reasoning
     // as the fetch query below, but needed earlier here too since it's the
     // export language select's default (the caller can still change it —
@@ -210,20 +199,26 @@
       importFile.addEventListener("change", () => handleImportFile(importFile, "/api/v1/texts/import", tagFilter));
     }
     const clearLink = document.getElementById("clearTagFilter");
-    if (clearLink) clearLink.addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    if (clearLink) clearLink.addEventListener("click", (e) => { e.preventDefault(); goTo({}); });
 
     const query = new URLSearchParams();
     if (languageFilter) query.set("language", languageFilter);
     if (tagFilter) query.set("tag", tagFilter);
-    const cursor = pageCursors[pageIndex];
-    if (cursor) query.set("cursor", cursor);
+    query.set("page", String(page));
     let items;
+    let pageCount;
     try {
       const data = await apiFetch("/api/v1/texts?" + query.toString());
       items = data.items;
-      latestNextCursor = data.nextCursor || null;
+      pageCount = data.pageCount;
     } catch (e) {
       statusBar.setMessage(e.message, true);
+      return;
+    }
+    // A bookmarked page that no longer exists (items deleted since) lands on
+    // the last page instead of an empty one.
+    if (page > pageCount) {
+      window.pfRouter.replace({ section: "texts", page: pageCount, tag: tagFilter });
       return;
     }
 
@@ -242,33 +237,24 @@
     grid.querySelectorAll("[data-open]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showView(Number(a.dataset.open));
+        goTo({ id: Number(a.dataset.open), page, tag: tagFilter });
       });
     });
     grid.querySelectorAll("[data-tag-filter]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showList(a.dataset.tagFilter);
+        goTo({ tag: a.dataset.tagFilter });
       });
     });
 
-    if (pageIndex > 0 || latestNextCursor) {
-      const pager = document.createElement("div");
-      pager.style.cssText = "display:flex; justify-content:center; gap:0.75rem; margin-top:1.5rem;";
-      if (pageIndex > 0) {
-        const prevBtn = document.createElement("pf-button");
-        prevBtn.setAttribute("variant", "secondary");
-        prevBtn.textContent = T("texts.pagination_previous");
-        prevBtn.addEventListener("click", () => showList(tagFilter, "prev"));
-        pager.appendChild(prevBtn);
-      }
-      if (latestNextCursor) {
-        const nextBtn = document.createElement("pf-button");
-        nextBtn.setAttribute("variant", "secondary");
-        nextBtn.textContent = T("texts.pagination_next");
-        nextBtn.addEventListener("click", () => showList(tagFilter, "next"));
-        pager.appendChild(nextBtn);
-      }
+    if (pageCount > 1) {
+      const pager = document.createElement("pf-pager");
+      pager.style.marginTop = "1.5rem";
+      pager.setAttribute("page", String(page));
+      pager.setAttribute("page-count", String(pageCount));
+      pager.setAttribute("prev-label", T("texts.pagination_previous"));
+      pager.setAttribute("next-label", T("texts.pagination_next"));
+      pager.addEventListener("pf-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
       container.appendChild(pager);
     }
   }
@@ -331,7 +317,7 @@
     document.getElementById("backLink").addEventListener("click", (e) => {
       e.preventDefault();
       if (isEdit) showView(existing.id);
-      else showList();
+      else showList(listContext.tag, listContext.page);
     });
 
     // Re-wires #language/#script change listeners and runs the initial
@@ -357,7 +343,8 @@
         const result = isEdit
           ? await apiFetch(`/api/v1/texts/${existing.id}`, { method: "PUT", body: JSON.stringify(payload) })
           : await apiFetch("/api/v1/texts", { method: "POST", body: JSON.stringify(payload) });
-        showView(result.id);
+        if (isEdit) showView(result.id);
+        else goTo({ id: result.id, ...listContext });
       } catch (err) {
         statusBar.setMessage(err.message, true);
       }
@@ -415,7 +402,7 @@
       </div>
     `;
 
-    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(listContext.tag, listContext.page); });
 
     const sourceSelect = document.getElementById("ingest-source");
     const contentField = document.getElementById("ingest-content");
@@ -487,7 +474,7 @@
       try {
         await apiFetch("/api/v1/texts/ingest", { method: "POST", body: JSON.stringify(payload) });
         statusBar.setMessage(T("texts.ingest_started"));
-        showList();
+        goTo({});
       } catch (err) {
         statusBar.setMessage(err.message, true);
       }
@@ -593,7 +580,7 @@
           : ""
       }
     `;
-    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
       phraseforgeCopyActiveMarkdown(e.currentTarget.querySelector("button"));
     });
@@ -631,7 +618,7 @@
         try {
           await apiFetch(`/api/v1/texts/${id}`, { method: "DELETE" });
           statusBar.setMessage("Deleted.");
-          showList();
+          goTo({ page: listContext.page, tag: listContext.tag });
         } catch (e) {
           statusBar.setMessage(e.message, true);
         }
@@ -640,7 +627,7 @@
     document.querySelectorAll("[data-tag-filter]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showList(a.dataset.tagFilter);
+        goTo({ tag: a.dataset.tagFilter });
       });
     });
     document.querySelectorAll("[data-goto-vocab]").forEach((a) => {
@@ -659,6 +646,15 @@
 
   window.pfSections.texts = {
     setBootstrap(b) { BOOT = b; },
-    show: showList,
+    // show renders a route: a view when it has an id, else a list page.
+    // The route's page/tag become the context forms and Back return to.
+    show(route) {
+      const { id = null, page = 1, tag = "" } = route || {};
+      if (id != null) {
+        listContext = { page, tag };
+        return showView(id);
+      }
+      return showList(tag, page);
+    },
   };
 })();

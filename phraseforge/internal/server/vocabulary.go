@@ -120,7 +120,20 @@ func (s *Server) apiListVocabLists(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	list, hasMore, err := s.vocab.ListAllPage(r.Context(), langs, all, tagIDs, decodeCursorParam(r), pagination.DefaultLimit)
+	// ?page=N selects numbered (offset) paging; without it the legacy
+	// ?cursor= keyset path is unchanged.
+	page, isPaged := pagination.ParsePage(r.URL.Query().Get("page"))
+	var list []vocabulary.List
+	var hasMore bool
+	var total int
+	if isPaged {
+		total, err = s.vocab.Count(r.Context(), langs, all, tagIDs)
+		if err == nil {
+			list, err = s.vocab.ListOffset(r.Context(), langs, all, tagIDs, pagination.Offset(page, pagination.DefaultLimit), pagination.DefaultLimit)
+		}
+	} else {
+		list, hasMore, err = s.vocab.ListAllPage(r.Context(), langs, all, tagIDs, decodeCursorParam(r), pagination.DefaultLimit)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -147,7 +160,11 @@ func (s *Server) apiListVocabLists(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp := map[string]any{"items": out}
-	if hasMore && len(list) > 0 {
+	if isPaged {
+		resp["page"] = page
+		resp["total"] = total
+		resp["pageCount"] = pagination.PageCount(total, pagination.DefaultLimit)
+	} else if hasMore && len(list) > 0 {
 		last := list[len(list)-1]
 		resp["nextCursor"] = pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
 	}

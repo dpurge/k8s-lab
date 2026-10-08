@@ -101,16 +101,28 @@
     return res.json();
   }
 
-  async function loadAndRender() {
+  // currentPage is the page of the route being shown; the action handlers'
+  // bare loadAndRender() calls re-render it. Set by show(route) — see
+  // specs/features/phraseforge-hash-navigation.md.
+  let currentPage = 1;
+
+  async function loadAndRender(page = currentPage) {
     statusBar.setMessage("");
-    let jobList;
+    currentPage = page;
+    let data;
     try {
-      jobList = await apiFetch("/api/v1/admin/jobs");
+      data = await apiFetch("/api/v1/admin/jobs?page=" + page);
     } catch (e) {
       statusBar.setMessage(e.message, true);
       return;
     }
-    render(jobList);
+    // A bookmarked page that no longer exists (jobs cleared or deleted
+    // since) lands on the last page instead of an empty one.
+    if (page > data.pageCount) {
+      window.pfRouter.replace({ section: "jobs", page: data.pageCount });
+      return;
+    }
+    render(data.items, data.pageCount);
   }
 
   // Each action gets its own fixed table column so a row's buttons never
@@ -130,7 +142,7 @@
     return { retryCell, cancelOrDeleteCell };
   }
 
-  function render(jobList) {
+  function render(jobList, pageCount) {
     const rows =
       jobList
         .map((j) => {
@@ -165,7 +177,17 @@
           </table>
         </div>
       </div>
+      ${pageCount > 1 ? '<pf-pager id="jobsPager" style="margin-top:1.5rem;"></pf-pager>' : ""}
     `;
+
+    const pager = document.getElementById("jobsPager");
+    if (pager) {
+      pager.setAttribute("page", String(currentPage));
+      pager.setAttribute("page-count", String(pageCount));
+      pager.setAttribute("prev-label", T("texts.pagination_previous"));
+      pager.setAttribute("next-label", T("texts.pagination_next"));
+      pager.addEventListener("pf-pager-select", (e) => window.pfRouter.navigate({ section: "jobs", page: e.detail.page }));
+    }
 
     document.getElementById("refreshJobsBtn").addEventListener("click", () => loadAndRender());
 
@@ -278,6 +300,8 @@
 
   window.pfSections.jobs = {
     setBootstrap(b) { BOOT = b; },
-    show: loadAndRender,
+    show(route) {
+      return loadAndRender(route ? route.page : 1);
+    },
   };
 })();

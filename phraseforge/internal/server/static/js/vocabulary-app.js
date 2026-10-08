@@ -1,6 +1,6 @@
 // vocabulary-app.js: client-side rendering for the Vocabulary section of
 // the unified SPA shell (app.html). Mirrors texts-app.js/dialogs-app.js's
-// conventions (single-URL model, language-filter-from-query-string fix
+// conventions (routed list/view URLs, language-filter-from-query-string fix
 // applied from the start this time) with one structural addition: a list
 // has items, so "Manage" combines the old vocab-edit.html's three pieces —
 // the list-meta form, an item add/edit form, and the items table — as one
@@ -17,11 +17,17 @@
   const root = document.getElementById("vocabulary-app");
   const statusBar = document.getElementById("statusBar");
 
-  // Keyset pagination state — see texts-app.js's showList for the full
-  // rationale (phraseforge-spa-pagination).
-  let pageCursors = [null];
-  let pageIndex = 0;
-  let latestNextCursor = null;
+  // listContext is the list page/tag the current list or view belongs to;
+  // forms and the view's back link return to it. Set by show(route). See
+  // texts-app.js for the routing model (specs/features/phraseforge-hash-
+  // navigation.md).
+  let listContext = { page: 1, tag: "" };
+
+  // goTo changes the URL (adding a history entry), which renders the route;
+  // the render functions below never touch the URL themselves.
+  function goTo(route) {
+    window.pfRouter.navigate({ section: "vocabulary", ...route });
+  }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(
@@ -127,7 +133,7 @@
         statusBar.setMessage(err.message, true);
         return;
       }
-      await showList(tagFilter);
+      await showList(tagFilter, listContext.page);
       showImportResult(res);
     };
     reader.onerror = () => {
@@ -147,17 +153,9 @@
     }
   }
 
-  async function showList(tagFilter, pageDirection) {
+  async function showList(tagFilter, page = 1) {
     statusBar.setMessage("");
-    if (pageDirection === "next") {
-      pageCursors[pageIndex + 1] = latestNextCursor;
-      pageIndex++;
-    } else if (pageDirection === "prev") {
-      pageIndex--;
-    } else {
-      pageCursors = [null];
-      pageIndex = 0;
-    }
+    listContext = { page, tag: tagFilter || "" };
     const languageFilter = window.pfGetLanguageFilter();
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
@@ -193,20 +191,26 @@
       importFile.addEventListener("change", () => handleImportFile(importFile, "/api/v1/vocabulary/import", tagFilter));
     }
     const clearLink = document.getElementById("clearTagFilter");
-    if (clearLink) clearLink.addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    if (clearLink) clearLink.addEventListener("click", (e) => { e.preventDefault(); goTo({}); });
 
     const query = new URLSearchParams();
     if (languageFilter) query.set("language", languageFilter);
     if (tagFilter) query.set("tag", tagFilter);
-    const cursor = pageCursors[pageIndex];
-    if (cursor) query.set("cursor", cursor);
+    query.set("page", String(page));
     let items;
+    let pageCount;
     try {
       const data = await apiFetch("/api/v1/vocabulary?" + query.toString());
       items = data.items;
-      latestNextCursor = data.nextCursor || null;
+      pageCount = data.pageCount;
     } catch (e) {
       statusBar.setMessage(e.message, true);
+      return;
+    }
+    // A bookmarked page that no longer exists (items deleted since) lands on
+    // the last page instead of an empty one.
+    if (page > pageCount) {
+      window.pfRouter.replace({ section: "vocabulary", page: pageCount, tag: tagFilter });
       return;
     }
 
@@ -225,33 +229,24 @@
     grid.querySelectorAll("[data-open]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showView(Number(a.dataset.open));
+        goTo({ id: Number(a.dataset.open), page, tag: tagFilter });
       });
     });
     grid.querySelectorAll("[data-tag-filter]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showList(a.dataset.tagFilter);
+        goTo({ tag: a.dataset.tagFilter });
       });
     });
 
-    if (pageIndex > 0 || latestNextCursor) {
-      const pager = document.createElement("div");
-      pager.style.cssText = "display:flex; justify-content:center; gap:0.75rem; margin-top:1.5rem;";
-      if (pageIndex > 0) {
-        const prevBtn = document.createElement("pf-button");
-        prevBtn.setAttribute("variant", "secondary");
-        prevBtn.textContent = T("texts.pagination_previous");
-        prevBtn.addEventListener("click", () => showList(tagFilter, "prev"));
-        pager.appendChild(prevBtn);
-      }
-      if (latestNextCursor) {
-        const nextBtn = document.createElement("pf-button");
-        nextBtn.setAttribute("variant", "secondary");
-        nextBtn.textContent = T("texts.pagination_next");
-        nextBtn.addEventListener("click", () => showList(tagFilter, "next"));
-        pager.appendChild(nextBtn);
-      }
+    if (pageCount > 1) {
+      const pager = document.createElement("pf-pager");
+      pager.style.marginTop = "1.5rem";
+      pager.setAttribute("page", String(page));
+      pager.setAttribute("page-count", String(pageCount));
+      pager.setAttribute("prev-label", T("texts.pagination_previous"));
+      pager.setAttribute("next-label", T("texts.pagination_next"));
+      pager.addEventListener("pf-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
       container.appendChild(pager);
     }
   }
@@ -280,7 +275,7 @@
       </div>
       <p class="meta" style="margin-top:1rem;">${esc(T("vocabulary.new_hint"))}</p>
     `;
-    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(listContext.tag, listContext.page); });
     document.getElementById("newListForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const payload = {
@@ -293,6 +288,7 @@
         const result = await apiFetch("/api/v1/vocabulary", { method: "POST", body: JSON.stringify(payload) });
         // A new list starts empty — land on Manage to start adding items,
         // matching handleVocabCreate's original redirect (not View).
+        window.pfRouter.setUrl({ section: "vocabulary", id: result.id, ...listContext });
         showManage(result.id, null);
       } catch (err) {
         statusBar.setMessage(err.message, true);
@@ -329,7 +325,7 @@
       <textarea id="copy-vocabulary-markdown" class="copy-source" readonly>${esc(list.markdown)}</textarea>
       ${renderItemsTable(list, false)}
     `;
-    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); showList(); });
+    document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
       phraseforgeCopyMarkdown("copy-vocabulary-markdown", e.currentTarget.querySelector("button"));
     });
@@ -355,7 +351,7 @@
         try {
           await apiFetch(`/api/v1/vocabulary/${id}`, { method: "DELETE" });
           statusBar.setMessage("Deleted.");
-          showList();
+          goTo({ page: listContext.page, tag: listContext.tag });
         } catch (e) {
           statusBar.setMessage(e.message, true);
         }
@@ -364,7 +360,7 @@
     document.querySelectorAll("[data-tag-filter]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        showList(a.dataset.tagFilter);
+        goTo({ tag: a.dataset.tagFilter });
       });
     });
   }
@@ -592,12 +588,17 @@
 
   window.pfSections.vocabulary = {
     setBootstrap(b) { BOOT = b; },
-    // opts.viewId (dialog-vocabulary-models-generation's linked-list
-    // navigation) opens straight to that list's view instead of the list —
-    // every existing bare show() call is unaffected (opts is undefined).
-    show(opts) {
-      if (opts && opts.viewId != null) return showView(opts.viewId);
-      return showList();
+    // show renders a route: a view when it has an id (this also serves
+    // dialog-vocabulary-models-generation's linked-list navigation), else a
+    // list page. The route's page/tag become the context forms and Back
+    // return to.
+    show(route) {
+      const { id = null, page = 1, tag = "" } = route || {};
+      if (id != null) {
+        listContext = { page, tag };
+        return showView(id);
+      }
+      return showList(tag, page);
     },
   };
 })();

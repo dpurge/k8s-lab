@@ -291,6 +291,34 @@ func (s *Service) List(ctx context.Context) ([]Job, error) {
 	return out, rows.Err()
 }
 
+// ListPage is the numbered-page counterpart of List (see specs/features/
+// phraseforge-hash-navigation.md): same most-recent-first order, with id as
+// a tiebreaker so offset pages are stable, and no 500-row cap — paging is
+// what keeps the response small.
+func (s *Service) ListPage(ctx context.Context, offset, limit int) ([]Job, error) {
+	rows, err := s.db.Query(ctx, "SELECT "+jobColumns+" FROM jobs ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2", limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Job{}
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// Count returns how many jobs exist, so a page count can be computed.
+func (s *Service) Count(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, "SELECT count(*) FROM jobs").Scan(&n)
+	return n, err
+}
+
 // Retry re-reads a failed or cancelled job's original kind/payload and
 // enqueues a new job with them, returning the new job's id. It does not
 // modify or resubmit the original row.

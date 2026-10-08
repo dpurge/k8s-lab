@@ -9,6 +9,7 @@ import (
 
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/jobs"
+	"phraseforge/internal/pagination"
 )
 
 // jobsAppI18nKeys mirrors adminAppI18nKeys/modelsAppI18nKeys for the Jobs SPA
@@ -24,6 +25,7 @@ var jobsAppI18nKeys = []string{
 	"jobs.view_payload", "jobs.view_result",
 	"jobs.cancel", "jobs.cancel_confirm",
 	"jobs.retry_confirm", "jobs.delete_confirm", "jobs.empty",
+	"texts.pagination_previous", "texts.pagination_next",
 }
 
 func jobsAppI18n(loc string) map[string]string {
@@ -52,7 +54,20 @@ type apiJobSummary struct {
 // existing 500-row cap) — writes the array directly, not wrapped in an
 // envelope, since the client only ever needs the list itself.
 func (s *Server) apiListAdminJobs(w http.ResponseWriter, r *http.Request) {
-	list, err := s.jobs.List(r.Context())
+	// ?page=N selects numbered paging and an object response; without it the
+	// original capped array is returned unchanged.
+	page, isPaged := pagination.ParsePage(r.URL.Query().Get("page"))
+	var list []jobs.Job
+	var total int
+	var err error
+	if isPaged {
+		total, err = s.jobs.Count(r.Context())
+		if err == nil {
+			list, err = s.jobs.ListPage(r.Context(), pagination.Offset(page, pagination.DefaultLimit), pagination.DefaultLimit)
+		}
+	} else {
+		list, err = s.jobs.List(r.Context())
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -61,7 +76,16 @@ func (s *Server) apiListAdminJobs(w http.ResponseWriter, r *http.Request) {
 	for i, j := range list {
 		out[i] = jobSummary(j)
 	}
-	writeJSON(w, http.StatusOK, out)
+	if !isPaged {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     out,
+		"page":      page,
+		"total":     total,
+		"pageCount": pagination.PageCount(total, pagination.DefaultLimit),
+	})
 }
 
 // jobSummary is one job's row in the list endpoint.

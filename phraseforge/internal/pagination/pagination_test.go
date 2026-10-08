@@ -27,3 +27,39 @@ func TestDecodeMalformedTokenIsAnError(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePage(t *testing.T) {
+	tests := []struct {
+		raw    string
+		page   int
+		wantOK bool
+	}{
+		{"3", 3, true},
+		{"1", 1, true},
+		{"", 1, false},
+		{"0", 1, false},
+		{"-2", 1, false},
+		{"abc", 1, false},
+	}
+	for _, tc := range tests {
+		page, ok := ParsePage(tc.raw)
+		if page != tc.page || ok != tc.wantOK {
+			t.Errorf("ParsePage(%q) = (%d, %v), want (%d, %v)", tc.raw, page, ok, tc.page, tc.wantOK)
+		}
+	}
+}
+
+func TestOffsetAndPageCount(t *testing.T) {
+	if got := Offset(1, 25); got != 0 {
+		t.Errorf("Offset(1, 25) = %d, want 0", got)
+	}
+	if got := Offset(3, 25); got != 50 {
+		t.Errorf("Offset(3, 25) = %d, want 50", got)
+	}
+	counts := []struct{ total, want int }{{0, 1}, {1, 1}, {25, 1}, {26, 2}, {50, 2}, {51, 3}}
+	for _, tc := range counts {
+		if got := PageCount(tc.total, 25); got != tc.want {
+			t.Errorf("PageCount(%d, 25) = %d, want %d", tc.total, got, tc.want)
+		}
+	}
+}

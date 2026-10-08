@@ -139,6 +139,67 @@ func (s *Store) ListAllPage(ctx context.Context, languages []string, all bool, t
 	return out, hasMore, nil
 }
 
+// ListOffset is ListPage's numbered-page sibling (see specs/features/
+// phraseforge-hash-navigation.md): same language/all and tagIDs semantics
+// and the same (created_at, id) DESC order, but skips offset rows instead
+// of seeking past a cursor, so any page can be fetched directly.
+func (s *Store) ListOffset(ctx context.Context, languages []string, all bool, tagIDs []int64, offset, limit int) ([]List, error) {
+	if !all && len(languages) == 0 {
+		return nil, nil
+	}
+	var rows pgxRows
+	var err error
+	if all {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+listCols+` FROM vocabulary_lists
+			WHERE ($1::bigint[] IS NULL OR id = ANY($1))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $2 OFFSET $3`, tagIDs, limit, offset)
+	} else {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+listCols+` FROM vocabulary_lists
+			WHERE language = ANY($1)
+			  AND ($2::bigint[] IS NULL OR id = ANY($2))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $3 OFFSET $4`, languages, tagIDs, limit, offset)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []List
+	for rows.Next() {
+		var l List
+		if err := scanList(rows, &l); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// Count returns how many vocabulary lists match the same filters as ListOffset, so
+// a page count can be computed.
+func (s *Store) Count(ctx context.Context, languages []string, all bool, tagIDs []int64) (int, error) {
+	if !all && len(languages) == 0 {
+		return 0, nil
+	}
+	var n int
+	var err error
+	if all {
+		err = s.db.QueryRow(ctx, `
+			SELECT count(*) FROM vocabulary_lists
+			WHERE ($1::bigint[] IS NULL OR id = ANY($1))`, tagIDs).Scan(&n)
+	} else {
+		err = s.db.QueryRow(ctx, `
+			SELECT count(*) FROM vocabulary_lists
+			WHERE language = ANY($1)
+			  AND ($2::bigint[] IS NULL OR id = ANY($2))`, languages, tagIDs).Scan(&n)
+	}
+	return n, err
+}
+
 // Get fetches one list by id, regardless of language — callers check
 // CanView(list.Language) themselves before showing it.
 func (s *Store) Get(ctx context.Context, id int64) (List, error) {

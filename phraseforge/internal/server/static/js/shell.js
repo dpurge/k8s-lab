@@ -41,24 +41,33 @@
     );
   }
 
-  function restoreActiveSection() {
-    const stored = sessionStorage.getItem("phraseforge-active-section");
-    return isKnownSection(stored) ? stored : "texts";
+  // Sections whose show() takes the whole route (specs/features/phraseforge-
+  // hash-navigation.md). The others (admin, profile) are called bare.
+  const ROUTED_SECTIONS = ["texts", "dialogs", "vocabulary", "models", "jobs"];
+
+  function sectionOpts(route) {
+    return ROUTED_SECTIONS.includes(route.section) ? route : undefined;
+  }
+
+  // renderRoute is the router's single render callback: the URL hash is the
+  // source of truth for the active section, so there is no sessionStorage
+  // copy of it any more. An empty or unknown hash is rewritten to #/texts.
+  function renderRoute(route) {
+    if (!isKnownSection(route.section)) {
+      window.pfRouter.replace({ section: "texts" });
+      return;
+    }
+    showSection(route.section, sectionOpts(route));
   }
 
   // opts (optional) is forwarded verbatim to the target section's own
-  // show(opts) — added for dialog-vocabulary-models-generation's linked-list
-  // navigation ({viewId}, opening straight to that item's view instead of
-  // the list). Every existing bare showSection(id) call keeps working
-  // unchanged, since opts is simply undefined for those.
+  // show(opts). Renders only — URL changes go through pfRouter.navigate.
   function showSection(id, opts) {
-    if (!isKnownSection(id)) id = "texts";
     if (activeSection && activeSection !== id) {
       const prevEl = document.getElementById(activeSection + "-app");
       if (prevEl) prevEl.innerHTML = "";
     }
     activeSection = id;
-    sessionStorage.setItem("phraseforge-active-section", id);
     for (const s of SECTION_IDS) {
       const el = document.getElementById(s + "-app");
       if (el) el.style.display = s === id ? "" : "none";
@@ -67,14 +76,18 @@
     const mod = window.pfSections[id];
     if (mod && mod.show) mod.show(opts);
   }
-  window.pfShowSection = showSection;
+  // Kept for the existing cross-section links (texts/dialogs -> vocabulary/
+  // models); now a navigation to #/<id>/<viewId> rather than a direct render.
+  window.pfShowSection = (id, opts) =>
+    window.pfRouter.navigate({ section: id, id: opts && opts.viewId != null ? opts.viewId : null });
   window.pfGetLanguageFilter = () => languageFilter;
 
   function setLanguageFilter(value) {
     languageFilter = value;
     localStorage.setItem("phraseforge-language", value);
-    const mod = window.pfSections[activeSection];
-    if (mod && mod.show) mod.show();
+    // Back to the section's first list page: a page/tag from the old filter
+    // wouldn't mean the same thing under the new one.
+    window.pfRouter.navigate({ section: activeSection });
   }
 
   function buildSidebar() {
@@ -112,7 +125,7 @@
     if (chrome.navFlags.isAdmin) items.push({ id: "jobs", label: T("nav.jobs") });
     sidebarTabs.items = items;
     sidebarTabs.active = NAV_SECTIONS.includes(activeSection) ? activeSection : "";
-    sidebarTabs.addEventListener("pf-tabs-select", (e) => showSection(e.detail.id));
+    sidebarTabs.addEventListener("pf-tabs-select", (e) => window.pfRouter.navigate({ section: e.detail.id }));
     sidebar.appendChild(sidebarTabs);
   }
 
@@ -132,7 +145,7 @@
   if (userLinkEl) {
     userLinkEl.addEventListener("click", (e) => {
       e.preventDefault();
-      showSection("profile");
+      window.pfRouter.navigate({ section: "profile" });
     });
   }
 
@@ -150,11 +163,10 @@
     }
     buildHeader();
     buildSidebar();
-    const mod = window.pfSections[activeSection];
-    if (mod && mod.show) mod.show();
+    renderRoute(window.pfRouter.parse(window.location.hash));
   };
 
   buildHeader();
   buildSidebar();
-  showSection(restoreActiveSection());
+  window.pfRouter.start(renderRoute);
 })();

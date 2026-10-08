@@ -78,3 +78,5 @@
 2026-10-05T13:36:49Z [gotcha] gemma4:12b can answer generate_vocabulary with `phrase [tag] [translit]` for Arabic; the strict parser in phraseforge/internal/generate/parse.go rejects those lines.
 2026-10-05T13:36:49Z [gotcha] phraseforge runs one job at a time: a vocabulary list of N items enqueues about N item jobs (~4s each), and a newly queued job waits behind all of them.
 2026-10-05T15:16:42Z [gotcha] phraseforge language seed has English (eng) now, Polish (pol) already; prompts take a site locale name from i18n.Locale.PromptName. Supersedes the older no-English note.
+2026-10-08T14:59:28Z [build] phraseforge has no DB-backed Go tests: check new store SQL with psql in the data/postgres pod; the ingress is on port 8080 and a rollout returns 503 for a few seconds.
+2026-10-08T14:59:28Z [gotcha] phraseforge routes with the URL hash (js/router.js): navigate() to the shown hash re-renders directly; replaceState fires no hashchange, use pfRouter.replace.

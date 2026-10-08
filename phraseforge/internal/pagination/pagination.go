@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -73,4 +74,30 @@ func Decode(token string) (Cursor, error) {
 		return Cursor{}, fmt.Errorf("pagination: decode cursor: parse created_at: %w", err)
 	}
 	return Cursor{CreatedAt: t, ID: w.ID}, nil
+}
+
+// ParsePage turns a ?page= query value into a 1-based page number. Missing,
+// malformed or non-positive input is page 1 — same lenient convention as
+// decodeCursorParam. The second result reports whether a valid page was
+// given, so a handler can tell "offset mode" from the legacy cursor mode.
+func ParsePage(raw string) (page int, ok bool) {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 1, false
+	}
+	return n, true
+}
+
+// Offset is the number of rows to skip before the given 1-based page.
+func Offset(page, limit int) int {
+	return (page - 1) * limit
+}
+
+// PageCount is how many pages total rows span (at least 1, so an empty list
+// still reports a first page).
+func PageCount(total, limit int) int {
+	if total <= 0 {
+		return 1
+	}
+	return (total + limit - 1) / limit
 }
