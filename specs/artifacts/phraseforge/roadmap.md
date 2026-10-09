@@ -1,7 +1,7 @@
 ---
-version: 26
+version: 28
 status: approved
-updated: 2026-10-05
+updated: 2026-10-09
 ---
 
 ## Now

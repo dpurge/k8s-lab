@@ -80,3 +80,7 @@
 2026-10-05T15:16:42Z [gotcha] phraseforge language seed has English (eng) now, Polish (pol) already; prompts take a site locale name from i18n.Locale.PromptName. Supersedes the older no-English note.
 2026-10-08T14:59:28Z [build] phraseforge has no DB-backed Go tests: check new store SQL with psql in the data/postgres pod; the ingress is on port 8080 and a rollout returns 503 for a few seconds.
 2026-10-08T14:59:28Z [gotcha] phraseforge routes with the URL hash (js/router.js): navigate() to the shown hash re-renders directly; replaceState fires no hashchange, use pfRouter.replace.
+2026-10-09T16:36:53Z [build] phraseforge DB tests in internal/vocabulary and internal/models need PHRASEFORGE_TEST_DSN (a Postgres URL) and use a throwaway schema. Supersedes the no-DB-tests note.
+2026-10-09T16:36:53Z [gotcha] phraseforge db/schema.sql trigger delete_orphan_phrases fires on DELETEd links only; code that UPDATEs a link's phrase_id must delete the orphaned phrase itself.
+2026-10-09T16:36:53Z [convention] phraseforge phrase text goes through internal/textnorm.Phrase (trim + NFC) in the stores; schema.sql normalize_phrase() normalises rows stored earlier.
+2026-10-09T16:36:53Z [gotcha] phraseforge phrases/models_phrases have a btree UNIQUE key; a phrase over about 2.7 KB of incompressible text fails with 'index row size exceeds'.

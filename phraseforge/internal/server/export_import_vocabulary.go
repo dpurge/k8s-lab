@@ -36,6 +36,9 @@ type apiVocabExportItemTranslation struct {
 // round-trippable content, both site-locale translations included
 // regardless of the viewer's own locale.
 type apiVocabExportItem struct {
+	// ID is the shared phrase's id: an import matches a line to the phrase it
+	// edits by it, so every field of a line can be changed in the file.
+	ID            int64                                    `json:"id" yaml:"id"`
 	Phrase        string                                   `json:"phrase" yaml:"phrase"`
 	Grammar       string                                   `json:"grammar,omitempty" yaml:"grammar,omitempty"`
 	Transcription string                                   `json:"transcription,omitempty" yaml:"transcription,omitempty"`
@@ -66,6 +69,10 @@ type apiVocabImportItemTranslation struct {
 // Translations is a partial map, same convention as apiTextImportItem's own
 // field: only the locales present here are ever written.
 type apiVocabImportItem struct {
+	// ID, when it is a phrase the list being imported links, makes this line
+	// an edit of that phrase (for every list that links it); absent or any
+	// other value makes it a new line. See vocabulary.Store.SyncItemsTx.
+	ID            int64                                    `json:"id,omitempty" yaml:"id,omitempty"`
 	Phrase        string                                   `json:"phrase,omitempty" yaml:"phrase,omitempty"`
 	Grammar       string                                   `json:"grammar,omitempty" yaml:"grammar,omitempty"`
 	Transcription string                                   `json:"transcription,omitempty" yaml:"transcription,omitempty"`
@@ -204,7 +211,7 @@ func (s *Server) apiExportVocabulary(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			itemsOut[j] = apiVocabExportItem{
-				Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
+				ID: it.PhraseID, Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
 				Translations: translations,
 			}
 		}
@@ -247,9 +254,11 @@ func (s *Server) vocabTranslationsByLocale(ctx context.Context, listID int64) (m
 //     item including translations) to what's stored is "unchanged" (no
 //     write, no item replacement, no backfill); otherwise list metadata is
 //     updated for whichever of title/language/script were actually given,
-//     tags are replaced if given, and every item is wholesale-replaced:
-//     existing items are deleted, then every incoming item is added fresh in
-//     order, then backfilled.
+//     tags are replaced if given, and the items are synced to the file:
+//     a line whose item id the list links edits that shared phrase (for
+//     every list that links it) and overwrites its translations, any other
+//     line links or creates the phrase, items the file omits are unlinked,
+//     and the file's order is kept; then missing fields are backfilled.
 //  3. id absent: title/language/script required, CanEdit(language)
 //     required; always created, its items added fresh, then backfilled.
 //
@@ -389,12 +398,10 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 	existingMeta := listMetaFields{Title: existing.Title, Language: existing.Language, Script: existing.Script, Tags: existingTags}
 	incomingMeta := listMetaFields{Title: list.Title, Language: list.Language, Script: list.Script, Tags: incomingTags}
 
-	// itemsChanged (and existingItemCount, needed below to know how many
-	// positions the wholesale replace must delete) are only computed when
-	// itemsProvided — an omitted items: key can never make the list look
-	// "changed" on the items side, and fetching existingItems/transByLocale
-	// at all would just be wasted work when there's nothing to compare.
-	var existingItemCount int
+	// itemsChanged is only computed when itemsProvided — an omitted items:
+	// key can never make the list look "changed" on the items side, and
+	// fetching existingItems/transByLocale at all would just be wasted work
+	// when there's nothing to compare.
 	itemsChanged := false
 	if itemsProvided {
 		existingItems, err := s.vocab.Items(ctx, list.ID)
@@ -407,7 +414,6 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 			res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 			return
 		}
-		existingItemCount = len(existingItems)
 
 		incomingItemFields := make([]vocabItemFields, len(items))
 		for i, it := range items {
@@ -479,17 +485,15 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 		}
 	}
 
-	// itemsProvided gates the wholesale-replace step itself, not just the
-	// unchanged check above — an omitted items: key must leave every
-	// existing item untouched even when other list metadata did change (B1
-	// fix). NOTE (S3, doc-only): a hand-authored partial YAML that DOES
-	// provide items but omits translations: for some of them will still
-	// destroy those items' hand-written translations/notes on this wholesale
-	// replace and regenerate them via LLM background jobs — hand-authoring
-	// partial YAML should always include a full translations: block per item
-	// to avoid this.
+	// itemsProvided gates the sync step itself, not just the unchanged check
+	// above — an omitted items: key must leave every existing item untouched
+	// even when other list metadata did change (B1 fix). A line that omits a
+	// locale from translations: leaves that locale's stored translation
+	// alone; a line that gives one overwrites it, for every list that links
+	// the phrase.
 	if itemsProvided {
-		specs, err := s.replaceVocabItemsTx(ctx, list.ID, existingItemCount, items)
+		allowEdit := language == existing.Language && script == existing.Script
+		specs, err := s.syncVocabItemsTx(ctx, list.ID, items, allowEdit)
 		if err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 			return
@@ -504,17 +508,18 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 	res.Imported++
 }
 
-// replaceVocabItemsTx wholesale-replaces listID's items — deleting every
-// position from existingCount-1 down to 0 (so no lower position ever needs
-// to shift mid-replace, see vocabulary.Store.DeleteItem's own doc comment on
-// why shifting exists at all), then adding every incoming item fresh in
-// order along with whichever translations it provides — as a single
+// syncVocabItemsTx makes listID's items exactly items, in order — editing the
+// shared phrase a line names by id (for every list that links it) and
+// overwriting its translations, linking or creating the phrase for a line
+// without one, and unlinking whatever the file doesn't mention — as a single
 // transaction (B2 fix): a failure or client disconnect partway through must
-// never leave existingCount items deleted with nothing re-added. Backfill is
+// never leave the list half-changed. allowEdit is false when the import also
+// changes the list's language or script, since a phrase can't change either,
+// so every line becomes a new phrase in the new language. Backfill is
 // enqueued by the caller only after this returns successfully (i.e. after
 // commit), since a job enqueued for an item that got rolled back would
 // reference nothing.
-func (s *Server) replaceVocabItemsTx(ctx context.Context, listID int64, existingCount int, items []apiVocabImportItem) ([]itemBackfillSpec, error) {
+func (s *Server) syncVocabItemsTx(ctx context.Context, listID int64, items []apiVocabImportItem, allowEdit bool) ([]itemBackfillSpec, error) {
 	txCtx, cancel := backgroundTxContext(ctx)
 	defer cancel()
 	tx, err := s.vocab.Begin(txCtx)
@@ -523,29 +528,41 @@ func (s *Server) replaceVocabItemsTx(ctx context.Context, listID int64, existing
 	}
 	defer tx.Rollback(txCtx) //nolint:errcheck // no-op once Commit succeeds
 
-	for pos := existingCount - 1; pos >= 0; pos-- {
-		if err := s.vocab.DeleteItemTx(txCtx, tx, listID, pos); err != nil {
-			return nil, err
+	syncItems := make([]vocabulary.SyncItem, len(items))
+	for i, it := range items {
+		translations := make(map[string]vocabulary.SyncTranslation, len(it.Translations))
+		for locale, t := range it.Translations {
+			translations[locale] = vocabulary.SyncTranslation{Translation: t.Translation, Notes: t.Notes}
+		}
+		syncItems[i] = vocabulary.SyncItem{
+			PhraseID: it.ID, Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
+			Translations: translations,
 		}
 	}
-	specs := make([]itemBackfillSpec, 0, len(items))
-	for _, it := range items {
-		position, err := s.vocab.AddItemTx(txCtx, tx, listID, it.Phrase, it.Grammar, it.Transcription)
-		if err != nil {
-			return nil, err
-		}
-		providedTranslations := make(map[string]string, len(it.Translations))
-		for locale, t := range it.Translations {
-			providedTranslations[locale] = t.Translation
-			if err := s.vocab.SetTranslationsTx(txCtx, tx, listID, locale,
-				[]vocabulary.ItemTranslation{{Position: position, Translation: t.Translation, Notes: t.Notes}}, position+1); err != nil {
-				return nil, err
-			}
-		}
-		specs = append(specs, itemBackfillSpec{position: position, phrase: it.Phrase, grammar: it.Grammar, transcription: it.Transcription, providedTranslations: providedTranslations})
+	if err := s.vocab.SyncItemsTx(txCtx, tx, listID, syncItems, allowEdit); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(txCtx); err != nil {
 		return nil, err
+	}
+
+	// The backfill specs carry the phrase as stored (the store normalises it),
+	// not as written in the file: a job's stale-target guard compares against
+	// the stored text.
+	stored, err := s.vocab.Items(ctx, listID)
+	if err != nil {
+		return nil, err
+	}
+	if len(stored) != len(items) {
+		return nil, fmt.Errorf("vocabulary list %d has %d items after the sync, want %d", listID, len(stored), len(items))
+	}
+	specs := make([]itemBackfillSpec, len(items))
+	for i, it := range items {
+		providedTranslations := make(map[string]string, len(it.Translations))
+		for locale, t := range it.Translations {
+			providedTranslations[locale] = t.Translation
+		}
+		specs[i] = itemBackfillSpec{position: i, phrase: stored[i].Phrase, grammar: stored[i].Grammar, transcription: stored[i].Transcription, providedTranslations: providedTranslations}
 	}
 	return specs, nil
 }
@@ -587,29 +604,19 @@ func (s *Server) importCreateVocabList(ctx context.Context, u auth.User, index i
 	res.Imported++
 }
 
-// addVocabItemsAndBackfill adds every item in items to listID fresh (in
-// order), sets whichever translations each provides, and enqueues backfill
-// for whichever fields are genuinely missing — shared by the create path and
-// the update path's wholesale item replacement. Any error is already
+// addVocabItemsAndBackfill adds every item in items to the brand-new listID
+// in order, overwriting whichever translations each provides, and enqueues
+// backfill for whichever fields are genuinely missing. Any error is already
 // recorded onto res (with list-level id/index) before returning it, so the
 // caller only needs to check for non-nil to stop.
 func (s *Server) addVocabItemsAndBackfill(ctx context.Context, listID int64, language string, items []apiVocabImportItem, res *importResult, index int) error {
-	for _, it := range items {
-		position, err := s.vocab.AddItem(ctx, listID, it.Phrase, it.Grammar, it.Transcription)
-		if err != nil {
-			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
-			return err
-		}
-		providedTranslations := make(map[string]string, len(it.Translations))
-		for locale, t := range it.Translations {
-			providedTranslations[locale] = t.Translation
-			if err := s.vocab.SetTranslations(ctx, listID, locale,
-				[]vocabulary.ItemTranslation{{Position: position, Translation: t.Translation, Notes: t.Notes}}, position+1); err != nil {
-				res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
-				return err
-			}
-		}
-		if err := s.enqueueItemBackfill(ctx, "vocabulary_item", listID, position, language, it.Phrase, it.Grammar, it.Transcription, providedTranslations); err != nil {
+	specs, err := s.syncVocabItemsTx(ctx, listID, items, false)
+	if err != nil {
+		res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
+		return err
+	}
+	for _, spec := range specs {
+		if err := s.enqueueItemBackfill(ctx, "vocabulary_item", listID, spec.position, language, spec.phrase, spec.grammar, spec.transcription, spec.providedTranslations); err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
 			return err
 		}

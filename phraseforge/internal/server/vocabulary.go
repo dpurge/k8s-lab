@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -380,6 +381,10 @@ func (s *Server) apiAddVocabItem(w http.ResponseWriter, r *http.Request) {
 	}
 	position, err := s.vocab.AddItem(r.Context(), id, req.Phrase, req.Grammar, req.Transcription)
 	if err != nil {
+		if errors.Is(err, vocabulary.ErrBlankPhrase) {
+			writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
@@ -428,6 +433,10 @@ func (s *Server) apiUpdateVocabItem(w http.ResponseWriter, r *http.Request) {
 	if err := s.vocab.UpdateItem(r.Context(), id, position, req.Phrase, req.Grammar, req.Transcription); err != nil {
 		if err == vocabulary.ErrItemNotFound {
 			writeErr(w, http.StatusNotFound, "not_found", "vocabulary item not found")
+			return
+		}
+		if errors.Is(err, vocabulary.ErrBlankPhrase) {
+			writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())

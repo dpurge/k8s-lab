@@ -32,6 +32,9 @@ type apiModelsExportItemTranslation struct {
 // content, both site-locale translations included regardless of the
 // viewer's own locale.
 type apiModelsExportItem struct {
+	// ID is the shared phrase's id: an import matches a line to the phrase it
+	// edits by it, so every field of a line can be changed in the file.
+	ID            int64                                     `json:"id" yaml:"id"`
 	Phrase        string                                    `json:"phrase" yaml:"phrase"`
 	Transcription string                                    `json:"transcription,omitempty" yaml:"transcription,omitempty"`
 	Translations  map[string]apiModelsExportItemTranslation `json:"translations,omitempty" yaml:"translations,omitempty"`
@@ -60,6 +63,10 @@ type apiModelsImportItemTranslation struct {
 // Translations is a partial map, same convention as apiVocabImportItem's own
 // field: only the locales present here are ever written.
 type apiModelsImportItem struct {
+	// ID, when it is a phrase the list being imported links, makes this line
+	// an edit of that phrase (for every list that links it); absent or any
+	// other value makes it a new line. See models.Store.SyncItemsTx.
+	ID            int64                                     `json:"id,omitempty" yaml:"id,omitempty"`
 	Phrase        string                                    `json:"phrase,omitempty" yaml:"phrase,omitempty"`
 	Transcription string                                    `json:"transcription,omitempty" yaml:"transcription,omitempty"`
 	Translations  map[string]apiModelsImportItemTranslation `json:"translations,omitempty" yaml:"translations,omitempty"`
@@ -169,7 +176,7 @@ func (s *Server) apiExportModels(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			itemsOut[j] = apiModelsExportItem{
-				Phrase: it.Phrase, Transcription: it.Transcription,
+				ID: it.PhraseID, Phrase: it.Phrase, Transcription: it.Transcription,
 				Translations: translations,
 			}
 		}
@@ -324,9 +331,8 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 	existingMeta := listMetaFields{Title: existing.Title, Language: existing.Language, Script: existing.Script, Tags: existingTags}
 	incomingMeta := listMetaFields{Title: list.Title, Language: list.Language, Script: list.Script, Tags: incomingTags}
 
-	// itemsChanged/existingItemCount mirror importUpdateVocabList's own —
-	// see that function's doc comment.
-	var existingItemCount int
+	// itemsChanged mirrors importUpdateVocabList's own — see that function's
+	// doc comment.
 	itemsChanged := false
 	if itemsProvided {
 		existingItems, err := s.models.Items(ctx, list.ID)
@@ -339,7 +345,6 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 			res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 			return
 		}
-		existingItemCount = len(existingItems)
 
 		incomingItemFields := make([]modelsItemFields, len(items))
 		for i, it := range items {
@@ -409,15 +414,13 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 		}
 	}
 
-	// itemsProvided gates the wholesale-replace step itself (B1 fix). NOTE
-	// (S3, doc-only): a hand-authored partial YAML that DOES provide items
-	// but omits translations: for some of them will still destroy those
-	// items' hand-written translations on this wholesale replace and
-	// regenerate them via LLM background jobs — hand-authoring partial YAML
-	// should always include a full translations: block per item to avoid
-	// this.
+	// itemsProvided gates the sync step itself (B1 fix). A line that omits a
+	// locale from translations: leaves that locale's stored translation
+	// alone; a line that gives one overwrites it, for every list that links
+	// the phrase.
 	if itemsProvided {
-		specs, err := s.replaceModelsItemsTx(ctx, list.ID, existingItemCount, items)
+		allowEdit := language == existing.Language && script == existing.Script
+		specs, err := s.syncModelsItemsTx(ctx, list.ID, items, allowEdit)
 		if err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 			return
@@ -432,9 +435,9 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 	res.Imported++
 }
 
-// replaceModelsItemsTx mirrors replaceVocabItemsTx — see that function's doc
+// syncModelsItemsTx mirrors syncVocabItemsTx — see that function's doc
 // comment (B2 fix).
-func (s *Server) replaceModelsItemsTx(ctx context.Context, listID int64, existingCount int, items []apiModelsImportItem) ([]itemBackfillSpec, error) {
+func (s *Server) syncModelsItemsTx(ctx context.Context, listID int64, items []apiModelsImportItem, allowEdit bool) ([]itemBackfillSpec, error) {
 	txCtx, cancel := backgroundTxContext(ctx)
 	defer cancel()
 	tx, err := s.models.Begin(txCtx)
@@ -443,28 +446,36 @@ func (s *Server) replaceModelsItemsTx(ctx context.Context, listID int64, existin
 	}
 	defer tx.Rollback(txCtx) //nolint:errcheck // no-op once Commit succeeds
 
-	for pos := existingCount - 1; pos >= 0; pos-- {
-		if err := s.models.DeleteItemTx(txCtx, tx, listID, pos); err != nil {
-			return nil, err
-		}
-	}
-	specs := make([]itemBackfillSpec, 0, len(items))
-	for _, it := range items {
-		position, err := s.models.AddItemTx(txCtx, tx, listID, it.Phrase, it.Transcription)
-		if err != nil {
-			return nil, err
-		}
-		providedTranslations := make(map[string]string, len(it.Translations))
+	syncItems := make([]models.SyncItem, len(items))
+	for i, it := range items {
+		translations := make(map[string]string, len(it.Translations))
 		for locale, t := range it.Translations {
-			providedTranslations[locale] = t.Translation
-			if err := s.models.SetTranslationTx(txCtx, tx, listID, position, locale, t.Translation, position+1); err != nil {
-				return nil, err
-			}
+			translations[locale] = t.Translation
 		}
-		specs = append(specs, itemBackfillSpec{position: position, phrase: it.Phrase, transcription: it.Transcription, providedTranslations: providedTranslations})
+		syncItems[i] = models.SyncItem{PhraseID: it.ID, Phrase: it.Phrase, Transcription: it.Transcription, Translations: translations}
+	}
+	if err := s.models.SyncItemsTx(txCtx, tx, listID, syncItems, allowEdit); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(txCtx); err != nil {
 		return nil, err
+	}
+
+	// The backfill specs carry the phrase as stored — see syncVocabItemsTx.
+	stored, err := s.models.Items(ctx, listID)
+	if err != nil {
+		return nil, err
+	}
+	if len(stored) != len(items) {
+		return nil, fmt.Errorf("models list %d has %d items after the sync, want %d", listID, len(stored), len(items))
+	}
+	specs := make([]itemBackfillSpec, len(items))
+	for i, it := range items {
+		providedTranslations := make(map[string]string, len(it.Translations))
+		for locale, t := range it.Translations {
+			providedTranslations[locale] = t.Translation
+		}
+		specs[i] = itemBackfillSpec{position: i, phrase: stored[i].Phrase, transcription: stored[i].Transcription, providedTranslations: providedTranslations}
 	}
 	return specs, nil
 }
@@ -508,21 +519,13 @@ func (s *Server) importCreateModelsList(ctx context.Context, u auth.User, index 
 // addModelsItemsAndBackfill mirrors addVocabItemsAndBackfill — see that
 // function's doc comment.
 func (s *Server) addModelsItemsAndBackfill(ctx context.Context, listID int64, language string, items []apiModelsImportItem, res *importResult, index int) error {
-	for _, it := range items {
-		position, err := s.models.AddItem(ctx, listID, it.Phrase, it.Transcription)
-		if err != nil {
-			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
-			return err
-		}
-		providedTranslations := make(map[string]string, len(it.Translations))
-		for locale, t := range it.Translations {
-			providedTranslations[locale] = t.Translation
-			if err := s.models.SetTranslation(ctx, listID, position, locale, t.Translation, position+1); err != nil {
-				res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
-				return err
-			}
-		}
-		if err := s.enqueueItemBackfill(ctx, "models_item", listID, position, language, it.Phrase, "", it.Transcription, providedTranslations); err != nil {
+	specs, err := s.syncModelsItemsTx(ctx, listID, items, false)
+	if err != nil {
+		res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
+		return err
+	}
+	for _, spec := range specs {
+		if err := s.enqueueItemBackfill(ctx, "models_item", listID, spec.position, language, spec.phrase, "", spec.transcription, spec.providedTranslations); err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
 			return err
 		}

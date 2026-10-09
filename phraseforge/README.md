@@ -7,7 +7,7 @@ A Readeck-inspired Go app for language-learning content: login, per-language tea
 
 - **Texts** — markdown articles, with an optional transcription and a translation (in the reader's own site language). Create via form, paste text, upload a file, or ingest from a URL; title and content are cleaned automatically in the background.
 - **Dialogs** — the same, using phraseforge's own turn-based markdown syntax (`--:`/`@Name:` turns). Same creation methods as Texts, with background processing for title and content cleanup.
-- **Vocabulary** and **Models** — structured lists (not markdown): edited one item at a time, with proper IME support on non-Latin scripts. A vocabulary item is phrase/grammar/transcription (common) plus translation/notes (per site locale, en/pl); a model item is the same minus grammar/notes — cli-tools' own `{start-models}` block, described as "vocabulary without a grammar tag or notes".
+- **Vocabulary** and **Models** — structured lists (not markdown): edited one item at a time, with proper IME support on non-Latin scripts. A vocabulary item is phrase/grammar/transcription (common) plus translation/notes (per site locale, en/pl); a model item is the same minus grammar/notes — cli-tools' own `{start-models}` block, described as "vocabulary without a grammar tag or notes". Each distinct phrase (language, script, phrase, grammar, transcription) is stored once and linked from every list that has it, so its translations are shared, an already-translated phrase is not translated again, and editing it changes it in every list that uses it. Phrase text is trimmed and Unicode-normalised (NFC) before it is stored or compared. In an export every item has an `id`; importing a file you edited outside the app updates the items it names by `id` (phrase, grammar, transcription and translations), a line without an `id` is a new item, and items missing from the file are removed from the list.
 - **LLM assist** — edit pages can generate transcription and translation with Ollama or OpenRouter-compatible chat APIs. Admins can set system prompts per request kind, source language, and target language.
 
 Shares the `data` namespace's Postgres server with `dictionary`, but its own database (`phraseforge`) and its own migration path — the two apps' schemas never mix. Shared Postgres/LLM helper code lives in `../shared`.
@@ -80,3 +80,7 @@ translation:
 ```sh
 curl -H "Host: phraseforge.localhost" http://localhost:8080/health
 ```
+
+## Tests
+
+`go test ./...` runs everything except the database tests of `internal/vocabulary` and `internal/models`, which are skipped unless `PHRASEFORGE_TEST_DSN` is set to a Postgres URL. Each of those tests applies `internal/db/schema.sql` into its own throwaway schema and drops it afterwards, so a development database is safe to point at.

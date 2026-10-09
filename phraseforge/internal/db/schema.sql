@@ -355,17 +355,13 @@ ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS ingest_source text;
 -- translation and notes are per-viewer-locale — a list can have items with
 -- an English translation, a Polish one, both, or neither, editable
 -- independently. That's a real per-item, per-locale structure, so it gets
--- its own item table plus a translation table keyed by (list, position,
--- locale) — not the resource_translation table above, which holds one body
--- per whole resource, not per item within it.
---
--- position is the item's stable identity within its list (not a synthetic
--- id): editing the common fields (phrase/grammar/transcription) upserts by
--- position, so other locales' translations at that position survive. This
--- is a known, disclosed limitation: reordering or deleting a middle item
--- shifts every later position, which re-associates their translations with
--- the wrong new occupant — acceptable for a first slice, revisit if list
--- reordering becomes a real need.
+-- its own phrases + phrase_translation tables (keyed by phrase, locale) — not
+-- the resource_translation table above, which holds one body per whole
+-- resource, not per item within it. A list links to phrases through
+-- vocabulary_items (list_id, position, phrase_id); position is the item's
+-- identity within its list, so deleting a middle item renumbers the later
+-- positions of that list only — translations live on the phrase and are
+-- unaffected.
 CREATE TABLE IF NOT EXISTS vocabulary_lists (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id    bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -376,46 +372,131 @@ CREATE TABLE IF NOT EXISTS vocabulary_lists (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS vocabulary_items (
-    list_id       bigint NOT NULL REFERENCES vocabulary_lists(id) ON DELETE CASCADE,
-    position      integer NOT NULL,
+-- A phrase is stored once per (language, script, phrase, grammar,
+-- transcription) and linked from any number of vocabulary lists
+-- (phraseforge-shared-phrases). Translations hang off the phrase, so a phrase
+-- already translated in one list needs no translation job in another.
+-- grammar/transcription are '' (not NULL) when absent, so the UNIQUE key
+-- needs no NULL handling.
+CREATE TABLE IF NOT EXISTS phrases (
+    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    language      text NOT NULL REFERENCES language(code),
+    script        text NOT NULL REFERENCES script(code),
     phrase        text NOT NULL,
-    grammar       text,
-    transcription text,
-    PRIMARY KEY (list_id, position)
+    grammar       text NOT NULL DEFAULT '',
+    transcription text NOT NULL DEFAULT '',
+    UNIQUE (language, script, phrase, grammar, transcription)
 );
 
-CREATE TABLE IF NOT EXISTS vocabulary_item_translation (
-    list_id     bigint NOT NULL,
-    position    integer NOT NULL,
+CREATE TABLE IF NOT EXISTS phrase_translation (
+    phrase_id   bigint NOT NULL REFERENCES phrases(id) ON DELETE CASCADE,
     locale      text NOT NULL CHECK (locale IN ('en', 'pl')),
     translation text,
     notes       text,
     updated_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (list_id, position, locale),
-    FOREIGN KEY (list_id, position) REFERENCES vocabulary_items(list_id, position) ON DELETE CASCADE
+    PRIMARY KEY (phrase_id, locale)
 );
 
-ALTER TABLE vocabulary_item_translation ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+CREATE TABLE IF NOT EXISTS vocabulary_items (
+    list_id   bigint NOT NULL REFERENCES vocabulary_lists(id) ON DELETE CASCADE,
+    position  integer NOT NULL,
+    phrase_id bigint NOT NULL REFERENCES phrases(id),
+    PRIMARY KEY (list_id, position)
+);
 
--- Deleting an item shifts every later item's position down by one, and its
--- translations (every locale) need to move with it in the same transaction
--- — but the default immediate FK check refuses to update a referenced
--- vocabulary_items row's position while a translation row still points at
--- the old value, even though both are corrected before commit. Deferring
--- the check to commit time is the standard fix; ALTER CONSTRAINT is
--- idempotent (safe to rerun, matches this file's style).
-ALTER TABLE vocabulary_item_translation
-    ALTER CONSTRAINT vocabulary_item_translation_list_id_position_fkey
-    DEFERRABLE INITIALLY DEFERRED;
+-- One-time migration from the earlier per-list shape (phrase/grammar/
+-- transcription stored on each vocabulary_items row, translations keyed by
+-- (list_id, position, locale)), if it still exists. Duplicates are merged
+-- into one phrase; when several copies were translated for the same locale
+-- the first non-empty one wins (lowest list_id, then position) and the rest
+-- are lost, by the user's explicit decision. Safe to rerun: the column check
+-- is false once the old columns are dropped.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name = 'vocabulary_items' AND column_name = 'phrase') THEN
+        INSERT INTO phrases (language, script, phrase, grammar, transcription)
+        SELECT DISTINCT l.language, l.script, i.phrase, coalesce(i.grammar, ''), coalesce(i.transcription, '')
+        FROM vocabulary_items i JOIN vocabulary_lists l ON l.id = i.list_id
+        ON CONFLICT DO NOTHING;
+
+        ALTER TABLE vocabulary_items ADD COLUMN phrase_id bigint REFERENCES phrases(id);
+        UPDATE vocabulary_items i SET phrase_id = p.id
+        FROM vocabulary_lists l, phrases p
+        WHERE l.id = i.list_id
+          AND p.language = l.language AND p.script = l.script AND p.phrase = i.phrase
+          AND p.grammar = coalesce(i.grammar, '') AND p.transcription = coalesce(i.transcription, '');
+
+        INSERT INTO phrase_translation (phrase_id, locale, translation, notes, updated_at)
+        SELECT DISTINCT ON (i.phrase_id, t.locale) i.phrase_id, t.locale, t.translation, t.notes, t.updated_at
+        FROM vocabulary_item_translation t
+        JOIN vocabulary_items i ON i.list_id = t.list_id AND i.position = t.position
+        ORDER BY i.phrase_id, t.locale, (nullif(btrim(t.translation), '') IS NULL), t.list_id, t.position
+        ON CONFLICT DO NOTHING;
+
+        DROP TABLE vocabulary_item_translation;
+        ALTER TABLE vocabulary_items ALTER COLUMN phrase_id SET NOT NULL;
+        ALTER TABLE vocabulary_items DROP COLUMN phrase, DROP COLUMN grammar, DROP COLUMN transcription;
+    END IF;
+END $$;
+
+-- Phrase text is normalised (surrounding whitespace trimmed, Unicode NFC)
+-- before it is stored or compared (phraseforge/internal/textnorm.Phrase), so
+-- text that looks identical is one record. This is the same rule in SQL, for
+-- normalising rows stored before it existed.
+CREATE OR REPLACE FUNCTION normalize_phrase(t text) RETURNS text AS $$
+    SELECT normalize(regexp_replace(t, '^[[:space:]]+|[[:space:]]+$', '', 'g'), NFC)
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Normalise the phrases stored before that rule. A row whose normalised form is
+-- already taken by another row is left as it is — merging two rows is the job
+-- of an edit (vocabulary.Store.retargetPhrase), not of this statement — so it
+-- never fails on the UNIQUE key; when several rows would normalise to the same
+-- key, one that is already normal is kept as the representative. Safe to rerun.
+UPDATE phrases p SET phrase = n.phrase, grammar = n.grammar, transcription = n.transcription
+FROM (
+    SELECT DISTINCT ON (language, script, nphrase, ngrammar, ntranscription)
+           id, nphrase AS phrase, ngrammar AS grammar, ntranscription AS transcription
+    FROM (
+        SELECT id, language, script, phrase, grammar, transcription,
+               normalize_phrase(phrase) AS nphrase, normalize_phrase(grammar) AS ngrammar, normalize_phrase(transcription) AS ntranscription
+        FROM phrases
+    ) t
+    ORDER BY language, script, nphrase, ngrammar, ntranscription,
+             (phrase = nphrase AND grammar = ngrammar AND transcription = ntranscription) DESC, id
+) n
+WHERE p.id = n.id
+  AND (p.phrase, p.grammar, p.transcription) IS DISTINCT FROM (n.phrase, n.grammar, n.transcription)
+  AND NOT EXISTS (SELECT 1 FROM phrases o WHERE o.id <> p.id AND o.language = p.language AND o.script = p.script
+                  AND o.phrase = n.phrase AND o.grammar = n.grammar AND o.transcription = n.transcription);
+
+-- A phrase no list links to is garbage: delete it (and, by cascade, its
+-- translations) whenever links go away — a single item removed, a whole list
+-- deleted, or a sync dropping a line. A statement-level trigger covers every
+-- path, including list-deletion cascades that never run Go code. It fires on
+-- DELETEd links only: code that re-points a link (UPDATE of phrase_id — a
+-- merge in retargetPhrase, a language change in UpdateMeta) must delete the
+-- phrase it left behind itself.
+CREATE OR REPLACE FUNCTION delete_orphan_phrases() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM phrases p
+    WHERE p.id IN (SELECT phrase_id FROM removed_links)
+      AND NOT EXISTS (SELECT 1 FROM vocabulary_items i WHERE i.phrase_id = p.id);
+    RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS vocabulary_items_orphan_phrases ON vocabulary_items;
+CREATE TRIGGER vocabulary_items_orphan_phrases
+    AFTER DELETE ON vocabulary_items
+    REFERENCING OLD TABLE AS removed_links
+    FOR EACH STATEMENT EXECUTE FUNCTION delete_orphan_phrases();
 
 -- ── Model lists ──────────────────────────────────────────────────────────────
 -- cli-tools' own {start-models} block (SPECS/README: "like {start-vocabulary}
 -- but without a grammar tag or notes" — phrase + optional [transcription] +
--- optional = translation). Same shape and tradeoffs as vocabulary_* above
--- (position-as-identity, deferred FK so delete-and-shift can move a
--- translation to a new position in the same transaction as its item), just
--- without the grammar/notes columns models doesn't have.
+-- optional = translation). Same shape as vocabulary_* above (a list links to
+-- shared phrases by (list_id, position)), just without the grammar/notes
+-- columns models doesn't have.
 CREATE TABLE IF NOT EXISTS models_lists (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id    bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -426,27 +507,103 @@ CREATE TABLE IF NOT EXISTS models_lists (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS models_items (
-    list_id       bigint NOT NULL REFERENCES models_lists(id) ON DELETE CASCADE,
-    position      integer NOT NULL,
+-- Shared exactly like vocabulary's phrases (phraseforge-shared-phrases): one
+-- row per (language, script, phrase, transcription), linked from any number
+-- of models lists, with the per-locale translation on the phrase. There is no
+-- grammar or notes — models doesn't have them. transcription is '' (not NULL)
+-- when absent so the UNIQUE key needs no NULL handling.
+CREATE TABLE IF NOT EXISTS models_phrases (
+    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    language      text NOT NULL REFERENCES language(code),
+    script        text NOT NULL REFERENCES script(code),
     phrase        text NOT NULL,
-    transcription text,
-    PRIMARY KEY (list_id, position)
+    transcription text NOT NULL DEFAULT '',
+    UNIQUE (language, script, phrase, transcription)
 );
 
-CREATE TABLE IF NOT EXISTS models_item_translation (
-    list_id     bigint NOT NULL,
-    position    integer NOT NULL,
+CREATE TABLE IF NOT EXISTS models_phrase_translation (
+    phrase_id   bigint NOT NULL REFERENCES models_phrases(id) ON DELETE CASCADE,
     locale      text NOT NULL CHECK (locale IN ('en', 'pl')),
     translation text,
     updated_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (list_id, position, locale),
-    FOREIGN KEY (list_id, position) REFERENCES models_items(list_id, position) ON DELETE CASCADE
+    PRIMARY KEY (phrase_id, locale)
 );
 
-ALTER TABLE models_item_translation
-    ALTER CONSTRAINT models_item_translation_list_id_position_fkey
-    DEFERRABLE INITIALLY DEFERRED;
+CREATE TABLE IF NOT EXISTS models_items (
+    list_id   bigint NOT NULL REFERENCES models_lists(id) ON DELETE CASCADE,
+    position  integer NOT NULL,
+    phrase_id bigint NOT NULL REFERENCES models_phrases(id),
+    PRIMARY KEY (list_id, position)
+);
+
+-- One-time migration from the earlier per-list shape, mirroring vocabulary's
+-- (see the DO block above vocabulary_items' orphan trigger): duplicates merge
+-- into one phrase, the first non-empty translation per locale wins (lowest
+-- list_id, then position), the rest are lost by the user's explicit decision.
+-- Safe to rerun: the column check is false once the old columns are dropped.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name = 'models_items' AND column_name = 'phrase') THEN
+        INSERT INTO models_phrases (language, script, phrase, transcription)
+        SELECT DISTINCT l.language, l.script, i.phrase, coalesce(i.transcription, '')
+        FROM models_items i JOIN models_lists l ON l.id = i.list_id
+        ON CONFLICT DO NOTHING;
+
+        ALTER TABLE models_items ADD COLUMN phrase_id bigint REFERENCES models_phrases(id);
+        UPDATE models_items i SET phrase_id = p.id
+        FROM models_lists l, models_phrases p
+        WHERE l.id = i.list_id
+          AND p.language = l.language AND p.script = l.script AND p.phrase = i.phrase
+          AND p.transcription = coalesce(i.transcription, '');
+
+        INSERT INTO models_phrase_translation (phrase_id, locale, translation, updated_at)
+        SELECT DISTINCT ON (i.phrase_id, t.locale) i.phrase_id, t.locale, t.translation, t.updated_at
+        FROM models_item_translation t
+        JOIN models_items i ON i.list_id = t.list_id AND i.position = t.position
+        ORDER BY i.phrase_id, t.locale, (nullif(btrim(t.translation), '') IS NULL), t.list_id, t.position
+        ON CONFLICT DO NOTHING;
+
+        DROP TABLE models_item_translation;
+        ALTER TABLE models_items ALTER COLUMN phrase_id SET NOT NULL;
+        ALTER TABLE models_items DROP COLUMN phrase, DROP COLUMN transcription;
+    END IF;
+END $$;
+
+-- Normalise the models phrases stored before the rule, exactly like phrases
+-- above (rows whose normalised form is taken are left as they are).
+UPDATE models_phrases p SET phrase = n.phrase, transcription = n.transcription
+FROM (
+    SELECT DISTINCT ON (language, script, nphrase, ntranscription)
+           id, nphrase AS phrase, ntranscription AS transcription
+    FROM (
+        SELECT id, language, script, phrase, transcription,
+               normalize_phrase(phrase) AS nphrase, normalize_phrase(transcription) AS ntranscription
+        FROM models_phrases
+    ) t
+    ORDER BY language, script, nphrase, ntranscription,
+             (phrase = nphrase AND transcription = ntranscription) DESC, id
+) n
+WHERE p.id = n.id
+  AND (p.phrase, p.transcription) IS DISTINCT FROM (n.phrase, n.transcription)
+  AND NOT EXISTS (SELECT 1 FROM models_phrases o WHERE o.id <> p.id AND o.language = p.language AND o.script = p.script
+                  AND o.phrase = n.phrase AND o.transcription = n.transcription);
+
+-- Same orphan cleanup as vocabulary's — including that it fires on DELETEd
+-- links only, so code that re-points a link deletes the phrase it left behind.
+CREATE OR REPLACE FUNCTION delete_orphan_models_phrases() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM models_phrases p
+    WHERE p.id IN (SELECT phrase_id FROM removed_links)
+      AND NOT EXISTS (SELECT 1 FROM models_items i WHERE i.phrase_id = p.id);
+    RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS models_items_orphan_phrases ON models_items;
+CREATE TRIGGER models_items_orphan_phrases
+    AFTER DELETE ON models_items
+    REFERENCING OLD TABLE AS removed_links
+    FOR EACH STATEMENT EXECUTE FUNCTION delete_orphan_models_phrases();
 
 CREATE TABLE IF NOT EXISTS llm_prompts (
     kind text NOT NULL CHECK (kind IN ('translation', 'transcription')),

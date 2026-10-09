@@ -170,3 +170,44 @@ func TestResolveModelsImportItemsExplicitEmpty(t *testing.T) {
 		t.Errorf("items = %+v, want empty", items)
 	}
 }
+
+// TestModelsExportYAMLRoundTripsItemIDsIntoImport mirrors the vocabulary
+// test: what an export writes, an import reads back into the same field, so
+// an edited file's lines still name the phrases they edit.
+func TestModelsExportYAMLRoundTripsItemIDsIntoImport(t *testing.T) {
+	exported := apiModelsExportResponse{Lists: []apiModelsExportList{{
+		ID: 7, Title: "T", Language: "arb", Script: "arab",
+		Items: []apiModelsExportItem{
+			{ID: 41, Phrase: "كيف حالك", Transcription: "kayfa haluk",
+				Translations: map[string]apiModelsExportItemTranslation{"en": {Translation: "how are you"}}},
+			{ID: 42, Phrase: "شكرا"},
+		},
+	}}}
+	raw, err := yaml.Marshal(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported apiModelsImportRequest
+	if err := yaml.Unmarshal(raw, &imported); err != nil {
+		t.Fatalf("unmarshal export as import: %v\n%s", err, raw)
+	}
+	items := *imported.Lists[0].Items
+	if len(items) != 2 || items[0].ID != 41 || items[1].ID != 42 {
+		t.Fatalf("imported items = %+v, want ids 41 and 42 kept", items)
+	}
+	if items[0].Translations["en"].Translation != "how are you" {
+		t.Fatalf("translations lost in the round trip: %+v", items[0].Translations)
+	}
+}
+
+// TestModelsImportWithoutItemIDsDecodesToZero covers an old export or a
+// hand-written file: no id means a new line, never an edit.
+func TestModelsImportWithoutItemIDsDecodesToZero(t *testing.T) {
+	var imported apiModelsImportRequest
+	if err := yaml.Unmarshal([]byte("lists:\n  - id: 7\n    items:\n      - phrase: شكرا\n"), &imported); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*imported.Lists[0].Items)[0].ID; got != 0 {
+		t.Fatalf("item id = %d, want 0 when the file has none", got)
+	}
+}

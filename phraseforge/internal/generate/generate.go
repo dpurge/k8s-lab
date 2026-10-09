@@ -162,10 +162,8 @@ func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocab
 }
 
 // enqueueItemBackfill enqueues the structured item calls (ai.ItemJobsFor)
-// for one just-created/replaced vocabulary/models item — every site locale,
-// since a freshly generated item has no translation yet in any locale (a
-// rerun cascade-deletes the old rows' translations with the rows, see
-// vocabulary_item_translation's ON DELETE CASCADE FK in schema.sql); each
+// for one just-created/replaced vocabulary/models item — every site locale it
+// isn't already translated in (its phrase may be, through another list); each
 // call also fills grammar/transcription where the language has a section.
 // Per the user's direction: "when vocabulary is created also jobs to
 // translate all words to all site languages are submitted".
@@ -179,6 +177,20 @@ func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocab
 // enqueueing).
 func (s *Service) enqueueItemBackfill(ctx context.Context, itemResourceType string, listID int64, position int, language, phrase, grammar, transcription string) {
 	state := ai.ItemState{ResourceType: itemResourceType, Grammar: grammar, Transcription: transcription}
+	// Phrases are shared across lists, so this one may already be translated
+	// through another list: don't submit it again.
+	var translated map[string]bool
+	var err error
+	if itemResourceType == resourceTypeVocabItem {
+		translated, err = s.vocab.TranslatedLocales(ctx, listID, position)
+	} else {
+		translated, err = s.models.TranslatedLocales(ctx, listID, position)
+	}
+	if err != nil {
+		log.Printf("generate: read existing translations for %s %d position %d: %v", itemResourceType, listID, position, err)
+		return
+	}
+	state.Translated = translated
 	itemJobs, err := s.ai.ItemJobsFor(ctx, state, listID, position, language, phrase, nil, i18n.Locales)
 	if err != nil {
 		log.Printf("generate: plan item backfill for %s %d position %d: %v", itemResourceType, listID, position, err)
@@ -270,26 +282,14 @@ func (s *Service) HandleGenerateVocab(ctx context.Context, id string, raw json.R
 	var listID int64
 	if decision.Reuse {
 		listID = decision.ListID
-		if err := s.replaceVocabItems(ctx, listID, src.Language, items); err != nil {
-			return nil, err
-		}
 	} else {
 		listID, err = s.createVocabList(ctx, p, "Vocabulary: "+src.Title, src.Language, src.Script)
 		if err != nil {
 			return nil, fmt.Errorf("generate: create vocabulary list for %s %d: %w", p.resourceType(), p.resourceID(), err)
 		}
-		// Not transactional — matches the export-import feature's own
-		// scoping decision for a brand-new list's item creation (see
-		// specs/features/phraseforge-export-import.md): a partial failure
-		// here just leaves a partially-populated new list, not destroyed
-		// existing content.
-		for _, it := range items {
-			position, err := s.vocab.AddItem(ctx, listID, it.Phrase, it.Grammar, it.Transcription)
-			if err != nil {
-				return nil, fmt.Errorf("generate: add vocabulary item to new list %d: %w", listID, err)
-			}
-			s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, position, src.Language, it.Phrase, it.Grammar, it.Transcription)
-		}
+	}
+	if err := s.syncVocabItems(ctx, listID, src.Language, items); err != nil {
+		return nil, err
 	}
 	return json.Marshal(result{ListID: listID, ItemCount: len(items), SkippedLines: skipped})
 }
@@ -330,102 +330,81 @@ func (s *Service) HandleGenerateModels(ctx context.Context, id string, raw json.
 	var listID int64
 	if decision.Reuse {
 		listID = decision.ListID
-		if err := s.replaceModelsItems(ctx, listID, src.Language, items); err != nil {
-			return nil, err
-		}
 	} else {
 		listID, err = s.createModelsList(ctx, p, "Models: "+src.Title, src.Language, src.Script)
 		if err != nil {
 			return nil, fmt.Errorf("generate: create models list for %s %d: %w", p.resourceType(), p.resourceID(), err)
 		}
-		for _, it := range items {
-			position, err := s.models.AddItem(ctx, listID, it.Phrase, it.Transcription)
-			if err != nil {
-				return nil, fmt.Errorf("generate: add models item to new list %d: %w", listID, err)
-			}
-			s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, position, src.Language, it.Phrase, "", it.Transcription)
-		}
+	}
+	if err := s.syncModelsItems(ctx, listID, src.Language, items); err != nil {
+		return nil, err
 	}
 	return json.Marshal(result{ListID: listID, ItemCount: len(items), SkippedLines: skipped})
 }
 
-// replaceVocabItems wholesale-replaces listID's items — deleting every
-// existing position (highest first, so no lower position ever needs to
-// shift mid-replace, see vocabulary.Store.DeleteItem's own doc comment) then
-// adding every freshly-generated item, as a single transaction using
-// vocabulary.Store's exported Begin/DeleteItemTx/AddItemTx primitives (added
-// for phraseforge-export-import's own wholesale item replacement — reused
-// directly here rather than reimplemented, per this feature's own Approach).
-func (s *Service) replaceVocabItems(ctx context.Context, listID int64, language string, items []vocabulary.Item) error {
-	existing, err := s.vocab.Items(ctx, listID)
-	if err != nil {
-		return fmt.Errorf("generate: read existing vocabulary items for list %d: %w", listID, err)
+// syncVocabItems makes listID's items exactly the freshly generated items, in
+// one transaction, then enqueues the backfill each needs. The items are synced
+// (vocabulary.Store.SyncItemsTx), not deleted and re-added: a phrase that is
+// generated again keeps its translations, and so is never submitted for
+// translation twice. Generated items carry no phrase id, so every one links
+// the phrase with its exact fields, creating it only if no list has it.
+func (s *Service) syncVocabItems(ctx context.Context, listID int64, language string, items []vocabulary.Item) error {
+	syncItems := make([]vocabulary.SyncItem, len(items))
+	for i, it := range items {
+		syncItems[i] = vocabulary.SyncItem{Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription}
 	}
 	tx, err := s.vocab.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("generate: begin vocabulary item replace for list %d: %w", listID, err)
+		return fmt.Errorf("generate: begin vocabulary item sync for list %d: %w", listID, err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 
-	for pos := len(existing) - 1; pos >= 0; pos-- {
-		if err := s.vocab.DeleteItemTx(ctx, tx, listID, pos); err != nil {
-			return fmt.Errorf("generate: delete existing vocabulary item %d in list %d: %w", pos, listID, err)
-		}
-	}
-	positions := make([]int, len(items))
-	for i, it := range items {
-		position, err := s.vocab.AddItemTx(ctx, tx, listID, it.Phrase, it.Grammar, it.Transcription)
-		if err != nil {
-			return fmt.Errorf("generate: add vocabulary item to list %d: %w", listID, err)
-		}
-		positions[i] = position
+	if err := s.vocab.SyncItemsTx(ctx, tx, listID, syncItems, false); err != nil {
+		return fmt.Errorf("generate: sync vocabulary items of list %d: %w", listID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("generate: commit vocabulary item replace for list %d: %w", listID, err)
+		return fmt.Errorf("generate: commit vocabulary item sync for list %d: %w", listID, err)
 	}
-	// Backfill enqueueing happens only once the transaction has actually
-	// committed (matching server/export_import.go's own itemBackfillSpec
-	// pattern) — an item that gets rolled back must never have a backfill
-	// job enqueued against it.
-	for i, it := range items {
-		s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, positions[i], language, it.Phrase, it.Grammar, it.Transcription)
+	// Backfill is enqueued only once the transaction has committed — an item
+	// that gets rolled back must never have a backfill job enqueued for it —
+	// and from the items as stored (the store normalises the text), since a
+	// job's stale-target guard compares against the stored phrase.
+	stored, err := s.vocab.Items(ctx, listID)
+	if err != nil {
+		log.Printf("generate: read synced vocabulary items of list %d for backfill: %v", listID, err)
+		return nil
+	}
+	for _, it := range stored {
+		s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, it.Position, language, it.Phrase, it.Grammar, it.Transcription)
 	}
 	return nil
 }
 
-// replaceModelsItems mirrors replaceVocabItems — see that method's doc
-// comment.
-func (s *Service) replaceModelsItems(ctx context.Context, listID int64, language string, items []models.Item) error {
-	existing, err := s.models.Items(ctx, listID)
-	if err != nil {
-		return fmt.Errorf("generate: read existing models items for list %d: %w", listID, err)
+// syncModelsItems mirrors syncVocabItems — see that method's doc comment.
+func (s *Service) syncModelsItems(ctx context.Context, listID int64, language string, items []models.Item) error {
+	syncItems := make([]models.SyncItem, len(items))
+	for i, it := range items {
+		syncItems[i] = models.SyncItem{Phrase: it.Phrase, Transcription: it.Transcription}
 	}
 	tx, err := s.models.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("generate: begin models item replace for list %d: %w", listID, err)
+		return fmt.Errorf("generate: begin models item sync for list %d: %w", listID, err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 
-	for pos := len(existing) - 1; pos >= 0; pos-- {
-		if err := s.models.DeleteItemTx(ctx, tx, listID, pos); err != nil {
-			return fmt.Errorf("generate: delete existing models item %d in list %d: %w", pos, listID, err)
-		}
-	}
-	positions := make([]int, len(items))
-	for i, it := range items {
-		position, err := s.models.AddItemTx(ctx, tx, listID, it.Phrase, it.Transcription)
-		if err != nil {
-			return fmt.Errorf("generate: add models item to list %d: %w", listID, err)
-		}
-		positions[i] = position
+	if err := s.models.SyncItemsTx(ctx, tx, listID, syncItems, false); err != nil {
+		return fmt.Errorf("generate: sync models items of list %d: %w", listID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("generate: commit models item replace for list %d: %w", listID, err)
+		return fmt.Errorf("generate: commit models item sync for list %d: %w", listID, err)
 	}
-	// Backfill enqueueing happens only once the transaction has actually
-	// committed — see replaceVocabItems's own doc comment.
-	for i, it := range items {
-		s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, positions[i], language, it.Phrase, "", it.Transcription)
+	stored, err := s.models.Items(ctx, listID)
+	if err != nil {
+		log.Printf("generate: read synced models items of list %d for backfill: %v", listID, err)
+		return nil
+	}
+	for _, it := range stored {
+		s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, it.Position, language, it.Phrase, "", it.Transcription)
 	}
 	return nil
 }

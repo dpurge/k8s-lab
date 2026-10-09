@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -369,12 +370,20 @@ func (s *Server) apiAddModelsItem(w http.ResponseWriter, r *http.Request) {
 	}
 	position, err := s.models.AddItem(r.Context(), id, req.Phrase, req.Transcription)
 	if err != nil {
+		if errors.Is(err, models.ErrBlankPhrase) {
+			writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if err := s.models.SetTranslation(r.Context(), id, position, u.Locale, req.Translation, position+1); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+	// Phrases are shared across lists: a blank translation field must not
+	// clear the translation the phrase already has through another list.
+	if req.Translation != "" {
+		if err := s.models.SetTranslation(r.Context(), id, position, u.Locale, req.Translation, position+1); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"position": position})
 }
@@ -414,6 +423,10 @@ func (s *Server) apiUpdateModelsItem(w http.ResponseWriter, r *http.Request) {
 	if err := s.models.UpdateItem(r.Context(), id, position, req.Phrase, req.Transcription); err != nil {
 		if err == models.ErrItemNotFound {
 			writeErr(w, http.StatusNotFound, "not_found", "models item not found")
+			return
+		}
+		if errors.Is(err, models.ErrBlankPhrase) {
+			writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())

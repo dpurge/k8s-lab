@@ -394,13 +394,30 @@ func backgroundTxContext(ctx context.Context) (context.Context, context.CancelFu
 // enqueueItemBackfill enqueues the structured item calls
 // (ai.ItemJobsFor) one imported vocabulary/models item needs: one per site
 // locale the import didn't provide a translation for (a locale present in
-// the file counts as provided, even if blank — unchanged from before), or
-// one call when only grammar/transcription is missing. Shared between
+// the file counts as provided, even if blank — unchanged from before) and the
+// phrase doesn't already have one for, or one call when only
+// grammar/transcription is missing. Shared between
 // apiImportVocabulary and apiImportModels the same way enqueueBackfill is
 // shared between apiImportTexts and apiImportDialogs.
 func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, listID int64, position int, language, phrase, grammar, transcription string, providedTranslations map[string]string) error {
 	translated := make(map[string]bool, len(providedTranslations))
 	for locale := range providedTranslations {
+		translated[locale] = true
+	}
+	// Phrases are shared across lists, so this one may already be translated
+	// through another list: don't submit it again.
+	var existing map[string]bool
+	var err error
+	switch resourceType {
+	case "vocabulary_item":
+		existing, err = s.vocab.TranslatedLocales(ctx, listID, position)
+	case "models_item":
+		existing, err = s.models.TranslatedLocales(ctx, listID, position)
+	}
+	if err != nil {
+		return fmt.Errorf("read existing translations for %s %d position %d: %w", resourceType, listID, position, err)
+	}
+	for locale := range existing {
 		translated[locale] = true
 	}
 	state := ai.ItemState{ResourceType: resourceType, Translated: translated, Grammar: grammar, Transcription: transcription}

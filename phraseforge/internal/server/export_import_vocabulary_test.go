@@ -267,3 +267,44 @@ func TestResolveVocabImportItemsNonEmpty(t *testing.T) {
 		t.Errorf("items = %+v, want the same two items unchanged", items)
 	}
 }
+
+// TestVocabExportYAMLRoundTripsItemIDsIntoImport pins the point of the item
+// id: what an export writes, an import reads back into the same field, so an
+// edited file's lines still name the phrases they edit.
+func TestVocabExportYAMLRoundTripsItemIDsIntoImport(t *testing.T) {
+	exported := apiVocabExportResponse{Lists: []apiVocabExportList{{
+		ID: 7, Title: "T", Language: "arb", Script: "arab",
+		Items: []apiVocabExportItem{
+			{ID: 41, Phrase: "كتاب", Grammar: "n", Transcription: "kitab",
+				Translations: map[string]apiVocabExportItemTranslation{"en": {Translation: "book", Notes: "noun"}}},
+			{ID: 42, Phrase: "قلم"},
+		},
+	}}}
+	raw, err := yaml.Marshal(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported apiVocabImportRequest
+	if err := yaml.Unmarshal(raw, &imported); err != nil {
+		t.Fatalf("unmarshal export as import: %v\n%s", err, raw)
+	}
+	items := *imported.Lists[0].Items
+	if len(items) != 2 || items[0].ID != 41 || items[1].ID != 42 {
+		t.Fatalf("imported items = %+v, want ids 41 and 42 kept", items)
+	}
+	if items[0].Translations["en"].Translation != "book" || items[0].Translations["en"].Notes != "noun" {
+		t.Fatalf("translations lost in the round trip: %+v", items[0].Translations)
+	}
+}
+
+// TestVocabImportWithoutItemIDsDecodesToZero covers an old export or a
+// hand-written file: no id means a new line, never an edit.
+func TestVocabImportWithoutItemIDsDecodesToZero(t *testing.T) {
+	var imported apiVocabImportRequest
+	if err := yaml.Unmarshal([]byte("lists:\n  - id: 7\n    items:\n      - phrase: كتاب\n"), &imported); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*imported.Lists[0].Items)[0].ID; got != 0 {
+		t.Fatalf("item id = %d, want 0 when the file has none", got)
+	}
+}

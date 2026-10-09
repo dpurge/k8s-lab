@@ -41,6 +41,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Vocabulary and models phrases are stored once: the same language, script, phrase, grammar and transcription is one record linked from every list that has it. A phrase that is already translated shows its translations in another list at once and is not sent for translation again; editing a phrase or its translation changes it in every list that uses it. Existing duplicates are merged when the schema is applied (the migrate job); when copies had different translations for a locale, the first one is kept.
+- Export of vocabulary and models gives every item an `id`, and importing a file now edits the items it names by `id` — phrase, grammar, transcription and translations, in every list that uses them — instead of replacing the list's items. A line without an `id` is a new item, items missing from the file are removed from the list, the file's order is kept, and translations in the file overwrite the stored ones. Files without item ids still import, as new items.
+- Regenerating vocabulary or models from a text keeps the translations of phrases that are generated again.
+- Changing the language or script of a vocabulary or models list moves its items to the same phrases in the new language.
 - Language sections moved from the Admin > LLM tab to the new Languages tab, shown one snippet per row instead of two columns in one table; the stored data and the configuration export/import format are unchanged.
 - Admin > LLM prompt kinds are named after the default prompt files: "Generate translation", "Generate transcription", "Generate title", "Process text", "Process dialog", "Generate vocabulary", "Generate models", "Generate vocabulary item", "Generate models item".
 - Default prompts are the files of prompt-eval's `prompt/default/system/`, embedded in the binary (`npm run sync-prompts` / `check-sync` in prompt-eval keep the copy equal); the default title and translation prompts are now the production-tuned text prompt-eval tests, which differs from the old one only in line breaks. A deployed prompt (`config.yaml` or an admin row) must contain a snippet placeholder to use the snippet.
@@ -108,6 +112,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Phrase text is trimmed and Unicode-normalised (NFC) before it is stored or compared, so a phrase typed with a stray space, or with its Arabic vowel marks in a different order, is no longer saved as a second copy; existing phrases are normalised when the schema is applied. Adding or editing an item with a blank phrase answers 400 instead of 500.
+- Adding a models item with an empty translation no longer clears the translation the phrase already has in another list.
 - Going back from a text, dialog, vocabulary list or models list returns to the list page it was opened from, not page 1.
 - Generating vocabulary or models no longer returns an empty list when the model writes lines in the wrong
   format (for example the grammar tag in square brackets, seen with Arabic): rejected lines are sent back to
