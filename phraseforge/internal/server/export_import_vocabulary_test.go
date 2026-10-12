@@ -1,9 +1,13 @@
 package server
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"phraseforge/internal/vocabulary"
 )
 
 // TestListMetaUnchangedAllProvidedMatch covers the fully-matching case with
@@ -306,5 +310,43 @@ func TestVocabImportWithoutItemIDsDecodesToZero(t *testing.T) {
 	}
 	if got := (*imported.Lists[0].Items)[0].ID; got != 0 {
 		t.Fatalf("item id = %d, want 0 when the file has none", got)
+	}
+}
+
+func TestVocabItemsUnchangedComparesExamplesOnlyWhenTheIncomingItemMentionsThem(t *testing.T) {
+	existing := []vocabItemFields{{Phrase: "كتاب", Examples: []string{"كِتَابٌ"}}}
+	cases := []struct {
+		name     string
+		incoming []vocabItemFields
+		want     bool
+	}{
+		{"same examples", []vocabItemFields{{Phrase: "كتاب", Examples: []string{"كِتَابٌ"}}}, true},
+		{"different examples", []vocabItemFields{{Phrase: "كتاب", Examples: []string{"قَرَأَ كِتَابًا"}}}, false},
+		{"more examples", []vocabItemFields{{Phrase: "كتاب", Examples: []string{"كِتَابٌ", "آخَرُ"}}}, false},
+		{"empty list clears what exists", []vocabItemFields{{Phrase: "كتاب", Examples: []string{}}}, false},
+		{"examples not mentioned", []vocabItemFields{{Phrase: "كتاب"}}, true},
+	}
+	for _, c := range cases {
+		if got := vocabItemsUnchanged(existing, c.incoming); got != c.want {
+			t.Errorf("%s: vocabItemsUnchanged = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// An empty incoming list over an item with none is not a change.
+	if !vocabItemsUnchanged([]vocabItemFields{{Phrase: "x"}}, []vocabItemFields{{Phrase: "x", Examples: []string{}}}) {
+		t.Error("an empty list over no examples must count as unchanged")
+	}
+}
+
+func TestValidateVocabImportItemsRejectsInvalidExamplesNamingTheItem(t *testing.T) {
+	items := []apiVocabImportItem{
+		{Phrase: "a", Examples: []string{"fine"}},
+		{Phrase: "b", Examples: []string{"1", "2", "3", "4", "5", "6"}},
+	}
+	err := validateVocabImportItems(items)
+	if err == nil || !strings.Contains(err.Error(), "item 1") || !errors.Is(err, vocabulary.ErrInvalidExamples) {
+		t.Fatalf("err = %v, want a wrapped ErrInvalidExamples naming item 1", err)
+	}
+	if err := validateVocabImportItems(items[:1]); err != nil {
+		t.Fatalf("valid examples rejected: %v", err)
 	}
 }

@@ -1,0 +1,29 @@
+You check vocabulary for a language learner. Below are phrases in {{sourceLanguage}} that the learner's dictionary already knows. Each one comes with a usage, a short phrase from a new text in which the word occurs, with the examples and translations the dictionary already has for it. For each phrase decide two things: whether the usage should be added as one more example, and whether it shows a meaning that none of the existing translations covers.
+
+needsExample is true when the usage is a correct short phrase that shows the word in a use the known examples do not show: another construction, another object or subject, or another sense. It is false when the usage repeats a known example, differs from one only in a trivial way, or is not a correct use of the phrase. When the phrase has no examples yet, a correct usage gives true.
+
+needsSense is true when the usage shows a meaning of the word that none of the translations listed covers (a different sense, not just a different construction). It is false when a listed translation already covers the meaning of the usage, and false when the phrase has no translation.
+
+Return ONLY valid JSON without a code fence and without explanations, with one entry for every numbered phrase:
+
+{"results": [{"n": 1, "needsExample": true, "needsSense": false}, {"n": 2, "needsExample": false, "needsSense": false}]}
+
+Example. Phrases in German:
+1. der Koffer
+   usage: den Koffer packen
+   examples: ein schwerer Koffer
+   translations: pl: walizka
+2. der Tag
+   usage: jeden Tag
+   examples: jeden Tag | der erste Tag
+   translations: pl: dzień
+3. der Hahn
+   usage: den Hahn aufdrehen
+   examples: ein junger Hahn
+   translations: pl: kogut
+Answer:
+{"results": [{"n": 1, "needsExample": true, "needsSense": false}, {"n": 2, "needsExample": false, "needsSense": false}, {"n": 3, "needsExample": true, "needsSense": true}]}
+
+Phrases in {{sourceLanguage}}:
+{{candidates}}
+Answer:

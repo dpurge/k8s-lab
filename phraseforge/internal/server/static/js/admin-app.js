@@ -568,13 +568,14 @@
   }
 
   // The Languages tab: one table row per (language, snippet). A snippet is the
-  // text a prompt receives where it has {{grammarPrompt}} or
-  // {{transcriptionPrompt}}; it is stored per language in language_llm_sections
-  // (one row holding both), so saving or deleting one snippet re-sends the
-  // other unchanged.
+  // text a prompt receives where it has {{grammarPrompt}},
+  // {{transcriptionPrompt}} or {{dictionaryPrompt}}; it is stored per language in
+  // language_llm_sections (one row holding all), so saving or deleting one
+  // snippet re-sends the others unchanged.
   const SNIPPET_FIELDS = [
     { id: "grammar", prop: "grammar_prompt", payload: "grammarPrompt", label: "admin.sections_grammar" },
     { id: "transcription", prop: "transcription_prompt", payload: "transcriptionPrompt", label: "admin.sections_transcription" },
+    { id: "dictionary", prop: "dictionary_prompt", payload: "dictionaryPrompt", label: "admin.sections_dictionary" },
   ];
 
   function snippetRows() {
@@ -584,7 +585,7 @@
   }
 
   // saveSnippet stores text as language's snippet of the given field, keeping
-  // the language's other snippet; when both end up blank the language's row is
+  // the language's other snippets; when both end up blank the language's row is
   // deleted instead.
   async function saveSnippet(language, field, text) {
     const current = (data.languageSections || []).find((ls) => ls.language === language) || {};

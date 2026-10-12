@@ -5,21 +5,45 @@ You are a dictionary. Return ONLY valid JSON without a code fence and without ex
   "grammar": "grammar tags attached to the original phrase, follow the description below; null if unsure",
   "transcription": "only if a transcription is described below, otherwise null",
   "translation": "the meaning of the phrase in the target language",
-  "notes": null
+  "notes": null,
+  "example": "a short phrase that shows how the word is used, or null",
+  "newSense": null,
+  "rewrite": null
 }
 
 Rules:
-- translation: as a dictionary of the target language gives it. Lowercase, unless it is a name that is normally capitalized. Several senses are joined with "; " (never with "/" or a comma). No parentheses, no explanation, no full stop.
+- translation: as a dictionary of the target language gives it. Lowercase, unless it is a name that is normally capitalized. Several senses are joined with "; " (never with "/" or a comma). No parentheses, no explanation, no full stop. When an existing translation is shown below, give it unchanged.
 - notes: null, almost always. Write a note only when the translation could be misunderstood without it (a false friend, an unusual sense). Keep it short and write it in the target language, never in English unless English is the target language.
+- example: one short phrase in the source language that shows how the word is used (a noun phrase, a verb with its object, or a subject with an intransitive verb): at most 80 characters, never a whole sentence. Take it from the usage below, shortened or corrected if needed. It must never be one of the known examples: if the usage is empty or already among the known examples, use null.
+- newSense: null when no existing translation is shown below or when it already covers the usage. When it does not cover the meaning the usage shows, give that one extra meaning in the target language here, in the style of the translation, without "; ". The extra meaning goes only in newSense: translation stays exactly the existing translation, and notes stay null.
+- rewrite: null when the phrase is already a dictionary headword, or when the usage is empty. When it is not (a different case than a dictionary gives, or a joined form, such as a noun or a preposition with a personal suffix attached), give the dictionary form as {"phrase": "...", "grammar": "...", "transcription": "..."}: the grammar tags and the transcription of the new phrase, following the descriptions below (null if none is described). The other fields still describe the original phrase.
 
 {{grammarPrompt}}
 
 {{transcriptionPrompt}}
 
+Usage in the text this phrase came from (unknown if empty):
+{{usage}}
+
+Known examples of this phrase, never repeat one of them (none if empty):
+{{examples}}
+
+Existing translation of this phrase in the target language (none if empty):
+{{translation}}
+
 Example 1. Translate from German to Polish: der Koffer
-{"phrase": "der Koffer", "grammar": "N m", "transcription": null, "translation": "walizka", "notes": null}
+{"phrase": "der Koffer", "grammar": "N m", "transcription": null, "translation": "walizka", "notes": null, "example": "einen Koffer packen", "newSense": null, "rewrite": null}
 
 Example 2. Translate from Standard Arabic to English: مُهَنْدِسَةٌ
-{"phrase": "مُهَنْدِسَةٌ", "grammar": "N f sg", "transcription": "muhandisa", "translation": "engineer", "notes": null}
+{"phrase": "مُهَنْدِسَةٌ", "grammar": "N f sg", "transcription": "muhandisa", "translation": "engineer", "notes": null, "example": "مُهَنْدِسَةٌ مَاهِرَةٌ", "newSense": null, "rewrite": null}
+
+Example 3. Translate from German to Polish: Kinder (usage: die Kinder spielen)
+{"phrase": "Kinder", "grammar": "N pl", "transcription": null, "translation": "dzieci", "notes": null, "example": "die Kinder spielen", "newSense": null, "rewrite": {"phrase": "das Kind", "grammar": "N n", "transcription": null}}
+
+Example 4. Translate from Standard Arabic to English: كِتَابُهُ (usage: قرأت كتابه)
+{"phrase": "كِتَابُهُ", "grammar": "N m sg", "transcription": "kitābuhu", "translation": "his book", "notes": null, "example": null, "newSense": null, "rewrite": {"phrase": "كِتَابٌ", "grammar": "N m sg", "transcription": "kitāb"}}
+
+Example 5. Translate from German to Polish: Hahn (usage: den Hahn aufdrehen; existing translation: kogut)
+{"phrase": "Hahn", "grammar": "N m", "transcription": null, "translation": "kogut", "notes": null, "example": "den Hahn aufdrehen", "newSense": "kran", "rewrite": null}
 
 Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}

@@ -299,6 +299,42 @@
     .linked-lists a { font-size: 0.85rem; }
 
     .editor-tab-pane textarea { height: 18rem; }
+    /* Vocabulary table: with auto layout a long translation takes all the width and CJK text,
+       which can wrap anywhere, collapses the other columns to a character per line. Phrase,
+       translation and notes keep a readable minimum (the wrapper scrolls on a narrow screen). */
+    .vocab-items-table th:nth-child(1), .vocab-items-table td:nth-child(1) { min-width: 8.5rem; } /* five CJK characters in the enlarged font (5 x 1.4rem) plus the cell padding */
+    .vocab-items-table th:nth-child(4), .vocab-items-table td:nth-child(4) { min-width: 11rem; }
+    .vocab-items-table th:nth-child(5), .vocab-items-table td:nth-child(5) { min-width: 15rem; }
+    /* Examples below the notes: the notes' own size and color. Each line keeps the script's direction
+       (dir is set on the block); the block is only as wide as its longest line, so in an LTR table it
+       starts where the notes start instead of sitting at the far edge of the cell. */
+    .vocab-examples { margin-top: 0.35rem; width: fit-content; max-width: 100%; }
+    .vocab-example + .vocab-example { margin-top: 0.15rem; }
+    /* Review dialog (vocabulary view): one block per proposal. */
+    .review-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; }
+    .review-dialog > * + * { margin-top: 0.75rem; }
+    .review-head h2 { margin: 0; font-size: 1.5rem; }
+    .review-warning { border: 1px solid var(--danger); color: var(--danger); border-radius: 0.4rem; padding: 0.5rem 0.75rem; }
+    .review-message { color: var(--muted); }
+    .review-item { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.6rem 0.8rem; }
+    .review-item.is-done { opacity: 0.6; }
+    .review-item-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-bottom: 0.4rem; }
+    .review-status { margin-inline-start: auto; color: var(--muted); font-size: 0.85rem; }
+    .review-values { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 0.75rem; align-items: baseline; }
+    .review-values dt { color: var(--muted); font-size: 0.85rem; margin: 0; }
+    /* start-aligned and shrunk to the text, so right-to-left text sits next to its label */
+    .review-values dd { margin: 0; overflow-wrap: anywhere; justify-self: start; }
+    .review-reason { color: var(--muted); font-size: 0.9rem; margin-top: 0.4rem; }
+    .review-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+    .review-footer { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .review-row { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; margin: 0.5rem 0; }
+    .review-values dd.review-long { white-space: pre-wrap; max-height: 12rem; overflow: auto; }
+    .review-cell { white-space: nowrap; border-bottom: 1px solid var(--border); padding: 0.5rem; }
+    /* Same size and font as the other form fields (an input's own rule outranks the script class,
+       a textarea's does not, so without this the Arabic font would make it larger than the phrase
+       field); direction and alignment still come from the script. */
+    #field-examples { height: 7rem; font-size: 1.05rem; font-family: inherit; }
+    .vocab-hint { margin-top: 0.3rem; font-size: 0.8rem; color: var(--muted); }
     .editor-tab-pane textarea.editor-enlarged { font-size: 1.4rem; } /* CJK/Arabic/Hebrew/Syriac need a bigger base size to read while typing */
   </style>
   {{block "extra_head" .}}{{end}}

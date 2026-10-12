@@ -332,17 +332,30 @@ func TestConfigMapItemPromptsMatchDefaults(t *testing.T) {
 	// translation and title are left out: the configmap keeps them as one-line
 	// strings, the defaults as the (line-wrapped) text prompt-eval tests.
 	for name, pair := range map[string][2]string{
-		"vocabularyItem":     {cfg.VocabularyItem.Prompt, DefaultVocabularyItemPrompt},
-		"modelsItem":         {cfg.ModelsItem.Prompt, DefaultModelsItemPrompt},
-		"transcription":      {cfg.Transcription.Prompt, DefaultTranscriptionPrompt},
-		"processText":        {cfg.ProcessText.Prompt, DefaultProcessTextPrompt},
-		"processDialog":      {cfg.ProcessDialog.Prompt, DefaultProcessDialogPrompt},
-		"generateVocabulary": {cfg.GenerateVocabulary.Prompt, DefaultGenerateVocabularyPrompt},
-		"generateModels":     {cfg.GenerateModels.Prompt, DefaultGenerateModelsPrompt},
+		"vocabularyItem":      {cfg.VocabularyItem.Prompt, DefaultVocabularyItemPrompt},
+		"modelsItem":          {cfg.ModelsItem.Prompt, DefaultModelsItemPrompt},
+		"checkVocabulary":     {cfg.CheckVocabulary.Prompt, DefaultCheckVocabularyPrompt},
+		"reviewVocabulary":    {cfg.ReviewVocabulary.Prompt, DefaultReviewVocabularyPrompt},
+		"reviewTranscription": {cfg.ReviewTranscription.Prompt, DefaultReviewTranscriptionPrompt},
+		"reviewTranslation":   {cfg.ReviewTranslation.Prompt, DefaultReviewTranslationPrompt},
+		"transcription":       {cfg.Transcription.Prompt, DefaultTranscriptionPrompt},
+		"processText":         {cfg.ProcessText.Prompt, DefaultProcessTextPrompt},
+		"processDialog":       {cfg.ProcessDialog.Prompt, DefaultProcessDialogPrompt},
+		"generateVocabulary":  {cfg.GenerateVocabulary.Prompt, DefaultGenerateVocabularyPrompt},
+		"generateModels":      {cfg.GenerateModels.Prompt, DefaultGenerateModelsPrompt},
 	} {
 		if pair[0] != pair[1] {
 			t.Errorf("configmap %s.prompt differs from its compiled-in default (a prompt change must reach both):\n%q\nvs\n%q", name, pair[0], pair[1])
 		}
+	}
+	// The review model is chosen in the settings: left blank it is the item model.
+	for name, c := range map[string]PurposeConfig{"reviewTranscription": cfg.ReviewTranscription, "reviewTranslation": cfg.ReviewTranslation} {
+		if c.Provider != "" || c.Model != "" {
+			t.Errorf("configmap %s sets provider %q model %q, want both blank", name, c.Provider, c.Model)
+		}
+	}
+	if cfg.ReviewVocabulary.Provider != "" || cfg.ReviewVocabulary.Model != "" {
+		t.Errorf("configmap reviewVocabulary sets provider %q model %q, want both blank (vocabularyItem's apply)", cfg.ReviewVocabulary.Provider, cfg.ReviewVocabulary.Model)
 	}
 	// Long pages are accepted in prod only through this value, so a typo in the
 	// key must not fall back silently to the 24 KiB default.

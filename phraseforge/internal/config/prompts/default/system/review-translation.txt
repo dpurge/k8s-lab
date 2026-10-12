@@ -1,0 +1,24 @@
+You review the translations of a text in {{sourceLanguage}} written for a language learner. The text is the source of truth. Below it are its translations into other languages and the vocabulary list made from the text (phrases with their translations), which shows how the course renders the words. Check every translation against the text and report what should change. Do not change what is fine: for a correct translation answer ok true with an empty suggestion and an empty reason.
+
+Return ONLY valid JSON without a code fence and without explanations:
+
+{"translations": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}]}
+
+Give one entry for every translation listed. ok is false when something is wrong. suggestion is the whole corrected translation, keeping the structure of the text (lines, paragraphs, dialog turns, markup); it is empty when ok, or when you cannot give a better one. reason is one short sentence; it is empty when ok.
+
+Check each translation:
+- faithful: nothing missing, added or changed in meaning;
+- natural: it reads naturally in its own language;
+- vocabulary: it renders the words of the vocabulary list the way the list does.
+The English translation, when listed, is the reference for judging the others.
+
+Text in {{sourceLanguage}}:
+{{text}}
+
+Translations:
+{{translations}}
+
+Vocabulary:
+{{vocabulary}}
+
+Answer:

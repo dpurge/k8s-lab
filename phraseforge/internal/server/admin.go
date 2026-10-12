@@ -32,7 +32,7 @@ var adminAppI18nKeys = []string{
 	"admin.ime_configs_heading", "admin.ime_remove_confirm", "admin.ime_no_configs",
 	"admin.llm_heading", "admin.llm_kind", "admin.llm_kind_translation", "admin.llm_kind_transcription",
 	"admin.llm_kind_title", "admin.llm_kind_process_text", "admin.llm_kind_process_dialog",
-	"admin.llm_kind_generate_vocabulary", "admin.llm_kind_generate_models", "admin.llm_kind_vocabulary_item", "admin.llm_kind_models_item",
+	"admin.llm_kind_generate_vocabulary", "admin.llm_kind_generate_models", "admin.llm_kind_vocabulary_item", "admin.llm_kind_models_item", "admin.llm_kind_check_vocabulary", "admin.llm_kind_review_vocabulary", "admin.llm_kind_review_transcription", "admin.llm_kind_review_translation",
 	"admin.llm_source_language", "admin.llm_target_language", "admin.llm_target_not_applicable",
 	"admin.llm_provider", "admin.llm_model", "admin.llm_model_placeholder", "admin.llm_model_default",
 	"admin.llm_think", "admin.llm_timeout_seconds", "admin.llm_timeout_default", "admin.llm_timeout_placeholder",
@@ -95,7 +95,7 @@ type apiAdminBootstrap struct {
 	LLMDefaults map[string]string `json:"llmDefaults"`
 	// LLMPlaceholders maps each kind to the {{placeholders}} its prompt may use.
 	LLMPlaceholders map[string][]string `json:"llmPlaceholders"`
-	// SnippetDefaults holds the default grammar and transcription snippets,
+	// SnippetDefaults holds the default grammar, transcription and dictionary snippets,
 	// the starting text of a language's own snippet.
 	SnippetDefaults map[string]string `json:"snippetDefaults"`
 }
@@ -150,7 +150,7 @@ func (s *Server) apiGetAdminBootstrap(w http.ResponseWriter, r *http.Request) {
 		LLMKinds:         ai.ValidKinds,
 		LLMDefaults:      s.ai.DefaultPrompts(),
 		LLMPlaceholders:  placeholders,
-		SnippetDefaults:  map[string]string{"grammar": config.DefaultGrammarSnippet, "transcription": config.DefaultTranscriptionSnippet},
+		SnippetDefaults:  map[string]string{"grammar": config.DefaultGrammarSnippet, "transcription": config.DefaultTranscriptionSnippet, "dictionary": config.DefaultDictionarySnippet},
 	})
 }
 
@@ -311,12 +311,13 @@ func (s *Server) apiDeleteAdminLLMPrompt(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apiAdminLanguageSectionsRequest is the Languages tab's save request: both
+// apiAdminLanguageSectionsRequest is the Languages tab's save request: all
 // snippets of one language.
 type apiAdminLanguageSectionsRequest struct {
 	Language            string `json:"language"`
 	GrammarPrompt       string `json:"grammarPrompt"`
 	TranscriptionPrompt string `json:"transcriptionPrompt"`
+	DictionaryPrompt    string `json:"dictionaryPrompt"`
 }
 
 func (s *Server) apiSetAdminLanguageSections(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +330,7 @@ func (s *Server) apiSetAdminLanguageSections(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusBadRequest, "validation_error", "language is required")
 		return
 	}
-	ls := ai.LanguageSections{Language: req.Language, GrammarPrompt: req.GrammarPrompt, TranscriptionPrompt: req.TranscriptionPrompt}
+	ls := ai.LanguageSections{Language: req.Language, GrammarPrompt: req.GrammarPrompt, TranscriptionPrompt: req.TranscriptionPrompt, DictionaryPrompt: req.DictionaryPrompt}
 	if err := s.ai.SetLanguageSections(r.Context(), ls); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
 		return
@@ -482,7 +483,7 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, ls := range cfg.LanguageSections {
-			if _, err := tx.Exec(ctx, `INSERT INTO language_llm_sections(language, grammar_prompt, transcription_prompt) VALUES($1,$2,$3)`, ls.Language, ls.GrammarPrompt, ls.TranscriptionPrompt); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO language_llm_sections(language, grammar_prompt, transcription_prompt, dictionary_prompt) VALUES($1,$2,$3,$4)`, ls.Language, ls.GrammarPrompt, ls.TranscriptionPrompt, ls.DictionaryPrompt); err != nil {
 				writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
 				return
 			}

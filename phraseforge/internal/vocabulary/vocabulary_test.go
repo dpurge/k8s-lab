@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -274,58 +275,6 @@ func TestUpdateItemMergesIntoAnExistingIdenticalPhrase(t *testing.T) {
 	pl, _ := s.Translations(ctx, a, "pl")
 	if pl[typo].Translation != "ksiazka" || pl[typo].Notes != "n." {
 		t.Fatalf("pl = %+v, want the surviving phrase's own translation", pl[typo])
-	}
-}
-
-func TestSetItemTranscriptionAndGrammarIfBlank(t *testing.T) {
-	s, _, uid := newTestStore(t)
-	ctx := context.Background()
-	a := newList(t, s, uid, "A", "arb", "arab")
-	b := newList(t, s, uid, "B", "arb", "arab")
-	posA := mustAdd(t, s, a, "كتاب", "", "")
-	posB := mustAdd(t, s, b, "كتاب", "", "")
-
-	applied, err := s.SetItemTranscriptionIfBlank(ctx, a, posA, "كتاب", "kitab")
-	if err != nil || !applied {
-		t.Fatalf("first transcription write applied=%v err=%v", applied, err)
-	}
-	if applied, err = s.SetItemTranscriptionIfBlank(ctx, a, posA, "كتاب", "other"); err != nil || applied {
-		t.Fatalf("second transcription write applied=%v err=%v, want not applied", applied, err)
-	}
-	if _, err = s.SetItemTranscriptionIfBlank(ctx, a, posA, "stale", "x"); !errors.Is(err, ErrItemNotFound) {
-		t.Fatalf("stale phrase err = %v, want ErrItemNotFound", err)
-	}
-	if applied, err = s.SetItemGrammarIfBlank(ctx, b, posB, "كتاب", "n"); err != nil || !applied {
-		t.Fatalf("grammar write applied=%v err=%v", applied, err)
-	}
-
-	items, _ := s.Items(ctx, a)
-	if items[posA].Transcription != "kitab" || items[posA].Grammar != "n" {
-		t.Fatalf("list A item = %+v, want fields written through B too (shared phrase)", items[posA])
-	}
-}
-
-func TestSetItemTranslationIfAbsent(t *testing.T) {
-	s, _, uid := newTestStore(t)
-	ctx := context.Background()
-	a := newList(t, s, uid, "A", "arb", "arab")
-	b := newList(t, s, uid, "B", "arb", "arab")
-	posA := mustAdd(t, s, a, "كتاب", "", "")
-	posB := mustAdd(t, s, b, "كتاب", "", "")
-
-	applied, err := s.SetItemTranslationIfAbsent(ctx, a, posA, "كتاب", "en", "book", "")
-	if err != nil || !applied {
-		t.Fatalf("first write applied=%v err=%v", applied, err)
-	}
-	// B shares the phrase, so its translation already exists: no overwrite.
-	if applied, err = s.SetItemTranslationIfAbsent(ctx, b, posB, "كتاب", "en", "tome", ""); err != nil || applied {
-		t.Fatalf("second write applied=%v err=%v, want not applied", applied, err)
-	}
-	if _, err = s.SetItemTranslationIfAbsent(ctx, a, posA, "stale", "pl", "x", ""); !errors.Is(err, ErrItemNotFound) {
-		t.Fatalf("stale phrase err = %v, want ErrItemNotFound", err)
-	}
-	if got, _ := s.Translations(ctx, b, "en"); got[posB].Translation != "book" {
-		t.Fatalf("translation = %+v, want book", got[posB])
 	}
 }
 
@@ -813,5 +762,108 @@ func TestSchemaNormalisesPhrasesStoredBeforeTheRuleAndNeverFailsOnACollision(t *
 		if got[i] != want[i] {
 			t.Fatalf("rows = %q, want %q", got, want)
 		}
+	}
+}
+
+// itemIDs returns listID's item ids in position order.
+func itemIDs(t *testing.T, s *Store, listID int64) []int64 {
+	t.Helper()
+	items, err := s.Items(context.Background(), listID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
+func TestSyncKeepsTheItemIDOfAPhraseThatStaysAndGivesNewOnesNewIDs(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	a := newList(t, s, uid, "A", "arb", "arab")
+	mustAdd(t, s, a, "one", "", "")
+	mustAdd(t, s, a, "two", "", "")
+	mustAdd(t, s, a, "three", "", "")
+	before := itemIDs(t, s, a) // one, two, three
+
+	syncItems(t, s, a, true, SyncItem{Phrase: "three"}, SyncItem{Phrase: "four"}, SyncItem{Phrase: "one"})
+
+	after := itemIDs(t, s, a) // three, four, one
+	if after[0] != before[2] || after[2] != before[0] {
+		t.Fatalf("item ids = %v, want three and one to keep %d and %d", after, before[2], before[0])
+	}
+	if after[1] == before[0] || after[1] == before[1] || after[1] == before[2] {
+		t.Fatalf("item id of the new phrase = %d, want one never used before (%v)", after[1], before)
+	}
+	for _, id := range after {
+		if id == before[1] {
+			t.Fatalf("item ids = %v still contain the removed phrase's id %d", after, before[1])
+		}
+	}
+}
+
+func TestSyncPairsRepeatedPhrasesInPositionOrder(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	a := newList(t, s, uid, "A", "arb", "arab")
+	syncItems(t, s, a, true, SyncItem{Phrase: "x"}, SyncItem{Phrase: "x"})
+	before := itemIDs(t, s, a)
+
+	syncItems(t, s, a, true, SyncItem{Phrase: "x"}, SyncItem{Phrase: "y"}, SyncItem{Phrase: "x"})
+
+	after := itemIDs(t, s, a)
+	if after[0] != before[0] || after[2] != before[1] {
+		t.Fatalf("item ids = %v, want the first x to keep %d and the second %d", after, before[0], before[1])
+	}
+}
+
+func TestDeleteItemKeepsTheIDsOfTheItemsThatShift(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	a := newList(t, s, uid, "A", "arb", "arab")
+	mustAdd(t, s, a, "one", "", "")
+	mustAdd(t, s, a, "two", "", "")
+	mustAdd(t, s, a, "three", "", "")
+	before := itemIDs(t, s, a)
+
+	if err := s.DeleteItem(context.Background(), a, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	after := itemIDs(t, s, a)
+	if len(after) != 2 || after[0] != before[1] || after[1] != before[2] {
+		t.Fatalf("item ids = %v, want %v and %v moved up to positions 0 and 1", after, before[1], before[2])
+	}
+}
+
+func TestTranslationsByItemReturnsOnlyNonBlankTranslationsOfThatList(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	ctx := context.Background()
+	a := newList(t, s, uid, "A", "deu", "latn")
+	b := newList(t, s, uid, "B", "deu", "latn")
+	mustAdd(t, s, a, "der Koffer", "", "")
+	mustAdd(t, s, a, "der Tag", "", "")
+	mustAdd(t, s, a, "neu", "", "")
+	mustAdd(t, s, b, "das Buch", "", "")
+	if err := s.SetTranslations(ctx, a, "en", []ItemTranslation{{Position: 0, Translation: "suitcase"}, {Position: 1, Translation: "   "}}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTranslations(ctx, a, "pl", []ItemTranslation{{Position: 0, Translation: "walizka"}}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTranslations(ctx, b, "en", []ItemTranslation{{Position: 0, Translation: "book"}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.Items(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.TranslationsByItem(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]map[string]string{items[0].ID: {"en": "suitcase", "pl": "walizka"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TranslationsByItem = %v, want %v (blank translations and other lists left out)", got, want)
 	}
 }

@@ -224,12 +224,6 @@ type generatePayload struct {
 	ResourceType string `json:"resource_type,omitempty"`
 	ResourceID   int64  `json:"resource_id,omitempty"`
 	Locale       string `json:"locale,omitempty"`
-
-	// ItemPosition mirrors ai.generatePayload's own field of the same name —
-	// only meaningful (and only ever set, by enqueueItemBackfill) for a
-	// vocabulary_item/models_item resource type, where ResourceID is the
-	// list id rather than the item's own id (an item has no independent id).
-	ItemPosition int `json:"item_position,omitempty"`
 }
 
 // buildBackfillPayload builds one backfillDecision's llm_generate job
@@ -366,8 +360,8 @@ func (s *Server) enqueueBackfill(ctx context.Context, resourceType string, resou
 // afterward, once the transaction has actually committed (an item that gets
 // rolled back must never have a backfill job enqueued against it).
 type itemBackfillSpec struct {
+	itemID               int64
 	position             int
-	phrase               string
 	grammar              string // vocabulary only
 	transcription        string
 	providedTranslations map[string]string
@@ -399,7 +393,7 @@ func backgroundTxContext(ctx context.Context) (context.Context, context.CancelFu
 // grammar/transcription is missing. Shared between
 // apiImportVocabulary and apiImportModels the same way enqueueBackfill is
 // shared between apiImportTexts and apiImportDialogs.
-func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, listID int64, position int, language, phrase, grammar, transcription string, providedTranslations map[string]string) error {
+func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, itemID, listID int64, position int, language, grammar, transcription string, providedTranslations map[string]string) error {
 	translated := make(map[string]bool, len(providedTranslations))
 	for locale := range providedTranslations {
 		translated[locale] = true
@@ -421,7 +415,7 @@ func (s *Server) enqueueItemBackfill(ctx context.Context, resourceType string, l
 		translated[locale] = true
 	}
 	state := ai.ItemState{ResourceType: resourceType, Translated: translated, Grammar: grammar, Transcription: transcription}
-	itemJobs, err := s.ai.ItemJobsFor(ctx, state, listID, position, language, phrase, nil, i18n.Locales)
+	itemJobs, err := s.ai.ItemJobsFor(ctx, state, itemID, language, "", nil, i18n.Locales)
 	if err != nil {
 		return fmt.Errorf("plan item backfill for %s %d position %d: %w", resourceType, listID, position, err)
 	}

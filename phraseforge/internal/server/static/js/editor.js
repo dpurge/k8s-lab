@@ -127,15 +127,21 @@ async function pfApplyImeConfig() {
 
   const sourceEl = document.getElementById('field-source');
   const transcriptionEl = document.getElementById('field-transcription');
+  // Vocabulary usage examples are source-language text too: same script
+  // styling and IME as the phrase field (absent on every other page).
+  const examplesEl = document.getElementById('field-examples');
 
   // Styling always applies for the selected script — independent of
   // whether an IME preset has been configured for it.
   pfApplyScriptStyle(sourceEl, cfg.script, cfg.direction, cfg.enlarged);
+  pfApplyScriptStyle(examplesEl, cfg.script, cfg.direction, cfg.enlarged);
   // Transcription is cli-tools' "pinned Latin/LTR romanization" — always
   // plain Latin styling, regardless of the source script.
   pfApplyScriptStyle(transcriptionEl, 'latn', 'ltr', false);
 
-  pfWireIme(sourceEl, await pfLoadIme(cfg.source_ime));
+  const sourceIme = await pfLoadIme(cfg.source_ime);
+  pfWireIme(sourceEl, sourceIme);
+  pfWireIme(examplesEl, sourceIme);
   pfWireIme(transcriptionEl, await pfLoadIme(cfg.transcription_ime));
 
   // texts/dialogs show/hide a Transcription tab; vocabulary/models show/hide

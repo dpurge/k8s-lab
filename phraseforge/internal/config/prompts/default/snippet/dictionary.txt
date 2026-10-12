@@ -1,0 +1,6 @@
+The phrase is the dictionary form (lemma) the way a dictionary of this language lists the entry, never an inflected form:
+- Nouns: nominative singular (a plural form only when it is a separate dictionary entry).
+- Verbs: the form a dictionary uses as the headword.
+- Adjectives: the base form (masculine singular when the language has gender).
+- Keep the original script and spelling, with the diacritics a dictionary prints.
+- A short fixed phrase is allowed only when the meaning needs it.

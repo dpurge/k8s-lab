@@ -321,6 +321,7 @@ func findVocabItemByPosition(items []vocabItem, position int) (vocabItem, bool) 
 // since it exists only to make one generic-ish helper serve both without
 // duplicating the scan loop.
 type vocabItem struct {
+	ID            int64
 	Position      int
 	Phrase        string
 	Transcription string
@@ -353,9 +354,7 @@ func (s *Server) apiGenerateVocabItemTranslation(w http.ResponseWriter, r *http.
 // apiGenerateVocabItemField is apiGenerateVocabItemTranscription/
 // apiGenerateVocabItemTranslation's shared body — same CanEdit(list's
 // language)/404/403 shape as apiGenerateFromText, plus a position lookup for
-// the item's current phrase (the generation source, and the stale-target
-// guard the job's writeback checks against — see
-// vocabulary.Store.SetItemTranscriptionIfBlank's doc comment).
+// the item's id, which is what the job targets.
 //
 // Either button (transcription or translation) now queues the same single
 // structured item call (phraseforge-structured-item-translation), which
@@ -398,14 +397,14 @@ func (s *Server) apiGenerateVocabItemField(w http.ResponseWriter, r *http.Reques
 	}
 	converted := make([]vocabItem, len(items))
 	for i, it := range items {
-		converted[i] = vocabItem{Position: it.Position, Phrase: it.Phrase, Transcription: it.Transcription}
+		converted[i] = vocabItem{ID: it.ID, Position: it.Position, Phrase: it.Phrase, Transcription: it.Transcription}
 	}
 	item, found := findVocabItemByPosition(converted, position)
 	if !found {
 		writeErr(w, http.StatusNotFound, "not_found", "vocabulary item not found")
 		return
 	}
-	s.enqueueItemButtonJob(w, r, "vocabulary_item", l.ID, position, l.Language, locale, item.Phrase)
+	s.enqueueItemButtonJob(w, r, "vocabulary_item", item.ID, locale)
 }
 
 // apiGenerateModelsItemTranscription handles POST
@@ -471,23 +470,23 @@ func (s *Server) apiGenerateModelsItemField(w http.ResponseWriter, r *http.Reque
 	}
 	converted := make([]vocabItem, len(items))
 	for i, it := range items {
-		converted[i] = vocabItem{Position: it.Position, Phrase: it.Phrase, Transcription: it.Transcription}
+		converted[i] = vocabItem{ID: it.ID, Position: it.Position, Phrase: it.Phrase, Transcription: it.Transcription}
 	}
 	item, found := findVocabItemByPosition(converted, position)
 	if !found {
 		writeErr(w, http.StatusNotFound, "not_found", "models item not found")
 		return
 	}
-	s.enqueueItemButtonJob(w, r, "models_item", l.ID, position, l.Language, locale, item.Phrase)
+	s.enqueueItemButtonJob(w, r, "models_item", item.ID, locale)
 }
 
 // enqueueItemButtonJob queues one structured item call for a per-item
 // Generate button and responds with its job id.
-func (s *Server) enqueueItemButtonJob(w http.ResponseWriter, r *http.Request, resourceType string, listID int64, position int, language, locale, phrase string) {
+func (s *Server) enqueueItemButtonJob(w http.ResponseWriter, r *http.Request, resourceType string, itemID int64, locale string) {
 	if locale == "" {
 		locale = currentUser(r).Locale
 	}
-	job, err := ai.NewItemJob(resourceType, listID, position, language, locale, phrase)
+	job, err := ai.NewItemJob(resourceType, itemID, locale, "")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

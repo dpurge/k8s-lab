@@ -605,6 +605,9 @@
     if (generateVocabBtn) {
       generateVocabBtn.addEventListener("click", () => generateFromText(id, "generate-vocabulary", "texts.generate_vocabulary_started"));
     }
+    if (text.canEdit && window.pfTextReview) {
+      pfTextReview.attach({ root, base: `/api/v1/texts/${id}`, T, apiFetch, statusBar, parts: { transcription: !!text.transcription, translation: !!text.hasTranslation }, reload: () => showView(id) });
+    }
     const generateModelsBtn = document.getElementById("generateModelsBtn");
     if (generateModelsBtn) {
       generateModelsBtn.addEventListener("click", () => generateFromText(id, "generate-models", "texts.generate_models_started"));

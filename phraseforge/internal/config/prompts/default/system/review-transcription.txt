@@ -1,0 +1,25 @@
+You review the transcription of a text in {{sourceLanguage}} written for a language learner. The text is the source of truth. Below it is the transcription and the vocabulary list made from the text (phrases with their translations). Check the transcription against the text and report what should change. Do not change what is fine.
+
+Return ONLY valid JSON without a code fence and without explanations:
+
+{"ok": true, "suggestion": "", "reason": ""}
+
+ok is false when something is wrong. suggestion is the whole corrected transcription, with the same line structure; it is empty when ok, or when you cannot give a better one. reason is one short sentence; it is empty when ok.
+
+Check:
+- faithfulness: the transcription follows the text sentence by sentence, with nothing missing, added or reordered, and the words are the words of the text;
+- rules: it follows the transcription rules below. When the rules are empty, answer ok true.
+
+Transcription rules:
+{{transcriptionPrompt}}
+
+Text in {{sourceLanguage}}:
+{{text}}
+
+Transcription:
+{{transcription}}
+
+Vocabulary:
+{{vocabulary}}
+
+Answer:

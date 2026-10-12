@@ -23,6 +23,7 @@ import (
 	"phraseforge/internal/jobs"
 	"phraseforge/internal/models"
 	"phraseforge/internal/pagination"
+	"phraseforge/internal/resreview"
 	"phraseforge/internal/roles"
 	"phraseforge/internal/tags"
 	"phraseforge/internal/texts"
@@ -79,6 +80,7 @@ type Server struct {
 	translations *translations.Store
 	ai           *ai.Service
 	jobs         *jobs.Service
+	resReviews   *resreview.Store
 
 	// ingestMaxContentBytes is the ingest content cap from config; zero means
 	// defaultIngestMaxContentBytes (see ingestMaxBytes).
@@ -86,7 +88,7 @@ type Server struct {
 }
 
 func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store, aiSvc *ai.Service, jobsSvc *jobs.Service) *Server {
-	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc, jobs: jobsSvc}
+	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc, jobs: jobsSvc, resReviews: resreview.New(db)}
 }
 
 // SetIngestMaxContentBytes sets the ingest content cap (config's
@@ -207,6 +209,21 @@ func (s *Server) Router() http.Handler {
 			r.Post("/vocabulary/{id}/items/{position}/generate-transcription", s.apiGenerateVocabItemTranscription)
 			r.Post("/vocabulary/{id}/items/{position}/generate-translation", s.apiGenerateVocabItemTranslation)
 			r.Post("/vocabulary/{id}/generate-missing-translations", s.apiGenerateMissingVocabTranslations)
+			// phraseforge-vocabulary-review-job: same requireAuth/CanEdit
+			// authorization as the generate routes above.
+			// phraseforge-text-dialog-review-job: same authorization.
+			for _, rt := range []struct{ path, resourceType string }{{"texts", "text"}, {"dialogs", "dialog"}} {
+				r.Post("/"+rt.path+"/{id}/review/{part}", s.reviewResourceHandler(rt.resourceType, "queue"))
+				r.Get("/"+rt.path+"/{id}/review/{part}", s.reviewResourceHandler(rt.resourceType, "get"))
+				r.Post("/"+rt.path+"/{id}/review/{part}/apply", s.reviewResourceHandler(rt.resourceType, "apply"))
+				r.Post("/"+rt.path+"/{id}/review/{part}/dismiss", s.reviewResourceHandler(rt.resourceType, "dismiss"))
+			}
+			r.Post("/vocabulary/{id}/review", s.apiReviewVocabList)
+			r.Get("/vocabulary/{id}/reviews", s.apiListVocabReviews)
+			r.Post("/vocabulary/{id}/items/{position}/review", s.apiReviewVocabItem)
+			r.Get("/vocabulary/{id}/items/{position}/review", s.apiGetVocabItemReview)
+			r.Post("/vocabulary/{id}/items/{position}/review/apply", s.apiApplyVocabItemReview)
+			r.Post("/vocabulary/{id}/items/{position}/review/dismiss", s.apiDismissVocabItemReview)
 
 			r.Get("/models", s.apiListModelsLists)
 			r.Post("/models", s.apiCreateModelsList)
@@ -446,6 +463,32 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // removing those templates) — the exact set handleTextsApp resolves once,
 // server-side, into a flat {key: translatedString} map for texts-app.js.
 var textsAppI18nKeys = []string{
+	"texts.review_btn_transcription",
+	"texts.review_btn_translation",
+	"texts.review_field_transcription",
+	"texts.review_field_translation",
+	"texts.review_started",
+	"texts.review_none",
+	"texts.review_pending",
+	"texts.review_open",
+	"texts.review_reviewed",
+	"texts.review_stale",
+	"texts.review_stale_warning",
+	"texts.review_again",
+	"texts.review_current",
+	"texts.review_suggested",
+	"texts.review_apply",
+	"texts.review_dismiss",
+	"texts.review_apply_all",
+	"texts.review_dismiss_all",
+	"texts.review_close",
+	"texts.review_none_open",
+	"texts.review_applied",
+	"texts.review_dismissed",
+	"texts.review_conflict",
+	"texts.review_remark",
+	"texts.review_nothing",
+	"texts.review_reviewed_at",
 	"texts.title", "texts.new", "texts.empty", "texts.no_access",
 	"texts.tag_filter", "texts.tag_filter_clear",
 	"texts.new_title", "texts.field_title", "texts.field_language", "texts.field_script",

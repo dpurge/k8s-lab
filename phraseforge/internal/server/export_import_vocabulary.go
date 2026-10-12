@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -43,6 +44,8 @@ type apiVocabExportItem struct {
 	Grammar       string                                   `json:"grammar,omitempty" yaml:"grammar,omitempty"`
 	Transcription string                                   `json:"transcription,omitempty" yaml:"transcription,omitempty"`
 	Translations  map[string]apiVocabExportItemTranslation `json:"translations,omitempty" yaml:"translations,omitempty"`
+	// Examples is the phrase's short usage examples, omitted when it has none.
+	Examples []string `json:"examples,omitempty" yaml:"examples,omitempty"`
 }
 
 // apiVocabExportList is one exported vocabulary list — its own metadata plus
@@ -77,6 +80,10 @@ type apiVocabImportItem struct {
 	Grammar       string                                   `json:"grammar,omitempty" yaml:"grammar,omitempty"`
 	Transcription string                                   `json:"transcription,omitempty" yaml:"transcription,omitempty"`
 	Translations  map[string]apiVocabImportItemTranslation `json:"translations,omitempty" yaml:"translations,omitempty"`
+	// Examples replaces the phrase's usage examples when the key is present
+	// (an empty list clears them); absent leaves them alone, like a locale
+	// missing from Translations.
+	Examples []string `json:"examples,omitempty" yaml:"examples,omitempty"`
 }
 
 // apiVocabImportList is one vocabulary import list. Only Phrase-per-item is
@@ -126,6 +133,11 @@ type vocabItemFields struct {
 	// vocabItemsUnchanged see the item as changed (same rule as
 	// importUnchanged's own Translations field).
 	Translations map[string]vocabTranslationFields
+	// Examples is nil unless the incoming item mentions examples (an import
+	// never writes what it doesn't mention, so then they are not compared);
+	// otherwise the incoming normalised list, or the existing one at the same
+	// position. A nil and an empty list are the same here.
+	Examples []string
 }
 
 // vocabItemsUnchanged reports whether existing already matches every
@@ -146,6 +158,9 @@ func vocabItemsUnchanged(existing, incoming []vocabItemFields) bool {
 			if e.Translations[locale] != t {
 				return false
 			}
+		}
+		if in.Examples != nil && !slices.Equal(e.Examples, in.Examples) {
+			return false
 		}
 	}
 	return true
@@ -212,7 +227,7 @@ func (s *Server) apiExportVocabulary(w http.ResponseWriter, r *http.Request) {
 			}
 			itemsOut[j] = apiVocabExportItem{
 				ID: it.PhraseID, Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
-				Translations: translations,
+				Translations: translations, Examples: it.Examples,
 			}
 		}
 		out[i] = apiVocabExportList{
@@ -343,13 +358,18 @@ func resolveVocabImportItems(list apiVocabImportList) (items []apiVocabImportIte
 }
 
 // validateVocabImportItems reports the first fundamentally-invalid item in
-// items (a blank phrase) — pulled out as a pure function so both
+// items (a blank phrase, or an examples list over the limits) — pulled out as a pure function so both
 // importUpdateVocabList and importCreateVocabList apply the exact same rule
 // without duplicating the loop.
 func validateVocabImportItems(items []apiVocabImportItem) error {
 	for i, it := range items {
 		if strings.TrimSpace(it.Phrase) == "" {
 			return fmt.Errorf("item %d: phrase is required", i)
+		}
+		if it.Examples != nil {
+			if err := vocabulary.CheckExamples(it.Examples); err != nil {
+				return fmt.Errorf("item %d: %w", i, err)
+			}
 		}
 	}
 	return nil
@@ -421,6 +441,10 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 				Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
 				Translations: toVocabTranslationFields(it.Translations),
 			}
+			if it.Examples != nil {
+				// Already checked by validateVocabImportItems.
+				incomingItemFields[i].Examples, _ = vocabulary.NormalizeExamples(it.Examples)
+			}
 		}
 		existingItemFields := make([]vocabItemFields, len(existingItems))
 		for i, it := range existingItems {
@@ -431,6 +455,9 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 			existingItemFields[i] = vocabItemFields{
 				Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
 				Translations: existingVocabItemTranslations(it.Position, provided, transByLocale),
+			}
+			if i < len(items) && items[i].Examples != nil {
+				existingItemFields[i].Examples = it.Examples
 			}
 		}
 		itemsChanged = !vocabItemsUnchanged(existingItemFields, incomingItemFields)
@@ -499,7 +526,7 @@ func (s *Server) importUpdateVocabList(ctx context.Context, u auth.User, index i
 			return
 		}
 		for _, spec := range specs {
-			if err := s.enqueueItemBackfill(ctx, "vocabulary_item", list.ID, spec.position, language, spec.phrase, spec.grammar, spec.transcription, spec.providedTranslations); err != nil {
+			if err := s.enqueueItemBackfill(ctx, "vocabulary_item", spec.itemID, list.ID, spec.position, language, spec.grammar, spec.transcription, spec.providedTranslations); err != nil {
 				res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 				return
 			}
@@ -536,7 +563,7 @@ func (s *Server) syncVocabItemsTx(ctx context.Context, listID int64, items []api
 		}
 		syncItems[i] = vocabulary.SyncItem{
 			PhraseID: it.ID, Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
-			Translations: translations,
+			Translations: translations, Examples: it.Examples,
 		}
 	}
 	if err := s.vocab.SyncItemsTx(txCtx, tx, listID, syncItems, allowEdit); err != nil {
@@ -546,9 +573,8 @@ func (s *Server) syncVocabItemsTx(ctx context.Context, listID int64, items []api
 		return nil, err
 	}
 
-	// The backfill specs carry the phrase as stored (the store normalises it),
-	// not as written in the file: a job's stale-target guard compares against
-	// the stored text.
+	// The backfill specs carry the item ids and the grammar and transcription
+	// as stored (the store normalises them), not as written in the file.
 	stored, err := s.vocab.Items(ctx, listID)
 	if err != nil {
 		return nil, err
@@ -562,7 +588,7 @@ func (s *Server) syncVocabItemsTx(ctx context.Context, listID int64, items []api
 		for locale, t := range it.Translations {
 			providedTranslations[locale] = t.Translation
 		}
-		specs[i] = itemBackfillSpec{position: i, phrase: stored[i].Phrase, grammar: stored[i].Grammar, transcription: stored[i].Transcription, providedTranslations: providedTranslations}
+		specs[i] = itemBackfillSpec{itemID: stored[i].ID, position: i, grammar: stored[i].Grammar, transcription: stored[i].Transcription, providedTranslations: providedTranslations}
 	}
 	return specs, nil
 }
@@ -616,7 +642,7 @@ func (s *Server) addVocabItemsAndBackfill(ctx context.Context, listID int64, lan
 		return err
 	}
 	for _, spec := range specs {
-		if err := s.enqueueItemBackfill(ctx, "vocabulary_item", listID, spec.position, language, spec.phrase, spec.grammar, spec.transcription, spec.providedTranslations); err != nil {
+		if err := s.enqueueItemBackfill(ctx, "vocabulary_item", spec.itemID, listID, spec.position, language, spec.grammar, spec.transcription, spec.providedTranslations); err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
 			return err
 		}

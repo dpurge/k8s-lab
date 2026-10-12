@@ -397,12 +397,30 @@ CREATE TABLE IF NOT EXISTS phrase_translation (
     PRIMARY KEY (phrase_id, locale)
 );
 
+-- Short usage examples of a phrase (a noun phrase, a verb with its object):
+-- source-language text, shared by every list that links the phrase, like the
+-- translations. The limits are checked by vocabulary.Store.SetItemExamples; the
+-- constraints are the backstop.
+CREATE TABLE IF NOT EXISTS phrase_examples (
+    phrase_id bigint NOT NULL REFERENCES phrases(id) ON DELETE CASCADE,
+    position  integer NOT NULL CHECK (position BETWEEN 0 AND 4),
+    example   text NOT NULL CHECK (btrim(example) <> '' AND char_length(example) <= 80),
+    PRIMARY KEY (phrase_id, position)
+);
+
 CREATE TABLE IF NOT EXISTS vocabulary_items (
     list_id   bigint NOT NULL REFERENCES vocabulary_lists(id) ON DELETE CASCADE,
     position  integer NOT NULL,
     phrase_id bigint NOT NULL REFERENCES phrases(id),
     PRIMARY KEY (list_id, position)
 );
+
+-- A stable identity for background jobs: position changes when items are
+-- added, removed or a list is regenerated, id does not (sync keeps the id of
+-- an item whose phrase stays in the list). Adding the identity column fills
+-- the existing rows.
+ALTER TABLE vocabulary_items ADD COLUMN IF NOT EXISTS id bigint GENERATED ALWAYS AS IDENTITY;
+CREATE UNIQUE INDEX IF NOT EXISTS vocabulary_items_id_idx ON vocabulary_items (id);
 
 -- One-time migration from the earlier per-list shape (phrase/grammar/
 -- transcription stored on each vocabulary_items row, translations keyed by
@@ -536,6 +554,10 @@ CREATE TABLE IF NOT EXISTS models_items (
     PRIMARY KEY (list_id, position)
 );
 
+-- Stable job identity, as for vocabulary_items.
+ALTER TABLE models_items ADD COLUMN IF NOT EXISTS id bigint GENERATED ALWAYS AS IDENTITY;
+CREATE UNIQUE INDEX IF NOT EXISTS models_items_id_idx ON models_items (id);
+
 -- One-time migration from the earlier per-list shape, mirroring vocabulary's
 -- (see the DO block above vocabulary_items' orphan trigger): duplicates merge
 -- into one phrase, the first non-empty translation per locale wins (lowest
@@ -625,7 +647,7 @@ ALTER TABLE llm_prompts ADD COLUMN IF NOT EXISTS think boolean NOT NULL DEFAULT 
 -- correctly upgrades an installation created before this migration.
 ALTER TABLE llm_prompts DROP CONSTRAINT IF EXISTS llm_prompts_kind_check;
 ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_kind_check
-    CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models', 'vocabulary_item', 'models_item'));
+    CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models', 'vocabulary_item', 'models_item', 'check_vocabulary', 'review_vocabulary', 'review_transcription', 'review_translation'));
 
 -- llm-purpose-timeout-and-prompt-config: an optional per-(kind, source,
 -- target) admin override of that call's timeout. NULL (the default, and
@@ -735,4 +757,40 @@ CREATE TABLE IF NOT EXISTS language_llm_sections (
     grammar_prompt       text NOT NULL DEFAULT '',
     transcription_prompt text NOT NULL DEFAULT '',
     updated_at           timestamptz NOT NULL DEFAULT now()
+);
+
+-- phraseforge-vocabulary-review-job: third snippet, the dictionary form of the
+-- language's phrases ({{dictionaryPrompt}}); blank means "section absent".
+ALTER TABLE language_llm_sections ADD COLUMN IF NOT EXISTS dictionary_prompt text NOT NULL DEFAULT '';
+
+-- phraseforge-vocabulary-review-job: the latest review of a vocabulary item,
+-- one row per item id (a new review replaces it; the row goes with the item).
+-- findings are the model's proposals, each with its own status (open, applied,
+-- dismissed) that the review dialog changes; response is the model's reply as
+-- it came. phrase is the phrase that was reviewed: a proposal is only applied
+-- while the item still has it.
+CREATE TABLE IF NOT EXISTS vocabulary_reviews (
+    item_id    bigint PRIMARY KEY REFERENCES vocabulary_items(id) ON DELETE CASCADE,
+    phrase     text NOT NULL,
+    findings   jsonb NOT NULL,
+    response   jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- phraseforge-text-dialog-review-job: the latest review of a text or dialog,
+-- one row per resource and part (the transcription and the translations are
+-- reviewed separately; a new review replaces it). version is a hash of the
+-- source text that was reviewed: a proposal is only applied while the
+-- resource still has it. findings carry their own status like
+-- vocabulary_reviews. No foreign key (the resource is polymorphic), like
+-- resource_translation.
+CREATE TABLE IF NOT EXISTS resource_reviews (
+    resource_type text NOT NULL CHECK (resource_type IN ('text', 'dialog')),
+    resource_id   bigint NOT NULL,
+    part          text NOT NULL CHECK (part IN ('transcription', 'translation')),
+    version       text NOT NULL,
+    findings      jsonb NOT NULL,
+    response      jsonb NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (resource_type, resource_id, part)
 );

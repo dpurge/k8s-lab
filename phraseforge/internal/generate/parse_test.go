@@ -2,6 +2,7 @@ package generate
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"phraseforge/internal/models"
@@ -12,20 +13,20 @@ func TestParseVocabularyLine(t *testing.T) {
 	tests := []struct {
 		name string
 		line string
-		want vocabulary.Item
+		want Candidate
 		ok   bool
 	}{
-		{"phrase only", "cat", vocabulary.Item{Phrase: "cat"}, true},
-		{"full form", "cat {noun} [kat] = kot", vocabulary.Item{Phrase: "cat", Grammar: "noun", Transcription: "kat"}, true},
-		{"grammar only", "run {verb}", vocabulary.Item{Phrase: "run", Grammar: "verb"}, true},
-		{"transcription only", "kot [kot]", vocabulary.Item{Phrase: "kot", Transcription: "kot"}, true},
-		{"translation only", "kot = cat", vocabulary.Item{Phrase: "kot"}, true},
-		{"transcription and translation, no grammar", "kot [kot] = cat", vocabulary.Item{Phrase: "kot", Transcription: "kot"}, true},
-		{"empty line", "", vocabulary.Item{}, false},
-		{"whitespace only", "   ", vocabulary.Item{}, false},
-		{"no phrase, grammar only", "{noun} = kot", vocabulary.Item{}, false},
-		{"no phrase, starts with translation", "= kot", vocabulary.Item{}, false},
-		{"unclosed brace", "cat {noun", vocabulary.Item{}, false},
+		{"phrase only", "cat", Candidate{Item: vocabulary.Item{Phrase: "cat"}}, true},
+		{"full form", "cat {noun} [kat] = kot", Candidate{Item: vocabulary.Item{Phrase: "cat", Grammar: "noun", Transcription: "kat"}}, true},
+		{"grammar only", "run {verb}", Candidate{Item: vocabulary.Item{Phrase: "run", Grammar: "verb"}}, true},
+		{"transcription only", "kot [kot]", Candidate{Item: vocabulary.Item{Phrase: "kot", Transcription: "kot"}}, true},
+		{"translation only", "kot = cat", Candidate{Item: vocabulary.Item{Phrase: "kot"}}, true},
+		{"transcription and translation, no grammar", "kot [kot] = cat", Candidate{Item: vocabulary.Item{Phrase: "kot", Transcription: "kot"}}, true},
+		{"empty line", "", Candidate{}, false},
+		{"whitespace only", "   ", Candidate{}, false},
+		{"no phrase, grammar only", "{noun} = kot", Candidate{}, false},
+		{"no phrase, starts with translation", "= kot", Candidate{}, false},
+		{"unclosed brace", "cat {noun", Candidate{}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -33,7 +34,7 @@ func TestParseVocabularyLine(t *testing.T) {
 			if ok != tt.ok {
 				t.Fatalf("ParseVocabularyLine(%q) ok = %v, want %v", tt.line, ok, tt.ok)
 			}
-			if ok && got != tt.want {
+			if ok && !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("ParseVocabularyLine(%q) = %+v, want %+v", tt.line, got, tt.want)
 			}
 		})
@@ -47,16 +48,16 @@ func TestParseVocabularyLines(t *testing.T) {
 	if !reflect.DeepEqual(rejected, wantRejected) {
 		t.Fatalf("ParseVocabularyLines(%q) rejected = %+v, want %+v", body, rejected, wantRejected)
 	}
-	want := []vocabulary.Item{
-		{Phrase: "cat", Grammar: "noun", Transcription: "kat"},
-		{Phrase: "run", Grammar: "verb"},
-		{Phrase: "kot", Transcription: "kot"},
+	want := []Candidate{
+		{Item: vocabulary.Item{Phrase: "cat", Grammar: "noun", Transcription: "kat"}},
+		{Item: vocabulary.Item{Phrase: "run", Grammar: "verb"}},
+		{Item: vocabulary.Item{Phrase: "kot", Transcription: "kot"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("ParseVocabularyLines(%q) = %+v, want %+v", body, got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Fatalf("ParseVocabularyLines(%q)[%d] = %+v, want %+v", body, i, got[i], want[i])
 		}
 	}
@@ -117,7 +118,7 @@ func TestParseModelsLines(t *testing.T) {
 func TestParseVocabularyLinesRejectsBracketGrammar(t *testing.T) {
 	body := "وُلِدَ [verb] [wulida] = was born\nدِمَشْقَ [noun] [Dimashqa] = Damascus\nحَصَلَ {verb} [haṣala] = obtained"
 	got, rejected := ParseVocabularyLines(body)
-	wantItems := []vocabulary.Item{{Phrase: "حَصَلَ", Grammar: "verb", Transcription: "haṣala"}}
+	wantItems := []Candidate{{Item: vocabulary.Item{Phrase: "حَصَلَ", Grammar: "verb", Transcription: "haṣala"}}}
 	if !reflect.DeepEqual(got, wantItems) {
 		t.Fatalf("items = %+v, want %+v", got, wantItems)
 	}
@@ -142,5 +143,60 @@ func TestParseModelsLinesRejectsTwoBracketGroups(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rejected, wantRejected) {
 		t.Fatalf("rejected = %+v, want %+v", rejected, wantRejected)
+	}
+}
+
+func TestParseVocabularyLineUsage(t *testing.T) {
+	eighty := strings.Repeat("ك", vocabulary.MaxExampleChars)
+	tests := []struct {
+		name string
+		line string
+		want Candidate
+		ok   bool
+	}{
+		{"phrase and usage", "cat | a black cat", Candidate{Item: vocabulary.Item{Phrase: "cat"}, Usage: "a black cat"}, true},
+		{"every part", "kot {N} [kot] | mały kot", Candidate{Item: vocabulary.Item{Phrase: "kot", Grammar: "N", Transcription: "kot"}, Usage: "mały kot"}, true},
+		{"legacy translation before the usage", "kot {N} [kot] = cat | mały kot", Candidate{Item: vocabulary.Item{Phrase: "kot", Grammar: "N", Transcription: "kot"}, Usage: "mały kot"}, true},
+		{"legacy translation alone has no usage", "kot {N} = cat", Candidate{Item: vocabulary.Item{Phrase: "kot", Grammar: "N"}}, true},
+		{"diacritized Arabic keeps its bytes", "كَتَبَ {V} [kataba] | كَتَبَ الدَّرْسَ", Candidate{Item: vocabulary.Item{Phrase: "كَتَبَ", Grammar: "V", Transcription: "kataba"}, Usage: "كَتَبَ الدَّرْسَ"}, true},
+		{"CJK", "拥有 {V} [yōngyǒu] | 拥有自己的房子", Candidate{Item: vocabulary.Item{Phrase: "拥有", Grammar: "V", Transcription: "yōngyǒu"}, Usage: "拥有自己的房子"}, true},
+		{"usage trimmed and NFC-normalised", "cafe | un cafe\u0301 noir  ", Candidate{Item: vocabulary.Item{Phrase: "cafe"}, Usage: "un café noir"}, true},
+		{"trailing separator without a usage", "cat {noun} |", Candidate{Item: vocabulary.Item{Phrase: "cat", Grammar: "noun"}}, true},
+		{"a pipe inside a word is not a separator", "a|b {N}", Candidate{Item: vocabulary.Item{Phrase: "a|b", Grammar: "N"}}, true},
+		{"later pipes belong to the usage", "cat | a | b", Candidate{Item: vocabulary.Item{Phrase: "cat"}, Usage: "a | b"}, true},
+		{"usage of exactly the limit is kept", "كتاب | " + eighty, Candidate{Item: vocabulary.Item{Phrase: "كتاب"}, Usage: eighty}, true},
+		{"usage over the limit is dropped, the candidate kept", "cat {N} | " + strings.Repeat("x", vocabulary.MaxExampleChars+1), Candidate{Item: vocabulary.Item{Phrase: "cat", Grammar: "N"}}, true},
+		{"a line that starts with the usage is rejected", "| a usage", Candidate{}, false},
+		{"no phrase before the usage is rejected", "{noun} | a usage", Candidate{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ParseVocabularyLine(tt.line)
+			if ok != tt.ok {
+				t.Fatalf("ParseVocabularyLine(%q) ok = %v, want %v", tt.line, ok, tt.ok)
+			}
+			if ok && !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("ParseVocabularyLine(%q) = %+v, want %+v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseVocabularyLinesGivesALeadingPipeItsOwnReason(t *testing.T) {
+	got, rejected := ParseVocabularyLines("cat {noun} | a black cat\n| a lonely usage")
+	if len(got) != 1 || got[0].Usage != "a black cat" {
+		t.Fatalf("candidates = %+v, want the first line with its usage", got)
+	}
+	want := []RejectedLine{{Line: "| a lonely usage", Reason: "the line must start with the phrase, before the | usage"}}
+	if !reflect.DeepEqual(rejected, want) {
+		t.Fatalf("rejected = %+v, want %+v", rejected, want)
+	}
+}
+
+func TestVocabularyFormatHelpTellsTheModelAboutTheUsagePart(t *testing.T) {
+	for _, want := range []string{"| usage", "= translation", "each of the four is optional"} {
+		if !strings.Contains(vocabularyFormatHelp, want) {
+			t.Errorf("vocabularyFormatHelp = %q, want it to mention %q", vocabularyFormatHelp, want)
+		}
 	}
 }

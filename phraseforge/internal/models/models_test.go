@@ -231,38 +231,6 @@ func TestUpdateItemIsGlobalAndMergesOnCollision(t *testing.T) {
 	}
 }
 
-func TestSetItemTranscriptionAndTranslationIfBlank(t *testing.T) {
-	s, _, uid := newTestStore(t)
-	ctx := context.Background()
-	a := newList(t, s, uid, "A", "arb", "arab")
-	b := newList(t, s, uid, "B", "arb", "arab")
-	posA := mustAdd(t, s, a, "كيف", "")
-	posB := mustAdd(t, s, b, "كيف", "")
-
-	if applied, err := s.SetItemTranscriptionIfBlank(ctx, a, posA, "كيف", "kayfa"); err != nil || !applied {
-		t.Fatalf("first transcription write applied=%v err=%v", applied, err)
-	}
-	if applied, err := s.SetItemTranscriptionIfBlank(ctx, a, posA, "كيف", "other"); err != nil || applied {
-		t.Fatalf("second transcription write applied=%v err=%v, want not applied", applied, err)
-	}
-	if _, err := s.SetItemTranscriptionIfBlank(ctx, a, posA, "stale", "x"); !errors.Is(err, ErrItemNotFound) {
-		t.Fatalf("stale phrase err = %v, want ErrItemNotFound", err)
-	}
-	if items, _ := s.Items(ctx, b); items[posB].Transcription != "kayfa" {
-		t.Fatalf("list B item = %+v, want the shared phrase's transcription", items[posB])
-	}
-
-	if applied, err := s.SetItemTranslationIfAbsent(ctx, a, posA, "كيف", "en", "how"); err != nil || !applied {
-		t.Fatalf("first translation write applied=%v err=%v", applied, err)
-	}
-	if applied, err := s.SetItemTranslationIfAbsent(ctx, b, posB, "كيف", "en", "tome"); err != nil || applied {
-		t.Fatalf("second translation write applied=%v err=%v, want not applied (shared)", applied, err)
-	}
-	if _, err := s.SetItemTranslationIfAbsent(ctx, a, posA, "stale", "pl", "x"); !errors.Is(err, ErrItemNotFound) {
-		t.Fatalf("stale phrase err = %v, want ErrItemNotFound", err)
-	}
-}
-
 func TestSyncEditsASharedPhraseByIDEverywhereAndOverwritesTranslations(t *testing.T) {
 	s, pool, uid := newTestStore(t)
 	ctx := context.Background()
@@ -524,5 +492,75 @@ func TestSchemaNormalisesModelsPhrasesStoredBeforeTheRuleAndNeverFailsOnACollisi
 	}
 	if first != "x|t" || second != "c " {
 		t.Fatalf("first = %q, third phrase = %q, want x|t and the colliding 'c ' left as it is", first, second)
+	}
+}
+
+// itemIDs returns listID's item ids in position order.
+func itemIDs(t *testing.T, s *Store, listID int64) []int64 {
+	t.Helper()
+	items, err := s.Items(context.Background(), listID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
+func TestSyncKeepsTheItemIDOfAPhraseThatStaysAndGivesNewOnesNewIDs(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	a := newList(t, s, uid, "A", "arb", "arab")
+	mustAdd(t, s, a, "one", "")
+	mustAdd(t, s, a, "two", "")
+	mustAdd(t, s, a, "three", "")
+	before := itemIDs(t, s, a) // one, two, three
+
+	syncItems(t, s, a, true, SyncItem{Phrase: "three"}, SyncItem{Phrase: "four"}, SyncItem{Phrase: "one"})
+
+	after := itemIDs(t, s, a) // three, four, one
+	if after[0] != before[2] || after[2] != before[0] {
+		t.Fatalf("item ids = %v, want three and one to keep %d and %d", after, before[2], before[0])
+	}
+	if after[1] == before[0] || after[1] == before[1] || after[1] == before[2] {
+		t.Fatalf("item id of the new phrase = %d, want one never used before (%v)", after[1], before)
+	}
+	for _, id := range after {
+		if id == before[1] {
+			t.Fatalf("item ids = %v still contain the removed phrase's id %d", after, before[1])
+		}
+	}
+}
+
+func TestSyncPairsRepeatedPhrasesInPositionOrder(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	a := newList(t, s, uid, "A", "arb", "arab")
+	syncItems(t, s, a, true, SyncItem{Phrase: "x"}, SyncItem{Phrase: "x"})
+	before := itemIDs(t, s, a)
+
+	syncItems(t, s, a, true, SyncItem{Phrase: "x"}, SyncItem{Phrase: "y"}, SyncItem{Phrase: "x"})
+
+	after := itemIDs(t, s, a)
+	if after[0] != before[0] || after[2] != before[1] {
+		t.Fatalf("item ids = %v, want the first x to keep %d and the second %d", after, before[0], before[1])
+	}
+}
+
+func TestDeleteItemKeepsTheIDsOfTheItemsThatShift(t *testing.T) {
+	s, _, uid := newTestStore(t)
+	a := newList(t, s, uid, "A", "arb", "arab")
+	mustAdd(t, s, a, "one", "")
+	mustAdd(t, s, a, "two", "")
+	mustAdd(t, s, a, "three", "")
+	before := itemIDs(t, s, a)
+
+	if err := s.DeleteItem(context.Background(), a, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	after := itemIDs(t, s, a)
+	if len(after) != 2 || after[0] != before[1] || after[1] != before[2] {
+		t.Fatalf("item ids = %v, want %v and %v moved up to positions 0 and 1", after, before[1], before[2])
 	}
 }

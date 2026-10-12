@@ -31,7 +31,7 @@ var vocabularyAppI18nKeys = []string{
 	"vocabulary.delete_confirm", "vocabulary.delete_item_confirm",
 	"vocabulary.add_item", "vocabulary.edit_item", "vocabulary.save_item", "vocabulary.cancel_edit",
 	"vocabulary.col_phrase", "vocabulary.col_grammar", "vocabulary.col_transcription",
-	"vocabulary.col_translation", "vocabulary.col_notes", "vocabulary.col_actions",
+	"vocabulary.col_translation", "vocabulary.col_notes", "vocabulary.col_examples", "vocabulary.examples_hint", "vocabulary.col_actions",
 	"texts.export", "texts.import",
 	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
 	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
@@ -39,6 +39,7 @@ var vocabularyAppI18nKeys = []string{
 	"vocabulary.generate_missing_translations", "vocabulary.generate_missing_translations_started",
 	"vocabulary.generate_missing_translations_none",
 	"texts.pagination_previous", "texts.pagination_next",
+	"vocabulary.review", "vocabulary.review_started", "vocabulary.review_none", "vocabulary.review_col", "vocabulary.review_pending", "vocabulary.review_open", "vocabulary.review_reviewed", "vocabulary.review_stale", "vocabulary.review_stale_warning", "vocabulary.review_again", "vocabulary.review_current", "vocabulary.review_suggested", "vocabulary.review_remove", "vocabulary.review_apply", "vocabulary.review_dismiss", "vocabulary.review_apply_all", "vocabulary.review_dismiss_all", "vocabulary.review_close", "vocabulary.review_none_open", "vocabulary.review_applied", "vocabulary.review_dismissed", "vocabulary.review_conflict", "vocabulary.review_remark", "vocabulary.review_nothing", "vocabulary.review_reviewed_at", "vocabulary.review_field_example", "vocabulary.review_title",
 }
 
 func vocabularyAppI18n(loc string) map[string]string {
@@ -68,6 +69,8 @@ type apiVocabItem struct {
 	Transcription string `json:"transcription"`
 	Translation   string `json:"translation"`
 	Notes         string `json:"notes"`
+	// Examples is the phrase's short usage examples, [] when it has none.
+	Examples []string `json:"examples"`
 }
 
 // apiVocabDetail serves both the client's View and Manage states — Manage
@@ -99,6 +102,9 @@ type apiVocabItemRequest struct {
 	Transcription string `json:"transcription"`
 	Translation   string `json:"translation"`
 	Notes         string `json:"notes"`
+	// Examples replaces the phrase's usage examples; absent (nil) leaves
+	// them unchanged and an empty array clears them.
+	Examples []string `json:"examples"`
 }
 
 // apiListVocabLists is handleVocabList's exact logic, JSON-encoded.
@@ -255,9 +261,13 @@ func (s *Server) apiGetVocabList(w http.ResponseWriter, r *http.Request) {
 	for i, it := range items {
 		t := trans[it.Position]
 		rows[i] = vocabViewRow{Item: it, Translation: t.Translation, Notes: t.Notes}
+		examples := it.Examples
+		if examples == nil {
+			examples = []string{}
+		}
 		apiItems[i] = apiVocabItem{
 			Position: it.Position, Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
-			Translation: t.Translation, Notes: t.Notes,
+			Translation: t.Translation, Notes: t.Notes, Examples: examples,
 		}
 	}
 	writeJSON(w, http.StatusOK, apiVocabDetail{
@@ -379,6 +389,12 @@ func (s *Server) apiAddVocabItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	if req.Examples != nil {
+		if err := vocabulary.CheckExamples(req.Examples); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+	}
 	position, err := s.vocab.AddItem(r.Context(), id, req.Phrase, req.Grammar, req.Transcription)
 	if err != nil {
 		if errors.Is(err, vocabulary.ErrBlankPhrase) {
@@ -391,6 +407,12 @@ func (s *Server) apiAddVocabItem(w http.ResponseWriter, r *http.Request) {
 	if req.Translation != "" || req.Notes != "" {
 		if err := s.vocab.SetTranslations(r.Context(), id, u.Locale,
 			[]vocabulary.ItemTranslation{{Position: position, Translation: req.Translation, Notes: req.Notes}}, position+1); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+	}
+	if len(req.Examples) > 0 {
+		if err := s.vocab.SetItemExamples(r.Context(), id, position, req.Examples); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
@@ -430,6 +452,12 @@ func (s *Server) apiUpdateVocabItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	if req.Examples != nil {
+		if err := vocabulary.CheckExamples(req.Examples); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+	}
 	if err := s.vocab.UpdateItem(r.Context(), id, position, req.Phrase, req.Grammar, req.Transcription); err != nil {
 		if err == vocabulary.ErrItemNotFound {
 			writeErr(w, http.StatusNotFound, "not_found", "vocabulary item not found")
@@ -446,6 +474,14 @@ func (s *Server) apiUpdateVocabItem(w http.ResponseWriter, r *http.Request) {
 		[]vocabulary.ItemTranslation{{Position: position, Translation: req.Translation, Notes: req.Notes}}, position+1); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	// After UpdateItem, which may have merged the phrase into another: the
+	// examples go to whichever phrase the item links now.
+	if req.Examples != nil {
+		if err := s.vocab.SetItemExamples(r.Context(), id, position, req.Examples); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"position": position})
 }
@@ -497,7 +533,7 @@ func (s *Server) apiDeleteVocabItem(w http.ResponseWriter, r *http.Request) {
 // for the per-item Translate button and the Text/Dialog View page's
 // Generate Translation button. A stale enqueue racing a since-completed
 // translation still safely no-ops at the job's own guarded writeback
-// (SetItemTranslationIfAbsent), so no re-check is needed beyond the
+// (FillTranslation), so no re-check is needed beyond the
 // snapshot read here.
 func (s *Server) apiGenerateMissingVocabTranslations(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
@@ -546,7 +582,7 @@ func (s *Server) apiGenerateMissingVocabTranslations(w http.ResponseWriter, r *h
 			ResourceType: "vocabulary_item", Grammar: it.Grammar, Transcription: it.Transcription,
 			Translated: map[string]bool{u.Locale: ok && strings.TrimSpace(t.Translation) != ""},
 		}
-		itemJobs, err := s.ai.ItemJobsFor(r.Context(), state, l.ID, it.Position, l.Language, it.Phrase, &sections, callerLocale)
+		itemJobs, err := s.ai.ItemJobsFor(r.Context(), state, it.ID, l.Language, "", &sections, callerLocale)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return

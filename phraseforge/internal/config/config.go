@@ -35,6 +35,19 @@ type Config struct {
 	// specs/features/phraseforge-structured-item-translation.md).
 	VocabularyItem PurposeConfig
 	ModelsItem     PurposeConfig
+	// CheckVocabulary decides, for the known phrases of a freshly generated
+	// vocabulary list, which need a new usage example (one call per list).
+	CheckVocabulary PurposeConfig
+	// ReviewVocabulary reviews one vocabulary item (phrase, grammar,
+	// transcription, translations, notes, examples) and proposes corrections,
+	// meant for a more capable model than the generating one. A blank Provider
+	// or Model falls back to VocabularyItem's (see ai.purposeDefault).
+	ReviewVocabulary PurposeConfig
+	// ReviewTranscription and ReviewTranslation review the transcription and the
+	// translations of one text or dialog, each with its own model and prompt; a
+	// blank Provider or Model falls back to ReviewVocabulary's.
+	ReviewTranscription PurposeConfig
+	ReviewTranslation   PurposeConfig
 
 	// IngestMaxContentBytes caps the raw content one ingest request may carry
 	// (yaml ingest.maxContentBytes). Raising it above what one LLM call can
@@ -106,15 +119,19 @@ type fileConfig struct {
 	Ingest struct {
 		MaxContentBytes int `yaml:"maxContentBytes"`
 	} `yaml:"ingest"`
-	Transcription      purposeFileConfig `yaml:"transcription"`
-	Translation        purposeFileConfig `yaml:"translation"`
-	Title              purposeFileConfig `yaml:"title"`
-	ProcessText        purposeFileConfig `yaml:"processText"`
-	ProcessDialog      purposeFileConfig `yaml:"processDialog"`
-	GenerateVocabulary purposeFileConfig `yaml:"generateVocabulary"`
-	GenerateModels     purposeFileConfig `yaml:"generateModels"`
-	VocabularyItem     purposeFileConfig `yaml:"vocabularyItem"`
-	ModelsItem         purposeFileConfig `yaml:"modelsItem"`
+	Transcription       purposeFileConfig `yaml:"transcription"`
+	Translation         purposeFileConfig `yaml:"translation"`
+	Title               purposeFileConfig `yaml:"title"`
+	ProcessText         purposeFileConfig `yaml:"processText"`
+	ProcessDialog       purposeFileConfig `yaml:"processDialog"`
+	GenerateVocabulary  purposeFileConfig `yaml:"generateVocabulary"`
+	GenerateModels      purposeFileConfig `yaml:"generateModels"`
+	VocabularyItem      purposeFileConfig `yaml:"vocabularyItem"`
+	ModelsItem          purposeFileConfig `yaml:"modelsItem"`
+	CheckVocabulary     purposeFileConfig `yaml:"checkVocabulary"`
+	ReviewVocabulary    purposeFileConfig `yaml:"reviewVocabulary"`
+	ReviewTranscription purposeFileConfig `yaml:"reviewTranscription"`
+	ReviewTranslation   purposeFileConfig `yaml:"reviewTranslation"`
 }
 
 type purposeFileConfig struct {
@@ -179,6 +196,25 @@ func defaultFileConfig() fileConfig {
 		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultModelsItemPrompt,
 	}
+	f.CheckVocabulary = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Prompt: DefaultCheckVocabularyPrompt,
+	}
+	// Provider and Model are left blank: the review uses the vocabularyItem
+	// ones until an operator or the admin sets a more capable model.
+	f.ReviewVocabulary = purposeFileConfig{
+		NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Prompt: DefaultReviewVocabularyPrompt,
+	}
+	// Likewise blank: the review-vocabulary model is used until set.
+	f.ReviewTranscription = purposeFileConfig{
+		NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Prompt: DefaultReviewTranscriptionPrompt,
+	}
+	f.ReviewTranslation = purposeFileConfig{
+		NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Prompt: DefaultReviewTranslationPrompt,
+	}
 	return f
 }
 
@@ -229,15 +265,19 @@ func Load() (Config, error) {
 			"openrouter": {BaseURL: fc.Providers.OpenRouter.BaseURL, APIKey: env("OPENROUTER_API_KEY", "")},
 		},
 
-		Transcription:      PurposeConfig(fc.Transcription),
-		Translation:        PurposeConfig(fc.Translation),
-		Title:              PurposeConfig(fc.Title),
-		ProcessText:        PurposeConfig(fc.ProcessText),
-		ProcessDialog:      PurposeConfig(fc.ProcessDialog),
-		GenerateVocabulary: PurposeConfig(fc.GenerateVocabulary),
-		GenerateModels:     PurposeConfig(fc.GenerateModels),
-		VocabularyItem:     PurposeConfig(fc.VocabularyItem),
-		ModelsItem:         PurposeConfig(fc.ModelsItem),
+		Transcription:       PurposeConfig(fc.Transcription),
+		Translation:         PurposeConfig(fc.Translation),
+		Title:               PurposeConfig(fc.Title),
+		ProcessText:         PurposeConfig(fc.ProcessText),
+		ProcessDialog:       PurposeConfig(fc.ProcessDialog),
+		GenerateVocabulary:  PurposeConfig(fc.GenerateVocabulary),
+		GenerateModels:      PurposeConfig(fc.GenerateModels),
+		VocabularyItem:      PurposeConfig(fc.VocabularyItem),
+		ModelsItem:          PurposeConfig(fc.ModelsItem),
+		CheckVocabulary:     PurposeConfig(fc.CheckVocabulary),
+		ReviewVocabulary:    PurposeConfig(fc.ReviewVocabulary),
+		ReviewTranscription: PurposeConfig(fc.ReviewTranscription),
+		ReviewTranslation:   PurposeConfig(fc.ReviewTranslation),
 
 		IngestMaxContentBytes: fc.Ingest.MaxContentBytes,
 

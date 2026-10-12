@@ -79,6 +79,12 @@ type Job struct {
 // side effects.
 type HandlerFunc func(ctx context.Context, id string, payload json.RawMessage) (result json.RawMessage, err error)
 
+// ErrSkipped is wrapped by a handler whose job has nothing left to do — what
+// it targeted was deleted or changed after the job was queued. Such a job is
+// recorded as cancelled, with the handler's error text as the reason, rather
+// than as a failure: nothing went wrong, so it doesn't call for a Retry.
+var ErrSkipped = errors.New("skipped")
+
 // runningJob tracks the one job the single worker is currently executing —
 // jobs_one_running_idx (db/schema.sql) plus the single Run goroutine
 // guarantee there is never more than one, so a single pointer (not a map
@@ -287,6 +293,51 @@ func (s *Service) List(ctx context.Context) ([]Job, error) {
 			return nil, err
 		}
 		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// ActiveItemIDs returns the item ids of the pending and running jobs of kind,
+// for the kinds whose payload is {"item_id": n} — what a caller needs to avoid
+// queueing a second job for an item that already has one waiting.
+func (s *Service) ActiveItemIDs(ctx context.Context, kind string) (map[int64]bool, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT (payload->>'item_id')::bigint FROM jobs
+		WHERE kind = $1 AND status IN ('pending', 'running') AND payload->>'item_id' ~ '^[0-9]+$'`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// ActiveResourceIDs is ActiveItemIDs for the kinds whose payload is
+// {"resource_type": t, "resource_id": n, "part": p}: the ids of the resources of
+// resourceType that have a pending or running job of kind for part.
+func (s *Service) ActiveResourceIDs(ctx context.Context, kind, resourceType, part string) (map[int64]bool, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT (payload->>'resource_id')::bigint FROM jobs
+		WHERE kind = $1 AND payload->>'resource_type' = $2 AND payload->>'part' = $3 AND status IN ('pending', 'running')
+		  AND payload->>'resource_id' ~ '^[0-9]+$'`, kind, resourceType, part)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
 	}
 	return out, rows.Err()
 }
@@ -578,7 +629,10 @@ func (s *Service) runOne(ctx context.Context) bool {
 	start := time.Now()
 	result, runErr := fn(checkpoint.With(jobCtx, jobCheckpoint{db: s.db, id: j.ID}), j.ID, j.Payload)
 	outcome := "success"
-	if runErr != nil {
+	switch {
+	case errors.Is(runErr, ErrSkipped):
+		outcome = "skipped"
+	case runErr != nil:
 		outcome = "error"
 	}
 	slog.Info("job completed", "kind", j.Kind, "priority", string(j.Priority), "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
@@ -646,6 +700,10 @@ func (s *Service) complete(ctx context.Context, id string, result json.RawMessag
 	case cancelled:
 		status = StatusCancelled
 		text := "cancelled by admin"
+		errText = &text
+	case errors.Is(jobErr, ErrSkipped):
+		status = StatusCancelled
+		text := jobErr.Error()
 		errText = &text
 	case jobErr != nil:
 		status = StatusFailed

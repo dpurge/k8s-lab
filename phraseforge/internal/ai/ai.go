@@ -16,6 +16,7 @@ import (
 	"k8s-lab/shared/llm"
 
 	"phraseforge/internal/config"
+	"phraseforge/internal/jobs"
 )
 
 // KindLLMGenerate is the historical jobs.Service kind for HandleGenerate —
@@ -64,7 +65,7 @@ func JobKind(payloadKind string) string {
 // <select> (populated from apiAdminBootstrap, which reads this slice) must
 // all agree with — a hardcoded copy in any of those places is exactly how
 // they drifted apart before.
-var ValidKinds = []string{"translation", "transcription", "title", "process_text", "process_dialog", "generate_vocabulary", "generate_models", "vocabulary_item", "models_item"}
+var ValidKinds = []string{"translation", "transcription", "title", "process_text", "process_dialog", "generate_vocabulary", "generate_models", "vocabulary_item", "models_item", "check_vocabulary", "review_vocabulary", "review_transcription", "review_translation"}
 
 // IsValidKind reports whether kind is one of ValidKinds.
 func IsValidKind(kind string) bool {
@@ -83,11 +84,23 @@ func (s *Service) DefaultPrompts() map[string]string {
 }
 
 // PromptPlaceholders lists the {{placeholders}} a kind's prompt may use: the
-// item prompts take the item vars too, every other kind only the two snippets.
+// item prompts take the item vars too (a vocabulary item also its usage and
+// examples), every other kind only the two snippets.
 func PromptPlaceholders(kind string) []string {
-	snippets := []string{"grammarPrompt", "transcriptionPrompt"}
-	if kind == "vocabulary_item" || kind == "models_item" {
+	snippets := []string{"grammarPrompt", "transcriptionPrompt", "dictionaryPrompt"}
+	switch kind {
+	case "vocabulary_item":
+		return append([]string{"sourceLanguage", "targetLanguage", "phrase"}, append(snippets, "usage", "examples", "translation")...)
+	case "models_item":
 		return append([]string{"sourceLanguage", "targetLanguage", "phrase"}, snippets...)
+	case "check_vocabulary":
+		return []string{"sourceLanguage", "candidates"}
+	case "review_transcription":
+		return []string{"sourceLanguage", "text", "transcription", "vocabulary", "transcriptionPrompt"}
+	case "review_translation":
+		return []string{"sourceLanguage", "text", "translations", "vocabulary"}
+	case "review_vocabulary":
+		return []string{"sourceLanguage", "phrase", "grammar", "transcription", "examples", "translations", "dictionaryPrompt", "grammarPrompt", "transcriptionPrompt"}
 	}
 	return snippets
 }
@@ -128,83 +141,83 @@ type TranslationWriteback interface {
 	SetIfAbsent(ctx context.Context, resourceType string, resourceID int64, locale, text string) (applied bool, err error)
 }
 
-// ItemTranscriptionWriteback is the consumer-side interface HandleGenerate
-// writes a completed transcription back through for a vocabulary/models
-// item — addressed by (listID, position) rather than its own independent
-// row id. Satisfied structurally by both *vocabulary.Store and
-// *models.Store (their SetItemTranscriptionIfBlank methods already match
-// this signature). phrase is the item's phrase as of when the job was
-// enqueued (generatePayload.Content, for an item resource type — see
-// writeback's own doc comment on why no separate field was needed); the
-// underlying store returns an error if the item at (listID, position) no
-// longer has that phrase, so a job that outlives a position shift
-// (reorder/delete/re-import) fails instead of silently landing on the wrong
-// item (see B3 in specs/features/phraseforge-export-import.md). applied is
-// false (not an error) when the item's transcription already had content.
-type ItemTranscriptionWriteback interface {
-	SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (applied bool, err error)
+// ErrItemGone and ErrItemChanged are what an ItemStore returns when the item
+// an item job targets no longer exists, or no longer has the phrase the job
+// started from. They wrap jobs.ErrSkipped, so the job is recorded as cancelled
+// with the reason rather than failed: nothing went wrong, the list just
+// changed after the job was queued.
+var (
+	ErrItemGone    = fmt.Errorf("%w: item no longer exists", jobs.ErrSkipped)
+	ErrItemChanged = fmt.Errorf("%w: item changed while the job was running", jobs.ErrSkipped)
+)
+
+// ItemSource is what an item job reads from its item when it starts.
+type ItemSource struct {
+	Phrase   string
+	Language string   // the source language of the item's list
+	Examples []string // the phrase's usage examples in order (vocabulary items only)
+	// Translations are the phrase's non-blank translations by site locale
+	// code (vocabulary items only).
+	Translations map[string]string
 }
 
-// ItemTranslationWriteback is the consumer-side interface HandleGenerate
-// writes a completed translation back through for a vocabulary/models item.
-// Unlike TranslationWriteback, one instance of this interface must dispatch
-// to different underlying stores depending on resourceType (vocabulary vs.
-// models), so — unlike every other writeback interface in this file — it is
-// satisfied by a small adapter built in main.go, where both *vocabulary.Store
-// and *models.Store are already imported, rather than directly by either
-// store. phrase carries the same stale-target guard as
-// ItemTranscriptionWriteback's own phrase parameter — see that field's doc
-// comment. applied is false (not an error) when the item already had a
-// translation for that locale.
-type ItemTranslationWriteback interface {
-	SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (applied bool, err error)
-}
-
-// ItemReplyWriteback writes the fields a structured vocabulary/models item
-// reply adds beyond ItemTranscriptionWriteback: a translation together
-// with its notes (vocabulary; models has no notes and ignores them), and
-// vocabulary grammar tags. Same guards as the other item writebacks —
-// phrase must still match (else an error), and an already present value
-// is left alone (applied false). Satisfied by main.go's adapter, which
-// holds both stores.
-type ItemReplyWriteback interface {
-	SetItemTranslationWithNotes(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation, notes string) (applied bool, err error)
-	SetItemGrammarIfBlank(ctx context.Context, listID int64, position int, phrase, grammar string) (applied bool, err error)
+// ItemStore is the consumer-side interface of everything HandleItemTranslation
+// reads and writes for a vocabulary/models item, addressed by the item's id.
+// One instance dispatches on resourceType to the store that owns the item's
+// rows, so it is satisfied by an adapter built in main.go, where both stores
+// are already imported. Every write fills only what is blank (applied is
+// false, not an error, when the field already had a value) and only while the
+// item still has phrase, the phrase the job started from; otherwise it returns
+// ErrItemGone or ErrItemChanged. Models items have no grammar and no notes.
+type ItemStore interface {
+	ItemSource(ctx context.Context, resourceType string, itemID int64) (ItemSource, error)
+	FillTranslation(ctx context.Context, resourceType string, itemID int64, phrase, locale, translation, notes string) (applied bool, err error)
+	FillTranscription(ctx context.Context, resourceType string, itemID int64, phrase, transcription string) (applied bool, err error)
+	FillGrammar(ctx context.Context, itemID int64, phrase, grammar string) (applied bool, err error)
+	// FillExample adds a usage example to a vocabulary item's phrase if there
+	// is room and it is new. Only vocabulary items have examples.
+	FillExample(ctx context.Context, itemID int64, phrase, example string) (applied bool, err error)
+	// RewritePhrase replaces a vocabulary item's phrase, with its grammar and
+	// transcription (empty keeps the stored one), if the item still has phrase
+	// and newPhrase differs from it. Only vocabulary items have it.
+	RewritePhrase(ctx context.Context, itemID int64, phrase, newPhrase, grammar, transcription string) (applied bool, err error)
+	// AppendSense adds sense to the end of a vocabulary item's existing
+	// translation in locale ("old; sense") if the item still has phrase, the
+	// translation is not blank and does not already have that sense. Only
+	// vocabulary items have it.
+	AppendSense(ctx context.Context, itemID int64, phrase, locale, sense string) (applied bool, err error)
 }
 
 type Service struct {
 	db  *pgxpool.Pool
 	cfg config.Config
 
-	// texts/dialogs/translations/vocabItems/modelsItems/itemTranslations
-	// back a background job's writeback dispatch (see HandleGenerate) —
-	// nil-safe only when ResourceID is always 0 (today's interactive-only
+	// texts/dialogs/translations back HandleGenerate's writeback dispatch —
+	// nil-safe only when ResourceID is always 0 (the interactive-only
 	// callers); a background caller must pass real stores via New.
-	texts            TextWriteback
-	dialogs          TextWriteback
-	translations     TranslationWriteback
-	vocabItems       ItemTranscriptionWriteback
-	modelsItems      ItemTranscriptionWriteback
-	itemTranslations ItemTranslationWriteback
-	// itemReplies backs HandleItemTranslation's structured-reply writes.
-	itemReplies ItemReplyWriteback
+	texts        TextWriteback
+	dialogs      TextWriteback
+	translations TranslationWriteback
+	// items backs HandleItemTranslation.
+	items ItemStore
+	// reviews backs HandleReviewItem (see SetReviewStore).
+	reviews ReviewStore
+	// textReviews backs HandleReviewResource (see SetTextReviewStore).
+	textReviews TextReviewStore
 
 	// sleep waits out the backoff between retries of a transient LLM failure;
 	// nil means defaultSleep. Tests swap it so they never really wait.
 	sleep sleepFunc
 }
 
-func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, translations TranslationWriteback, vocabItems, modelsItems ItemTranscriptionWriteback, itemTranslations ItemTranslationWriteback, itemReplies ItemReplyWriteback) *Service {
+func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, translations TranslationWriteback, items ItemStore) *Service {
 	return &Service{
-		db:               db,
-		cfg:              cfg,
-		texts:            texts,
-		dialogs:          dialogs,
-		translations:     translations,
-		vocabItems:       vocabItems,
-		modelsItems:      modelsItems,
-		itemTranslations: itemTranslations,
-		itemReplies:      itemReplies,
+		db:           db,
+		cfg:          cfg,
+		texts:        texts,
+		dialogs:      dialogs,
+		translations: translations,
+		items:        items,
 	}
 }
 
@@ -256,6 +269,12 @@ func (s *Service) purposeDefault(kind string) config.PurposeConfig {
 		return s.cfg.VocabularyItem
 	case "models_item":
 		return s.cfg.ModelsItem
+	case "check_vocabulary":
+		return s.cfg.CheckVocabulary
+	case "review_vocabulary":
+		return s.reviewVocabularyDefault()
+	case "review_transcription", "review_translation":
+		return s.reviewTextDefault(kind)
 	case "translation":
 		return s.cfg.Translation
 	default:
@@ -420,20 +439,12 @@ type generatePayload struct {
 	Content        string `json:"content"`
 
 	// ResourceType/ResourceID identify the row to write the result back to
-	// ("text", "dialog", "vocabulary_item", or "models_item"); a zero
+	// ("text" or "dialog"); a zero
 	// ResourceID means today's interactive path — no writeback, result is
 	// only returned. Locale is used for a "translation" writeback only.
 	ResourceType string `json:"resource_type,omitempty"`
 	ResourceID   int64  `json:"resource_id,omitempty"`
 	Locale       string `json:"locale,omitempty"`
-
-	// ItemPosition is the item's position within its list — only meaningful
-	// when ResourceType is "vocabulary_item"/"models_item" (ResourceID is
-	// then the list id, since a vocabulary/models item has no independent id
-	// of its own). A text/dialog payload never sets this; resource type
-	// alone, not a zero-check, is what disambiguates whether it applies,
-	// since position 0 is a valid real position for an item.
-	ItemPosition int `json:"item_position,omitempty"`
 }
 
 type generateResult struct {
@@ -486,9 +497,8 @@ func (s *Service) HandleGenerate(ctx context.Context, id string, payload json.Ra
 //
 // applied is false, with a nil error, when the guarded setter found the
 // target field already non-blank — that's job success (a no-op skip), not
-// failure. translations.SetIfAbsent and the *Store.SetTranscriptionIfBlank/
-// SetItemTranscriptionIfBlank/SetItemTranslationIfAbsent methods below all
-// treat an empty body as nothing to write — so an empty or whitespace-only
+// failure. translations.SetIfAbsent and the *Store.SetTranscriptionIfBlank
+// methods below both treat an empty body as nothing to write — so an empty or whitespace-only
 // LLM result reaching any of them here would either silently no-op or (worse,
 // for the plain unconditional paths this function no longer uses) destroy a
 // previously-good value. Guard against that by treating an empty result as
@@ -496,13 +506,11 @@ func (s *Service) HandleGenerate(ctx context.Context, id string, payload json.Ra
 // correctly shows as failed/retryable, and nothing already stored is
 // touched.
 //
-// For a vocabulary_item/models_item resource type, p.Content is already the
-// item's phrase as of when this job was enqueued (see
-// export_import.go's buildBackfillPayload, which sets Content to the item's
-// phrase for every item-level decision) — passed through to
-// SetItemTranscriptionIfBlank/SetItemTranslation as their stale-target guard
-// rather than adding a separate payload field for it (see B3 in
-// specs/features/phraseforge-export-import.md).
+// Only text and dialog resources are written back here. A vocabulary/models
+// item is filled by HandleItemTranslation (by item id) instead; a pre-existing
+// item-level row of these kinds fails with an error rather than writing
+// anywhere (translations.SetIfAbsent would otherwise store it under an item
+// resource type it knows nothing about).
 func (s *Service) writeback(ctx context.Context, p generatePayload, text string) (applied bool, err error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -516,20 +524,14 @@ func (s *Service) writeback(ctx context.Context, p generatePayload, text string)
 		}
 		return store.SetTitleIfBlank(ctx, p.ResourceID, trimmed)
 	case "transcription":
-		if store := s.itemTranscriptionWriteback(p.ResourceType); store != nil {
-			return store.SetItemTranscriptionIfBlank(ctx, p.ResourceID, p.ItemPosition, p.Content, trimmed)
-		}
 		store := s.textWriteback(p.ResourceType)
 		if store == nil {
 			return false, fmt.Errorf("ai: unknown resource_type %q for transcription writeback", p.ResourceType)
 		}
 		return store.SetTranscriptionIfBlank(ctx, p.ResourceID, trimmed)
 	case "translation":
-		if p.ResourceType == "vocabulary_item" || p.ResourceType == "models_item" {
-			if s.itemTranslations == nil {
-				return false, fmt.Errorf("ai: no item translation writeback configured for resource_type %q", p.ResourceType)
-			}
-			return s.itemTranslations.SetItemTranslation(ctx, p.ResourceType, p.ResourceID, p.ItemPosition, p.Content, p.Locale, trimmed)
+		if p.ResourceType != "text" && p.ResourceType != "dialog" {
+			return false, fmt.Errorf("ai: unknown resource_type %q for translation writeback", p.ResourceType)
 		}
 		return s.translations.SetIfAbsent(ctx, p.ResourceType, p.ResourceID, p.Locale, trimmed)
 	default:
@@ -543,17 +545,6 @@ func (s *Service) textWriteback(resourceType string) TextWriteback {
 		return s.texts
 	case "dialog":
 		return s.dialogs
-	default:
-		return nil
-	}
-}
-
-func (s *Service) itemTranscriptionWriteback(resourceType string) ItemTranscriptionWriteback {
-	switch resourceType {
-	case "vocabulary_item":
-		return s.vocabItems
-	case "models_item":
-		return s.modelsItems
 	default:
 		return nil
 	}

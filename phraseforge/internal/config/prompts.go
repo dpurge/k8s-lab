@@ -25,20 +25,25 @@ func readPrompt(path string) string {
 
 // Default system prompts, one per prompt-eval/prompt/default/system file.
 var (
-	DefaultTranslationPrompt        = readPrompt("system/generate-translation.txt")
-	DefaultTranscriptionPrompt      = readPrompt("system/generate-transcription.txt")
-	DefaultTitlePrompt              = readPrompt("system/generate-title.txt")
-	DefaultProcessTextPrompt        = readPrompt("system/process-text.txt")
-	DefaultProcessDialogPrompt      = readPrompt("system/process-dialog.txt")
-	DefaultGenerateVocabularyPrompt = readPrompt("system/generate-vocabulary.txt")
-	DefaultGenerateModelsPrompt     = readPrompt("system/generate-models.txt")
-	DefaultVocabularyItemPrompt     = readPrompt("system/generate-vocabulary-item.txt")
-	DefaultModelsItemPrompt         = readPrompt("system/generate-models-item.txt")
+	DefaultTranslationPrompt         = readPrompt("system/generate-translation.txt")
+	DefaultTranscriptionPrompt       = readPrompt("system/generate-transcription.txt")
+	DefaultTitlePrompt               = readPrompt("system/generate-title.txt")
+	DefaultProcessTextPrompt         = readPrompt("system/process-text.txt")
+	DefaultProcessDialogPrompt       = readPrompt("system/process-dialog.txt")
+	DefaultGenerateVocabularyPrompt  = readPrompt("system/generate-vocabulary.txt")
+	DefaultGenerateModelsPrompt      = readPrompt("system/generate-models.txt")
+	DefaultVocabularyItemPrompt      = readPrompt("system/generate-vocabulary-item.txt")
+	DefaultModelsItemPrompt          = readPrompt("system/generate-models-item.txt")
+	DefaultCheckVocabularyPrompt     = readPrompt("system/check-vocabulary.txt")
+	DefaultReviewVocabularyPrompt    = readPrompt("system/review-vocabulary.txt")
+	DefaultReviewTranscriptionPrompt = readPrompt("system/review-transcription.txt")
+	DefaultReviewTranslationPrompt   = readPrompt("system/review-translation.txt")
 )
 
-// Default language snippets, rendered as {{grammarPrompt}} and
-// {{transcriptionPrompt}} (see the ai package) for a language without its own.
+// Default language snippets, rendered as {{grammarPrompt}},
+// {{transcriptionPrompt}} and {{dictionaryPrompt}} (see the ai package) for a language without its own.
 var (
 	DefaultGrammarSnippet       = readPrompt("snippet/grammar.txt")
 	DefaultTranscriptionSnippet = readPrompt("snippet/transcription.txt")
+	DefaultDictionarySnippet    = readPrompt("snippet/dictionary.txt")
 )

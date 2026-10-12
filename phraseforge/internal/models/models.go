@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +34,7 @@ type List struct {
 // Item is one model entry's common fields — the same for every viewer
 // regardless of site locale.
 type Item struct {
+	ID            int64 // stable across position changes and list syncs; what background jobs target
 	Position      int
 	PhraseID      int64 // the shared phrase this item links to; the id an export carries
 	Phrase        string
@@ -357,7 +357,7 @@ func (s *Store) Begin(ctx context.Context) (pgx.Tx, error) {
 // Items returns listID's common fields, in position order.
 func (s *Store) Items(ctx context.Context, listID int64) ([]Item, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT i.position, p.id, p.phrase, p.transcription
+		`SELECT i.id, i.position, p.id, p.phrase, p.transcription
 		   FROM models_items i JOIN models_phrases p ON p.id = i.phrase_id
 		  WHERE i.list_id = $1 ORDER BY i.position`, listID)
 	if err != nil {
@@ -368,7 +368,7 @@ func (s *Store) Items(ctx context.Context, listID int64) ([]Item, error) {
 	var out []Item
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.Position, &it.PhraseID, &it.Phrase, &it.Transcription); err != nil {
+		if err := rows.Scan(&it.ID, &it.Position, &it.PhraseID, &it.Phrase, &it.Transcription); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -515,115 +515,6 @@ func retargetPhrase(ctx context.Context, tx pgx.Tx, id int64, phrase, transcript
 type itemPhrase struct {
 	id                    int64
 	phrase, transcription string
-}
-
-// lockItemPhraseIfStill is lockItemPhrase plus the stale-target guard — see
-// vocabulary's function of the same name: a job made for a specific (listID,
-// position, phrase) triple must not write its result onto whatever sits at
-// that position by the time it runs. ErrItemNotFound if the stored phrase is
-// no longer phrase.
-func lockItemPhraseIfStill(ctx context.Context, tx pgx.Tx, listID int64, position int, phrase string) (itemPhrase, error) {
-	cur, err := lockItemPhrase(ctx, tx, listID, position)
-	if err != nil {
-		return itemPhrase{}, err
-	}
-	if cur.phrase != phrase {
-		return itemPhrase{}, ErrItemNotFound
-	}
-	return cur, nil
-}
-
-// lockItemPhrase locks the item at (listID, position) and the phrase it links
-// to, and returns that phrase. Returns ErrItemNotFound if position doesn't
-// exist. The phrase is resolved here, inside the caller's transaction, so a
-// merge that re-pointed the item since a job was queued is followed rather
-// than missed.
-func lockItemPhrase(ctx context.Context, tx pgx.Tx, listID int64, position int) (itemPhrase, error) {
-	var cur itemPhrase
-	err := tx.QueryRow(ctx, `
-		SELECT p.id, p.phrase, p.transcription
-		FROM models_items i JOIN models_phrases p ON p.id = i.phrase_id
-		WHERE i.list_id = $1 AND i.position = $2
-		FOR UPDATE OF i, p`, listID, position).Scan(&cur.id, &cur.phrase, &cur.transcription)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return itemPhrase{}, ErrItemNotFound
-	}
-	return cur, err
-}
-
-// SetItemTranscriptionIfBlank mirrors
-// vocabulary.Store.SetItemTranscriptionIfBlank — see that method's doc
-// comment. The transcription is part of a models phrase's identity, so this
-// is a change of the shared phrase (merging into an identical one if there is
-// one), see retargetPhrase.
-func (s *Store) SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (applied bool, err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
-
-	cur, err := lockItemPhraseIfStill(ctx, tx, listID, position, phrase)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(cur.transcription) != "" {
-		return false, nil
-	}
-	if _, err := retargetPhrase(ctx, tx, cur.id, cur.phrase, transcription); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// SetItemTranslationIfAbsent mirrors
-// vocabulary.Store.SetItemTranslationIfAbsent — see that method's doc
-// comment (models phrases have no notes field, unlike vocabulary phrases).
-func (s *Store) SetItemTranslationIfAbsent(ctx context.Context, listID int64, position int, phrase, locale, translation string) (applied bool, err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
-
-	cur, err := lockItemPhraseIfStill(ctx, tx, listID, position, phrase)
-	if err != nil {
-		return false, err
-	}
-
-	var existingTranslation string
-	err = tx.QueryRow(ctx, `SELECT coalesce(translation, '') FROM models_phrase_translation WHERE phrase_id = $1 AND locale = $2 FOR UPDATE`, cur.id, locale).Scan(&existingTranslation)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return false, err
-	}
-	if strings.TrimSpace(existingTranslation) != "" {
-		return false, nil
-	}
-
-	if translation == "" {
-		if _, err := tx.Exec(ctx, `DELETE FROM models_phrase_translation WHERE phrase_id = $1 AND locale = $2`, cur.id, locale); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO models_phrase_translation (phrase_id, locale, translation)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (phrase_id, locale) DO UPDATE SET
-			translation = EXCLUDED.translation, updated_at = now()`,
-		cur.id, locale, translation); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // DeleteItem removes the item at position and shifts every later item in the
@@ -857,15 +748,33 @@ func writeSyncTranslations(ctx context.Context, tx pgx.Tx, phraseID int64, trans
 }
 
 // relinkItems makes listID's links exactly phraseIDs, in order — see
-// vocabulary's relinkItems for why the old links are moved aside, the new ones
-// added, and only then the moved ones deleted.
+// vocabulary's relinkItems for why the old links are moved aside, each new
+// position takes over the moved link to the same phrase (keeping its item id),
+// positions still without a link get a new one, and only then the moved links
+// nothing took over are deleted.
 func relinkItems(ctx context.Context, tx pgx.Tx, listID int64, phraseIDs []int64) error {
 	if _, err := tx.Exec(ctx, `UPDATE models_items SET position = position + $2 WHERE list_id = $1`, listID, syncMoveOffset); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
+		WITH wanted AS (
+			SELECT t.id AS phrase_id, (t.ord - 1)::int AS position,
+			       row_number() OVER (PARTITION BY t.id ORDER BY t.ord) AS nth
+			FROM unnest($2::bigint[]) WITH ORDINALITY AS t(id, ord)
+		), moved AS (
+			SELECT position, phrase_id,
+			       row_number() OVER (PARTITION BY phrase_id ORDER BY position) AS nth
+			FROM models_items WHERE list_id = $1 AND position >= $3
+		)
+		UPDATE models_items i SET position = wanted.position
+		FROM moved JOIN wanted ON wanted.phrase_id = moved.phrase_id AND wanted.nth = moved.nth
+		WHERE i.list_id = $1 AND i.position = moved.position`, listID, phraseIDs, syncMoveOffset); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO models_items (list_id, position, phrase_id)
-		SELECT $1, (t.ord - 1)::int, t.id FROM unnest($2::bigint[]) WITH ORDINALITY AS t(id, ord)`, listID, phraseIDs); err != nil {
+		SELECT $1, (t.ord - 1)::int, t.id FROM unnest($2::bigint[]) WITH ORDINALITY AS t(id, ord)
+		WHERE NOT EXISTS (SELECT 1 FROM models_items i WHERE i.list_id = $1 AND i.position = (t.ord - 1)::int)`, listID, phraseIDs); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `DELETE FROM models_items WHERE list_id = $1 AND position >= $2`, listID, syncMoveOffset)

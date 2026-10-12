@@ -29,7 +29,7 @@ func (f *fixes) fix(_ context.Context, rejected []RejectedLine) (string, error) 
 	return reply, nil
 }
 
-func phrases(items []vocabulary.Item) []string {
+func phrases(items []Candidate) []string {
 	var out []string
 	for _, it := range items {
 		out = append(out, it.Phrase)
@@ -132,7 +132,7 @@ func (g *scriptedChunks) generate(_ context.Context, chunk string) (string, erro
 	return g.replies[len(g.asked)-1], nil
 }
 
-func vocabPhrase(it vocabulary.Item) string { return it.Phrase }
+func vocabPhrase(it Candidate) string { return it.Phrase }
 
 // The production bug: every line rejected, nothing corrected.
 func TestGenerateItemsFailsWhenNothingIsValid(t *testing.T) {
@@ -177,6 +177,43 @@ func TestGenerateItemsChunksInOrderAndDeduplicatesAcrossChunks(t *testing.T) {
 	}
 	if want := []string{"one", "two", "three"}; !reflect.DeepEqual(g.asked, want) {
 		t.Errorf("chunks asked = %v, want %v", g.asked, want)
+	}
+}
+
+// A job's saved chunk outcomes are JSON of the parsed items. One saved before
+// candidates carried a usage (a plain vocabulary item per entry, whose fields
+// are flattened into the entry) must still be read after an upgrade, with no
+// usage; and a candidate round-trips with its usage.
+func TestSavedChunkOutcomesOfAnOlderRunStillDecodeAsCandidates(t *testing.T) {
+	old := []byte(`{"items":[{"ID":0,"Position":0,"PhraseID":0,"Phrase":"كَتَبَ","Grammar":"V","Transcription":"kataba","Examples":null}],"skipped":1,"unfixed":null,"answered":true}`)
+	var got chunkOutcome[Candidate]
+	if err := json.Unmarshal(old, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Phrase != "كَتَبَ" || got.Items[0].Grammar != "V" || got.Items[0].Transcription != "kataba" || got.Items[0].Usage != "" || got.Skipped != 1 {
+		t.Fatalf("decoded = %+v, want the old entry as a candidate without a usage", got)
+	}
+
+	raw, err := json.Marshal(chunkOutcome[Candidate]{Items: []Candidate{{Item: vocabulary.Item{Phrase: "a"}, Usage: "a usage"}}, Answered: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again chunkOutcome[Candidate]
+	if err := json.Unmarshal(raw, &again); err != nil || len(again.Items) != 1 || again.Items[0].Usage != "a usage" {
+		t.Fatalf("round trip = %+v (err %v), want the usage kept", again, err)
+	}
+}
+
+// The usage travels with the candidate; of a phrase repeated in a later
+// chunk, the first occurrence's usage is the one kept.
+func TestGenerateItemsKeepsTheFirstOccurrencesUsage(t *testing.T) {
+	g := &scriptedChunks{replies: []string{"a {noun} | first a", "a {noun} | second a\nb {noun} | for b"}}
+	items, _, err := generateItems(context.Background(), []string{"one", "two"}, 3, g.generate, ParseVocabularyLines, (&fixes{}).fix, vocabPhrase, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Phrase != "a" || items[0].Usage != "first a" || items[1].Phrase != "b" || items[1].Usage != "for b" {
+		t.Fatalf("items = %+v, want a (first a) and b (for b)", items)
 	}
 }
 
@@ -260,7 +297,7 @@ func TestGenerateItemsRetryResumesWithoutRepeatingFinishedChunks(t *testing.T) {
 		}
 	}
 	f := &fixes{replies: []string{"b {verb} [x]"}}
-	run := func(failOn string) ([]vocabulary.Item, int, error) {
+	run := func(failOn string) ([]Candidate, int, error) {
 		return generateItems(ctx, chunks, 3, generate(failOn), ParseVocabularyLines, f.fix, vocabPhrase, checkpoint.Start(ctx, "items", chunks))
 	}
 

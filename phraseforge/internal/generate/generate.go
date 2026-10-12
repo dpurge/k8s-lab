@@ -155,6 +155,8 @@ type Service struct {
 	ai      *ai.Service
 	jobs    *jobs.Service
 	db      *pgxpool.Pool
+	// checker is the optional step-2 check of known phrases (see SetChecker).
+	checker Checker
 }
 
 func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, aiSvc *ai.Service, jobsSvc *jobs.Service, db *pgxpool.Pool) *Service {
@@ -175,8 +177,8 @@ func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocab
 // generate job into a failed one (which would prompt a Retry that redoes
 // the entire LLM extraction and wholesale item replacement just to retry
 // enqueueing).
-func (s *Service) enqueueItemBackfill(ctx context.Context, itemResourceType string, listID int64, position int, language, phrase, grammar, transcription string) {
-	state := ai.ItemState{ResourceType: itemResourceType, Grammar: grammar, Transcription: transcription}
+func (s *Service) enqueueItemBackfill(ctx context.Context, itemResourceType string, itemID, listID int64, position int, language, grammar, transcription, usage string, verdict Verdict) {
+	state := ai.ItemState{ResourceType: itemResourceType, Grammar: grammar, Transcription: transcription, NeedsExample: verdict.NeedsExample, NeedsSense: verdict.NeedsSense}
 	// Phrases are shared across lists, so this one may already be translated
 	// through another list: don't submit it again.
 	var translated map[string]bool
@@ -191,7 +193,7 @@ func (s *Service) enqueueItemBackfill(ctx context.Context, itemResourceType stri
 		return
 	}
 	state.Translated = translated
-	itemJobs, err := s.ai.ItemJobsFor(ctx, state, listID, position, language, phrase, nil, i18n.Locales)
+	itemJobs, err := s.ai.ItemJobsFor(ctx, state, itemID, language, usage, nil, i18n.Locales)
 	if err != nil {
 		log.Printf("generate: plan item backfill for %s %d position %d: %v", itemResourceType, listID, position, err)
 		return
@@ -267,7 +269,7 @@ func (s *Service) HandleGenerateVocab(ctx context.Context, id string, raw json.R
 		func(ctx context.Context, rejected []RejectedLine) (string, error) {
 			return s.ai.CorrectLines(ctx, aiKindGenerateVocabulary, src.Language, vocabularyFormatHelp, rejected)
 		},
-		func(it vocabulary.Item) string { return it.Phrase },
+		func(c Candidate) string { return c.Phrase },
 		checkpoint.Start(ctx, "items/"+aiKindGenerateVocabulary+"/"+src.Language, chunks))
 	if err != nil {
 		return nil, fmt.Errorf("generate: vocabulary: %w", err)
@@ -348,7 +350,7 @@ func (s *Service) HandleGenerateModels(ctx context.Context, id string, raw json.
 // generated again keeps its translations, and so is never submitted for
 // translation twice. Generated items carry no phrase id, so every one links
 // the phrase with its exact fields, creating it only if no list has it.
-func (s *Service) syncVocabItems(ctx context.Context, listID int64, language string, items []vocabulary.Item) error {
+func (s *Service) syncVocabItems(ctx context.Context, listID int64, language string, items []Candidate) error {
 	syncItems := make([]vocabulary.SyncItem, len(items))
 	for i, it := range items {
 		syncItems[i] = vocabulary.SyncItem{Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription}
@@ -367,17 +369,34 @@ func (s *Service) syncVocabItems(ctx context.Context, listID int64, language str
 	}
 	// Backfill is enqueued only once the transaction has committed — an item
 	// that gets rolled back must never have a backfill job enqueued for it —
-	// and from the items as stored (the store normalises the text), since a
-	// job's stale-target guard compares against the stored phrase.
+	// and from the items as stored, which carry the ids the jobs target.
 	stored, err := s.vocab.Items(ctx, listID)
 	if err != nil {
 		log.Printf("generate: read synced vocabulary items of list %d for backfill: %v", listID, err)
 		return nil
 	}
-	for _, it := range stored {
-		s.enqueueItemBackfill(ctx, resourceTypeVocabItem, listID, it.Position, language, it.Phrase, it.Grammar, it.Transcription)
+	usages := usagesByPosition(stored, items)
+	verdicts := s.itemsToRevise(ctx, listID, language, stored, usages)
+	for i, it := range stored {
+		s.enqueueItemBackfill(ctx, resourceTypeVocabItem, it.ID, listID, it.Position, language, it.Grammar, it.Transcription, usages[i], verdicts[i])
 	}
 	return nil
+}
+
+// usagesByPosition returns the usage hint of each stored item: that of the
+// candidate at the same position, since a sync makes the list exactly the
+// candidates, in order. If the counts differ the pairing can't be trusted, so
+// no item gets a usage rather than a wrong one.
+func usagesByPosition(stored []vocabulary.Item, candidates []Candidate) []string {
+	usages := make([]string, len(stored))
+	if len(stored) != len(candidates) {
+		log.Printf("generate: %d stored items for %d candidates, so no usage is passed to the item jobs", len(stored), len(candidates))
+		return usages
+	}
+	for i, c := range candidates {
+		usages[i] = c.Usage
+	}
+	return usages
 }
 
 // syncModelsItems mirrors syncVocabItems — see that method's doc comment.
@@ -404,7 +423,7 @@ func (s *Service) syncModelsItems(ctx context.Context, listID int64, language st
 		return nil
 	}
 	for _, it := range stored {
-		s.enqueueItemBackfill(ctx, resourceTypeModelsItem, listID, it.Position, language, it.Phrase, "", it.Transcription)
+		s.enqueueItemBackfill(ctx, resourceTypeModelsItem, it.ID, listID, it.Position, language, "", it.Transcription, "", Verdict{})
 	}
 	return nil
 }

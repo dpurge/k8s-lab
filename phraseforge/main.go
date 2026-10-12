@@ -9,6 +9,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,6 +25,7 @@ import (
 	"phraseforge/internal/ingest"
 	"phraseforge/internal/jobs"
 	"phraseforge/internal/models"
+	"phraseforge/internal/resreview"
 	"phraseforge/internal/roles"
 	"phraseforge/internal/server"
 	"phraseforge/internal/tags"
@@ -56,64 +59,116 @@ func main() {
 	}
 }
 
-// itemTranslationWriteback adapts *vocabulary.Store and *models.Store to
-// ai.ItemTranslationWriteback: HandleGenerate's item-level translation
-// writeback needs one interface that dispatches to whichever store owns
-// resourceType's rows, since vocabulary and models expose differently-shaped
-// guarded translation setters — vocabulary.Store.SetItemTranslationIfAbsent
-// also carries a notes field (fetched and preserved here, see below),
-// models.Store.SetItemTranslationIfAbsent has none. This is the one place
-// that imports both stores just to switch between them, mirroring this
-// codebase's "define a small interface, satisfy it with an adapter built
-// where both concrete types are already imported" convention.
-type itemTranslationWriteback struct {
+// itemStore adapts *vocabulary.Store and *models.Store to ai.ItemStore:
+// HandleItemTranslation reads and writes an item through one interface that
+// dispatches to whichever store owns resourceType's rows, since the two expose
+// differently-shaped setters (vocabulary has notes and grammar, models has
+// neither). This is the one place that imports both stores just to switch
+// between them, mirroring this codebase's "define a small interface, satisfy
+// it with an adapter built where both concrete types are already imported"
+// convention. It also maps the stores' item-gone and item-changed errors to
+// ai.ErrItemGone and ai.ErrItemChanged, which end the job as skipped.
+type itemStore struct {
 	vocab  *vocabulary.Store
 	models *models.Store
 }
 
-func (w *itemTranslationWriteback) SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (applied bool, err error) {
+func (w *itemStore) ItemSource(ctx context.Context, resourceType string, itemID int64) (ai.ItemSource, error) {
 	switch resourceType {
 	case "vocabulary_item":
-		// Vocabulary's guarded setter upserts translation AND notes together
-		// (its normal caller is a full edit-form submission that always has
-		// both) — a translation-only writeback must preserve whatever notes
-		// are already stored at this position/locale rather than blanking
-		// them, so fetch them first. SetItemTranslationIfAbsent (not the
-		// plain SetTranslations) applies phrase as a stale-target guard: a
-		// job generated for this (listID, position, phrase) triple must not
-		// silently overwrite a different item that has since taken that
-		// position (see ai.ItemTranslationWriteback's doc comment, B3 fix).
-		existing, err := w.vocab.Translations(ctx, listID, locale)
-		if err != nil {
-			return false, err
-		}
-		return w.vocab.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation, existing[position].Notes)
+		src, err := w.vocab.ItemSource(ctx, itemID)
+		return ai.ItemSource{Phrase: src.Phrase, Language: src.Language, Examples: src.Examples, Translations: src.Translations}, skipOnStaleItem(err)
 	case "models_item":
-		return w.models.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation)
+		src, err := w.models.ItemSource(ctx, itemID)
+		return ai.ItemSource{Phrase: src.Phrase, Language: src.Language}, skipOnStaleItem(err)
 	default:
-		return false, fmt.Errorf("phraseforge: unknown resource_type %q for item translation writeback", resourceType)
+		return ai.ItemSource{}, fmt.Errorf("phraseforge: unknown resource_type %q for item source", resourceType)
 	}
 }
 
-// SetItemTranslationWithNotes is the structured item reply's translation
-// write (ai.ItemReplyWriteback): unlike SetItemTranslation it stores the
-// model's own notes for vocabulary instead of preserving the old ones —
-// there are none to preserve, since the guarded setter only writes when
-// this locale has no translation yet.
-func (w *itemTranslationWriteback) SetItemTranslationWithNotes(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation, notes string) (applied bool, err error) {
+func (w *itemStore) FillTranslation(ctx context.Context, resourceType string, itemID int64, phrase, locale, translation, notes string) (bool, error) {
 	switch resourceType {
 	case "vocabulary_item":
-		return w.vocab.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation, notes)
+		applied, err := w.vocab.FillTranslation(ctx, itemID, phrase, locale, translation, notes)
+		return applied, skipOnStaleItem(err)
 	case "models_item":
-		return w.models.SetItemTranslationIfAbsent(ctx, listID, position, phrase, locale, translation)
+		applied, err := w.models.FillTranslation(ctx, itemID, phrase, locale, translation)
+		return applied, skipOnStaleItem(err)
 	default:
-		return false, fmt.Errorf("phraseforge: unknown resource_type %q for item translation writeback", resourceType)
+		return false, fmt.Errorf("phraseforge: unknown resource_type %q for item translation", resourceType)
 	}
 }
 
-// SetItemGrammarIfBlank: only vocabulary items have grammar.
-func (w *itemTranslationWriteback) SetItemGrammarIfBlank(ctx context.Context, listID int64, position int, phrase, grammar string) (applied bool, err error) {
-	return w.vocab.SetItemGrammarIfBlank(ctx, listID, position, phrase, grammar)
+func (w *itemStore) FillTranscription(ctx context.Context, resourceType string, itemID int64, phrase, transcription string) (bool, error) {
+	switch resourceType {
+	case "vocabulary_item":
+		applied, err := w.vocab.FillTranscription(ctx, itemID, phrase, transcription)
+		return applied, skipOnStaleItem(err)
+	case "models_item":
+		applied, err := w.models.FillTranscription(ctx, itemID, phrase, transcription)
+		return applied, skipOnStaleItem(err)
+	default:
+		return false, fmt.Errorf("phraseforge: unknown resource_type %q for item transcription", resourceType)
+	}
+}
+
+// FillGrammar: only vocabulary items have grammar.
+func (w *itemStore) FillGrammar(ctx context.Context, itemID int64, phrase, grammar string) (bool, error) {
+	applied, err := w.vocab.FillGrammar(ctx, itemID, phrase, grammar)
+	return applied, skipOnStaleItem(err)
+}
+
+// FillExample: only vocabulary items have examples.
+func (w *itemStore) FillExample(ctx context.Context, itemID int64, phrase, example string) (bool, error) {
+	applied, err := w.vocab.FillExample(ctx, itemID, phrase, example)
+	return applied, skipOnStaleItem(err)
+}
+
+// AppendSense: only vocabulary items have senses to append to.
+func (w *itemStore) AppendSense(ctx context.Context, itemID int64, phrase, locale, sense string) (bool, error) {
+	applied, err := w.vocab.AppendSense(ctx, itemID, phrase, locale, sense)
+	return applied, skipOnStaleItem(err)
+}
+
+// RewritePhrase: only vocabulary items have a rewritable phrase.
+func (w *itemStore) RewritePhrase(ctx context.Context, itemID int64, phrase, newPhrase, grammar, transcription string) (bool, error) {
+	applied, err := w.vocab.RewritePhrase(ctx, itemID, phrase, newPhrase, grammar, transcription)
+	return applied, skipOnStaleItem(err)
+}
+
+// reviewStore adapts *vocabulary.Store to ai.ReviewStore, mapping the store's
+// item-gone and item-changed errors to the ai errors that skip the job.
+type reviewStore struct {
+	vocab *vocabulary.Store
+}
+
+func (w *reviewStore) ReviewSource(ctx context.Context, itemID int64) (ai.ReviewInput, error) {
+	src, err := w.vocab.ReviewSource(ctx, itemID)
+	if err != nil {
+		return ai.ReviewInput{}, skipOnStaleItem(err)
+	}
+	in := ai.ReviewInput{Language: src.Language, Phrase: src.Phrase, Grammar: src.Grammar, Transcription: src.Transcription, Examples: src.Examples}
+	for _, t := range src.Translations {
+		in.Translations = append(in.Translations, ai.ReviewTranslation{Locale: t.Locale, Translation: t.Translation, Notes: t.Notes})
+	}
+	return in, nil
+}
+
+func (w *reviewStore) SaveReview(ctx context.Context, itemID int64, phrase string, findings, response json.RawMessage) error {
+	return skipOnStaleItem(w.vocab.SaveReview(ctx, itemID, phrase, findings, response))
+}
+
+// skipOnStaleItem turns either store's item-gone or item-changed error into
+// the ai error that skips the job; any other error is returned unchanged.
+func skipOnStaleItem(err error) error {
+	switch {
+	case errors.Is(err, vocabulary.ErrItemNotFound), errors.Is(err, models.ErrItemNotFound):
+		return ai.ErrItemGone
+	case errors.Is(err, vocabulary.ErrItemChanged), errors.Is(err, models.ErrItemChanged):
+		return ai.ErrItemChanged
+	default:
+		return err
+	}
 }
 
 func runServe(ctx context.Context, cfg config.Config) {
@@ -138,8 +193,10 @@ func runServe(ctx context.Context, cfg config.Config) {
 	rolesSvc := roles.New(pool)
 	tagsSvc := tags.New(pool)
 	translationsSvc := translations.New(pool)
-	itemTranslationsSvc := &itemTranslationWriteback{vocab: vocabStore, models: modelsStore}
-	aiSvc := ai.New(pool, cfg, textStore, dialogStore, translationsSvc, vocabStore, modelsStore, itemTranslationsSvc, itemTranslationsSvc)
+	itemsSvc := &itemStore{vocab: vocabStore, models: modelsStore}
+	aiSvc := ai.New(pool, cfg, textStore, dialogStore, translationsSvc, itemsSvc)
+	aiSvc.SetReviewStore(&reviewStore{vocab: vocabStore})
+	aiSvc.SetTextReviewStore(resreview.New(pool))
 
 	// jobsSvc is phraseforge's single app-wide job queue (see
 	// specs/features/phraseforge-job-queue.md): /llm/generate enqueues its
@@ -160,6 +217,8 @@ func runServe(ctx context.Context, cfg config.Config) {
 	jobsSvc.Register(ai.KindGenerateTranslation, aiSvc.HandleGenerate)
 	jobsSvc.Register(ai.KindGenerateVocabularyItem, aiSvc.HandleItemTranslation)
 	jobsSvc.Register(ai.KindGenerateModelsItem, aiSvc.HandleItemTranslation)
+	jobsSvc.Register(ai.KindReviewVocabularyItem, aiSvc.HandleReviewItem)
+	jobsSvc.Register(ai.KindReviewTextJob, aiSvc.HandleReviewResource)
 
 	// ingestSvc's two job kinds turn an ingest HTTP endpoint's staged raw
 	// content (a later pass — see specs/features/phraseforge-ingest-texts-dialogs.md)
@@ -178,6 +237,7 @@ func runServe(ctx context.Context, cfg config.Config) {
 	// the payload's resource_type) but keeps four distinct kind values so
 	// the Jobs page and Retry still show/route on what actually ran.
 	generateSvc := generate.New(textStore, dialogStore, vocabStore, modelsStore, aiSvc, jobsSvc, pool)
+	generateSvc.SetChecker(generate.AICheck{AI: aiSvc})
 	jobsSvc.Register(generate.KindGenerateVocabFromText, generateSvc.HandleGenerateVocab)
 	jobsSvc.Register(generate.KindGenerateVocabFromDialog, generateSvc.HandleGenerateVocab)
 	jobsSvc.Register(generate.KindGenerateModelsFromText, generateSvc.HandleGenerateModels)

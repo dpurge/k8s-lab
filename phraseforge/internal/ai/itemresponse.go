@@ -14,7 +14,7 @@ import (
 // schema-shaped JSON. parseVocabularyItemResponse enforces the same rules
 // in Go, since format is only a constraint on generation, not a guarantee
 // the caller can skip checking (and OpenRouter ignores it).
-var VocabularyItemSchema = json.RawMessage(`{"type":"object","required":["phrase","translation"],"properties":{"phrase":{"type":"string"},"grammar":{"type":["string","null"]},"transcription":{"type":["string","null"]},"translation":{"type":"string"},"notes":{"type":["string","null"]}}}`)
+var VocabularyItemSchema = json.RawMessage(`{"type":"object","required":["phrase","translation"],"properties":{"phrase":{"type":"string"},"grammar":{"type":["string","null"]},"transcription":{"type":["string","null"]},"translation":{"type":"string"},"notes":{"type":["string","null"]},"example":{"type":["string","null"]},"newSense":{"type":["string","null"]},"rewrite":{"type":["object","null"],"required":["phrase"],"properties":{"phrase":{"type":"string"},"grammar":{"type":["string","null"]},"transcription":{"type":["string","null"]}}}}}`)
 
 // ModelsItemSchema is VocabularyItemSchema reduced to what a models item
 // stores.
@@ -24,6 +24,25 @@ var ModelsItemSchema = json.RawMessage(`{"type":"object","required":["phrase","t
 // fields are "" when the model returned null, "", or nothing.
 type VocabularyItemResponse struct {
 	Phrase, Grammar, Transcription, Translation, Notes string
+	// Example is a short phrase showing the word in use, "" when the reply had
+	// none. It is optional and never makes a reply invalid: anything that is
+	// not a string counts as none.
+	Example string
+	// NewSense is a further meaning of the phrase in the target language, ""
+	// when the reply had none; optional like Example, anything that is not a
+	// string counts as none.
+	NewSense string
+	// Rewrite is the phrase the model proposes instead of the stored one, nil
+	// when the reply had none. Like Example it is optional and never makes a
+	// reply invalid: anything that is not the expected object counts as none.
+	Rewrite *PhraseRewrite
+}
+
+// PhraseRewrite is a proposed replacement of an item's phrase together with
+// its grammar and transcription, which go stale with the phrase. An empty
+// Grammar or Transcription means "keep the stored value".
+type PhraseRewrite struct {
+	Phrase, Grammar, Transcription string
 }
 
 // ModelsItemResponse is a validated models item reply.
@@ -38,6 +57,9 @@ func parseVocabularyItemResponse(raw, storedPhrase string) (VocabularyItemRespon
 		Transcription *string `json:"transcription"`
 		Translation   *string `json:"translation"`
 		Notes         *string `json:"notes"`
+		Example       any     `json:"example"`
+		NewSense      any     `json:"newSense"`
+		Rewrite       any     `json:"rewrite"`
 	}
 	const what = "vocabulary item response"
 	if err := decodeItemResponse(what, raw, &r); err != nil {
@@ -49,7 +71,40 @@ func parseVocabularyItemResponse(raw, storedPhrase string) (VocabularyItemRespon
 	return VocabularyItemResponse{
 		Phrase: trimmed(r.Phrase), Grammar: trimmed(r.Grammar), Transcription: trimmed(r.Transcription),
 		Translation: trimmed(r.Translation), Notes: trimmed(r.Notes),
+		Example:  stringOrEmpty(r.Example),
+		NewSense: stringOrEmpty(r.NewSense),
+		Rewrite:  rewriteOf(r.Rewrite),
 	}, nil
+}
+
+// rewriteOf reads the optional "rewrite" reply field: nil unless v is an object
+// with a non-blank string phrase whose grammar and transcription, when present,
+// are strings or null.
+func rewriteOf(v any) *PhraseRewrite {
+	fields, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	phrase, ok := fields["phrase"].(string)
+	if !ok || strings.TrimSpace(phrase) == "" {
+		return nil
+	}
+	optional := func(name string) (string, bool) {
+		switch value := fields[name].(type) {
+		case nil:
+			return "", true
+		case string:
+			return strings.TrimSpace(value), true
+		default:
+			return "", false
+		}
+	}
+	grammar, grammarOK := optional("grammar")
+	transcription, transcriptionOK := optional("transcription")
+	if !grammarOK || !transcriptionOK {
+		return nil
+	}
+	return &PhraseRewrite{Phrase: strings.TrimSpace(phrase), Grammar: grammar, Transcription: transcription}
 }
 
 func parseModelsItemResponse(raw, storedPhrase string) (ModelsItemResponse, error) {
@@ -98,6 +153,15 @@ func checkRequiredAndPhrase(what string, phrase, translation *string, storedPhra
 		return fmt.Errorf("%s: phrase %q does not match the item's phrase %q", what, trimmed(phrase), storedPhrase)
 	}
 	return nil
+}
+
+// stringOrEmpty returns v trimmed if it is a string and "" for anything else
+// (null, a number, an array), for a field whose absence is never an error.
+func stringOrEmpty(v any) string {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
 }
 
 func trimmed(s *string) string {

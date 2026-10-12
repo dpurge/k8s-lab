@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/ime"
+	"phraseforge/internal/textnorm"
 )
 
 // DefaultTranscriptionSection stands in for {{transcriptionPrompt}} when a
@@ -56,17 +58,25 @@ type ItemState struct {
 	Translated    map[string]bool // site locales with a non-blank translation
 	Grammar       string          // vocabulary only
 	Transcription string
+	// NeedsExample asks for one call even when nothing else is missing: the
+	// generate step found a usage that the phrase's examples do not cover yet.
+	NeedsExample bool // vocabulary only
+	// NeedsSense asks for a call in every locale the phrase already has a
+	// translation in: the usage shows a meaning that translation may not cover.
+	NeedsSense bool // vocabulary only
 }
 
 // ItemCallLocales is which site locales an item needs one structured call
-// for: every locale still missing a translation; or, when none is missing
+// for: every locale still missing a translation, and with NeedsSense every
+// locale that has one too; or, when none is missing
 // but a field the language has a section for is blank (grammar for
-// vocabulary, transcription for both), the first site locale — any call
-// fills those, since they don't depend on the target; otherwise none.
+// vocabulary, transcription for both) or the item NeedsExample, the first site
+// locale — any call fills those, since they don't depend on the target;
+// otherwise none.
 func ItemCallLocales(item ItemState, sections LanguageSections, siteLocales []i18n.Locale) []string {
 	var out []string
 	for _, l := range siteLocales {
-		if !item.Translated[l.Code] {
+		if !item.Translated[l.Code] || item.NeedsSense {
 			out = append(out, l.Code)
 		}
 	}
@@ -76,7 +86,7 @@ func ItemCallLocales(item ItemState, sections LanguageSections, siteLocales []i1
 	grammarMissing := item.ResourceType == resourceVocabularyItem &&
 		strings.TrimSpace(sections.GrammarPrompt) != "" && strings.TrimSpace(item.Grammar) == ""
 	transcriptionMissing := strings.TrimSpace(sections.TranscriptionPrompt) != "" && strings.TrimSpace(item.Transcription) == ""
-	if grammarMissing || transcriptionMissing {
+	if grammarMissing || transcriptionMissing || item.NeedsExample {
 		return []string{siteLocales[0].Code}
 	}
 	return nil
@@ -88,13 +98,54 @@ type ItemJob struct {
 	Payload json.RawMessage
 }
 
-// NewItemJob builds the job translating one item into locale.
-func NewItemJob(resourceType string, listID int64, position int, language, locale, phrase string) (ItemJob, error) {
+// MaxUsageChars is the longest usage hint an item job carries, and the longest
+// example it may return, in characters. It is the limit of a stored example
+// (vocabulary.MaxExampleChars, which this package does not import; a test
+// elsewhere keeps the two equal).
+const MaxUsageChars = 80
+
+// cleanUsage returns usage as a job carries it: only for a vocabulary item,
+// trimmed and NFC-normalised, and dropped altogether when it is longer than
+// MaxUsageChars (a sentence, not the short phrase asked for).
+func cleanUsage(resourceType, usage string) string {
+	if resourceType != resourceVocabularyItem {
+		return ""
+	}
+	usage = textnorm.Phrase(usage)
+	if utf8.RuneCountInString(usage) > MaxUsageChars {
+		return ""
+	}
+	return usage
+}
+
+// usableExample returns example as the job would store it: trimmed and
+// NFC-normalised, or "" when it is blank or longer than MaxUsageChars (a
+// sentence, not the short phrase asked for) — which means no example, not an
+// error.
+func usableExample(example string) string {
+	example = textnorm.Phrase(example)
+	if utf8.RuneCountInString(example) > MaxUsageChars {
+		return ""
+	}
+	return example
+}
+
+// NewItemJob builds the job translating item itemID into locale. usage is the
+// optional hint described on ItemJobPayload.Usage.
+func NewItemJob(resourceType string, itemID int64, locale, usage string) (ItemJob, error) {
+	return newItemJob(resourceType, itemID, locale, usage, false)
+}
+
+// newItemJob is NewItemJob with the sense flag: the job may append a new sense
+// to the item's existing translation in locale (see ItemJobPayload.Sense). The
+// flag only means something with a usage, so a job without one never has it.
+func newItemJob(resourceType string, itemID int64, locale, usage string, sense bool) (ItemJob, error) {
 	kind := KindGenerateVocabularyItem
 	if resourceType == resourceModelsItem {
 		kind = KindGenerateModelsItem
 	}
-	p := ItemJobPayload{ResourceType: resourceType, ListID: listID, Position: position, Language: language, Locale: locale, Phrase: phrase}
+	p := ItemJobPayload{ResourceType: resourceType, ItemID: itemID, Locale: locale, Usage: cleanUsage(resourceType, usage)}
+	p.Sense = sense && p.Usage != ""
 	if err := p.validate(); err != nil {
 		return ItemJob{}, err
 	}
@@ -109,8 +160,9 @@ func NewItemJob(resourceType string, listID int64, position int, language, local
 // language's effective sections looked up here — the single entry point
 // every bulk caller (import, generate-from-text, Generate missing
 // translations) uses. sections may be passed in by a caller looping over
-// one list's items to avoid a lookup per item; nil means look it up.
-func (s *Service) ItemJobsFor(ctx context.Context, item ItemState, listID int64, position int, language, phrase string, sections *LanguageSections, siteLocales []i18n.Locale) ([]ItemJob, error) {
+// one list's items to avoid a lookup per item; nil means look it up. usage is
+// put in every job of the item (see NewItemJob).
+func (s *Service) ItemJobsFor(ctx context.Context, item ItemState, itemID int64, language, usage string, sections *LanguageSections, siteLocales []i18n.Locale) ([]ItemJob, error) {
 	if sections == nil {
 		eff, err := s.EffectiveSections(ctx, language)
 		if err != nil {
@@ -120,7 +172,8 @@ func (s *Service) ItemJobsFor(ctx context.Context, item ItemState, listID int64,
 	}
 	var jobs []ItemJob
 	for _, locale := range ItemCallLocales(item, *sections, siteLocales) {
-		j, err := NewItemJob(item.ResourceType, listID, position, language, locale, phrase)
+		// Only a locale that already has a translation can get a new sense.
+		j, err := newItemJob(item.ResourceType, itemID, locale, usage, item.NeedsSense && item.Translated[locale])
 		if err != nil {
 			return nil, err
 		}

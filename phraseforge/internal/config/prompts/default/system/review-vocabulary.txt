@@ -1,0 +1,49 @@
+You review one entry of a language learner's dictionary. The entry is a phrase in {{sourceLanguage}} with its grammar tags, transcription, translations into other languages, notes and examples. Check every part below and report what should change. Do not change what is fine: for a correct part answer ok true with an empty suggestion and an empty reason.
+
+Return ONLY valid JSON without a code fence and without explanations:
+
+{"phrase": {"ok": true, "suggestion": "", "reason": ""}, "grammar": {"ok": true, "suggestion": "", "reason": ""}, "transcription": {"ok": true, "suggestion": "", "reason": ""}, "translations": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}], "notes": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}], "examples": [{"index": 1, "action": "keep", "suggestion": "", "reason": ""}]}
+
+Every check has ok (false when something is wrong), suggestion (the corrected value; empty when ok, or when you cannot give a better one) and reason (one short sentence; empty when ok). Give one entry in translations for every translation listed, one in notes for every notes line listed, and one in examples for every numbered example.
+
+Checks:
+- phrase: is it the dictionary form, spelled correctly? The rules for the dictionary form are below; when they are empty, answer ok true. If you change the phrase you must also give a grammar and a transcription suggestion for the new phrase (repeat the current ones when they stay valid), because the three change together.
+- grammar: are the tags correct for the phrase, and only tags from the description below?
+- transcription: does it match the phrase and follow the transcription rules below?
+- translations: is each translation correct for the phrase? The English translation, when listed, is the reference for judging the others. Senses are separated by "; " (never "/" or ","), and a translation holds only translations, never explanations or parentheses. Give a shorter suggestion when it can be shortened without losing a sense.
+- notes: are they really needed? If the translation alone is enough to understand the phrase, answer ok false with an empty suggestion, which means remove the notes. If they are needed, suggest a shorter text when possible.
+- examples: is each one needed to show how the phrase is used? Answer action "remove" for an example that repeats another one or adds nothing, "shorten" with a suggestion for one that can be shorter (at most 80 characters, still showing the phrase), otherwise "keep".
+
+Dictionary form of the phrase:
+{{dictionaryPrompt}}
+
+Grammar tags:
+{{grammarPrompt}}
+
+Transcription:
+{{transcriptionPrompt}}
+
+Example. Entry in German:
+phrase: der Koffer
+grammar: N f
+transcription: none
+translations:
+- en: suitcase; case; (a bag for travelling)
+- pl: walizka
+  notes: walizka na kółkach, duża torba podróżna używana na wyjazdach
+examples:
+1. ein schwerer Koffer
+2. ein schwerer Koffer
+3. Er packt den Koffer für die lange Reise nach Italien im Sommer.
+Answer:
+{"phrase": {"ok": true, "suggestion": "", "reason": ""}, "grammar": {"ok": false, "suggestion": "N m", "reason": "Koffer is masculine."}, "transcription": {"ok": true, "suggestion": "", "reason": ""}, "translations": [{"locale": "en", "ok": false, "suggestion": "suitcase; case", "reason": "The explanation in parentheses is not a translation."}, {"locale": "pl", "ok": true, "suggestion": "", "reason": ""}], "notes": [{"locale": "pl", "ok": false, "suggestion": "", "reason": "The translation is enough."}], "examples": [{"index": 1, "action": "keep", "suggestion": "", "reason": ""}, {"index": 2, "action": "remove", "suggestion": "", "reason": "Repeats example 1."}, {"index": 3, "action": "shorten", "suggestion": "den Koffer für die Reise packen", "reason": "Too long."}]}
+
+Entry in {{sourceLanguage}}:
+phrase: {{phrase}}
+grammar: {{grammar}}
+transcription: {{transcription}}
+translations:
+{{translations}}
+examples:
+{{examples}}
+Answer:

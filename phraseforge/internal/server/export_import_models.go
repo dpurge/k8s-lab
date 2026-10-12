@@ -426,7 +426,7 @@ func (s *Server) importUpdateModelsList(ctx context.Context, u auth.User, index 
 			return
 		}
 		for _, spec := range specs {
-			if err := s.enqueueItemBackfill(ctx, "models_item", list.ID, spec.position, language, spec.phrase, "", spec.transcription, spec.providedTranslations); err != nil {
+			if err := s.enqueueItemBackfill(ctx, "models_item", spec.itemID, list.ID, spec.position, language, "", spec.transcription, spec.providedTranslations); err != nil {
 				res.Errors = append(res.Errors, importError{Index: index, ID: list.ID, Message: err.Error()})
 				return
 			}
@@ -461,7 +461,7 @@ func (s *Server) syncModelsItemsTx(ctx context.Context, listID int64, items []ap
 		return nil, err
 	}
 
-	// The backfill specs carry the phrase as stored — see syncVocabItemsTx.
+	// The backfill specs carry the item ids and the transcription as stored — see syncVocabItemsTx.
 	stored, err := s.models.Items(ctx, listID)
 	if err != nil {
 		return nil, err
@@ -475,7 +475,7 @@ func (s *Server) syncModelsItemsTx(ctx context.Context, listID int64, items []ap
 		for locale, t := range it.Translations {
 			providedTranslations[locale] = t.Translation
 		}
-		specs[i] = itemBackfillSpec{position: i, phrase: stored[i].Phrase, transcription: stored[i].Transcription, providedTranslations: providedTranslations}
+		specs[i] = itemBackfillSpec{itemID: stored[i].ID, position: i, transcription: stored[i].Transcription, providedTranslations: providedTranslations}
 	}
 	return specs, nil
 }
@@ -525,7 +525,7 @@ func (s *Server) addModelsItemsAndBackfill(ctx context.Context, listID int64, la
 		return err
 	}
 	for _, spec := range specs {
-		if err := s.enqueueItemBackfill(ctx, "models_item", listID, spec.position, language, spec.phrase, "", spec.transcription, spec.providedTranslations); err != nil {
+		if err := s.enqueueItemBackfill(ctx, "models_item", spec.itemID, listID, spec.position, language, "", spec.transcription, spec.providedTranslations); err != nil {
 			res.Errors = append(res.Errors, importError{Index: index, ID: listID, Message: err.Error()})
 			return err
 		}

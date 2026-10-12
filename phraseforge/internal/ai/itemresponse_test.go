@@ -91,5 +91,29 @@ func TestItemSchemasAreValidJSON(t *testing.T) {
 		if len(v.Required) != 2 || v.Properties["translation"] == nil {
 			t.Errorf("%s schema: required=%v, want phrase+translation", name, v.Required)
 		}
+		if _, hasExample := v.Properties["example"]; hasExample != (name == "vocabulary") {
+			t.Errorf("%s schema has an example property = %v, want it only for vocabulary (and never required)", name, hasExample)
+		}
+	}
+}
+
+func TestParseVocabularyItemResponseExample(t *testing.T) {
+	cases := map[string]string{
+		`"example": "  ein schwerer Koffer "`: "ein schwerer Koffer",
+		`"example": ""`:                       "",
+		`"example": null`:                     "",
+		`"example": 5`:                        "", // not a string: no example, and no error
+		`"example": ["a", "b"]`:               "",
+		`"example": {"text": "x"}`:            "",
+	}
+	for field, want := range cases {
+		got, err := parseVocabularyItemResponse(`{"phrase":"der Koffer","translation":"walizka",`+field+`}`, "der Koffer")
+		if err != nil || got.Example != want {
+			t.Errorf("%s: (%q, %v), want %q and no error", field, got.Example, err, want)
+		}
+	}
+	got, err := parseVocabularyItemResponse(`{"phrase":"der Koffer","translation":"walizka"}`, "der Koffer")
+	if err != nil || got.Example != "" {
+		t.Errorf("no example key: (%q, %v), want none", got.Example, err)
 	}
 }

@@ -36,7 +36,7 @@ func sampleAdminConfig() adminConfigExport {
 		LLMPrompts: prompts,
 		LanguageSections: []ai.LanguageSections{
 			{Language: "cmn", GrammarPrompt: "N = noun\n", TranscriptionPrompt: "Pinyin with tone marks.\n"},
-			{Language: "deu", GrammarPrompt: "N m f n\n"},
+			{Language: "deu", GrammarPrompt: "N m f n\n", DictionaryPrompt: "Nouns with the article.\n"},
 		},
 	}
 }
@@ -69,7 +69,7 @@ func TestAdminConfigExportJSONRoundTrip(t *testing.T) {
 
 func testAdminServer(db *pgxpool.Pool) *Server {
 	cfg := config.Config{Providers: map[string]config.ProviderConfig{"ollama": {}}}
-	return &Server{db: db, ai: ai.New(db, cfg, nil, nil, nil, nil, nil, nil, nil)}
+	return &Server{db: db, ai: ai.New(db, cfg, nil, nil, nil, nil)}
 }
 
 func importRequest(t *testing.T, body string) *http.Request {

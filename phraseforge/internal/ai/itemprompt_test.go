@@ -7,6 +7,16 @@ import (
 	"phraseforge/internal/config"
 )
 
+func TestRenderItemPromptFillsDictionaryPlaceholder(t *testing.T) {
+	got := renderItemPrompt("{{phrase}}: {{dictionaryPrompt}}", ItemPromptVars{Phrase: "x", DictionaryPrompt: "lemma rules"})
+	if want := "x: lemma rules"; got != want {
+		t.Errorf("renderItemPrompt = %q, want %q", got, want)
+	}
+	if got := renderItemPrompt("{{dictionaryPrompt}}", ItemPromptVars{}); got != "" {
+		t.Errorf("a language without the snippet must render empty, got %q", got)
+	}
+}
+
 func TestRenderItemPromptFillsAllPlaceholders(t *testing.T) {
 	got := renderItemPrompt(config.DefaultVocabularyItemPrompt, ItemPromptVars{
 		SourceLanguage: "Mandarin Chinese", TargetLanguage: "Polish", Phrase: "名字",
@@ -39,10 +49,10 @@ func TestRenderItemPromptIsSinglePass(t *testing.T) {
 	}
 }
 
-func TestRenderSnippetsFillsOnlyTheTwoSnippetPlaceholders(t *testing.T) {
-	sections := LanguageSections{GrammarPrompt: "G", TranscriptionPrompt: "T"}
-	got := renderSnippets("a {{grammarPrompt}} b {{transcriptionPrompt}} c {{phrase}} {{unknown}}", sections)
-	if want := "a G b T c {{phrase}} {{unknown}}"; got != want {
+func TestRenderSnippetsFillsOnlyTheThreeSnippetPlaceholders(t *testing.T) {
+	sections := LanguageSections{GrammarPrompt: "G", TranscriptionPrompt: "T", DictionaryPrompt: "D"}
+	got := renderSnippets("a {{grammarPrompt}} b {{transcriptionPrompt}} c {{dictionaryPrompt}} d {{phrase}} {{unknown}}", sections)
+	if want := "a G b T c D d {{phrase}} {{unknown}}"; got != want {
 		t.Errorf("renderSnippets = %q, want %q", got, want)
 	}
 }
@@ -67,6 +77,7 @@ func TestUsesSnippets(t *testing.T) {
 		"has {{phrase}} only":             false,
 		"has {{grammarPrompt}}":           true,
 		"has {{transcriptionPrompt}} too": true,
+		"has {{dictionaryPrompt}} too":    true,
 	}
 	for template, want := range cases {
 		if got := usesSnippets(template); got != want {
@@ -98,5 +109,46 @@ func TestDefaultGeneratePromptsCarrySnippetPlaceholders(t *testing.T) {
 				t.Errorf("%s default prompt lacks %s", c.name, placeholder)
 			}
 		}
+	}
+}
+
+func TestFormatExamples(t *testing.T) {
+	if got := formatExamples(nil); got != "" {
+		t.Errorf("no examples = %q, want empty", got)
+	}
+	if got, want := formatExamples([]string{"einen Koffer packen", "der große Koffer"}), "- einen Koffer packen\n- der große Koffer"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRenderItemPromptFillsUsageAndExamples(t *testing.T) {
+	got := renderItemPrompt("Phrase: {{phrase}}\nUsage: {{usage}}\nExamples:\n{{examples}}\nEnd", ItemPromptVars{
+		Phrase: "der Koffer", Usage: "der Koffer ist schwer", Examples: formatExamples([]string{"einen Koffer packen", "der große Koffer"}),
+	})
+	want := "Phrase: der Koffer\nUsage: der Koffer ist schwer\nExamples:\n- einen Koffer packen\n- der große Koffer\nEnd"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if blank := renderItemPrompt("[{{usage}}][{{examples}}]", ItemPromptVars{}); blank != "[][]" {
+		t.Errorf("without usage and examples = %q, want both empty", blank)
+	}
+}
+
+// A template that does not use the new placeholders (every admin prompt stored
+// before they existed) renders exactly as it did before.
+func TestRenderItemPromptTemplateWithoutTheNewPlaceholdersIsUnchanged(t *testing.T) {
+	base := ItemPromptVars{SourceLanguage: "German", TargetLanguage: "Polish", Phrase: "der Koffer", GrammarPrompt: "N = noun"}
+	with := base
+	with.Usage, with.Examples = "der Koffer ist schwer", formatExamples([]string{"einen Koffer packen"})
+	const legacy = "Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}\n{{grammarPrompt}}"
+	if renderItemPrompt(legacy, with) != renderItemPrompt(legacy, base) {
+		t.Error("a template without the new placeholders changed when usage and examples were given")
+	}
+}
+
+func TestRenderItemPromptDoesNotExpandPlaceholdersInsideUsageOrExamples(t *testing.T) {
+	got := renderItemPrompt("{{usage}}|{{examples}}", ItemPromptVars{Phrase: "P", Usage: "{{phrase}}", Examples: "- {{usage}}"})
+	if got != "{{phrase}}|- {{usage}}" {
+		t.Errorf("got %q, want braces inside the values left as written", got)
 	}
 }

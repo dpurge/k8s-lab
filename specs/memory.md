@@ -84,3 +84,21 @@
 2026-10-09T16:36:53Z [gotcha] phraseforge db/schema.sql trigger delete_orphan_phrases fires on DELETEd links only; code that UPDATEs a link's phrase_id must delete the orphaned phrase itself.
 2026-10-09T16:36:53Z [convention] phraseforge phrase text goes through internal/textnorm.Phrase (trim + NFC) in the stores; schema.sql normalize_phrase() normalises rows stored earlier.
 2026-10-09T16:36:53Z [gotcha] phraseforge phrases/models_phrases have a btree UNIQUE key; a phrase over about 2.7 KB of incompressible text fails with 'index row size exceeds'.
+2026-10-12T14:27:40Z [gotcha] phraseforge DB tests skip without PHRASEFORGE_TEST_DSN (vocabulary, models) and PHRASEFORGE_TEST_DB (jobs); go test still passes with 30+ skipped.
+2026-10-12T14:27:41Z [domain] phraseforge vocabulary_items and models_items have a stable id column; item jobs carry item_id; relinkItems keeps id of a phrase that stays in list across sync.
+2026-10-12T14:27:43Z [convention] A job handler whose target is gone/changed returns an error wrapping jobs.ErrSkipped (internal/jobs/jobs.go); job ends cancelled with that reason, not failed.
+2026-10-12T15:16:31Z [domain] phraseforge vocabulary examples: phrase_examples table (max 5 x 80 chars, shared); import: examples key replaces when present, [] clears, absent leaves.
+2026-10-12T15:16:31Z [gotcha] phraseforge vocabItemsUnchanged must compare every field, else import-only changes skip as unchanged (export_import_vocabulary.go).
+2026-10-12T15:16:31Z [gotcha] phraseforge editor.js pfApplyScriptStyle sets a script class: an input's CSS rule outranks it, a textarea's does not, so style a textarea by id to control its size.
+2026-10-12T16:05:13Z [domain] phraseforge generate-vocabulary lines may end with ` | usage`; jobs carry it as payload usage (vocab only, max 80 chars) and may return an example (FillExample, max 5).
+2026-10-12T16:05:14Z [gotcha] phraseforge saved chunk outcomes are JSON of parsed items; changing item type must keep old JSON decodable; Candidate embeds vocabulary.Item for this reason.
+2026-10-12T16:05:15Z [convention] phraseforge decodes optional model reply fields leniently; any non-string means absent, avoiding correction round (which costs extra model call).
+2026-10-12T16:32:27Z [convention] prompt-eval: one prompt root per app (prompt/phraseforge/{default,lang}); sync-prompts copies to phraseforge/internal/config/prompts/default.
+2026-10-12T16:32:27Z [gotcha] phraseforge/k8s/configmap.yaml prompts override embedded defaults; config_test.go requires them equal; update both blocks after sync-prompts.
+2026-10-12T16:53:56Z [convention] New LLM purpose needs: config key + default prompt, ai.ValidKinds, kind CHECK in db/schema.sql, admin label (en/pl), ConfigMap block, config_test equality.
+2026-10-12T16:53:56Z [domain] phraseforge check_vocabulary: one call per list for known phrases with usage (20/call); needsExample verdicts queue jobs; failure logged & skipped.
+2026-10-12T17:13:51Z [domain] item job: optional `rewrite` {phrase,grammar,transcription} applied last via Store.RewritePhrase only for jobs with usage; failure logged, job succeeds.
+2026-10-12T17:13:51Z [gotcha] ai.VocabularyItemSchema: update prompt-eval vocabulary-translation/promptfooconfig.yaml and correction/vocabulary.yaml schemas or npm run check-sync fails.
+2026-10-12T17:39:59Z [domain] phraseforge check_vocabulary returns needsSense; phrases with translations get an item job per locale that may append a sense (payload flag); no cap.
+2026-10-12T17:39:59Z [gotcha] gemma4:12b puts a new sense into the reply's translation, not newSense; ai.senseFromTranslation recovers it only if the reply keeps every existing sense.
+2026-10-12T17:39:59Z [gotcha] In prompt-eval, promptfoo fills placeholders from test vars of the same name; referenceTranslation is the reference answer, translation is the existing translation.

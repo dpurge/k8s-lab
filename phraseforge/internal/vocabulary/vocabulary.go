@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,11 +34,13 @@ type List struct {
 // Item is one vocabulary entry's common fields — the same for every viewer
 // regardless of site locale.
 type Item struct {
+	ID            int64 // stable across position changes and list syncs; what background jobs target
 	Position      int
 	PhraseID      int64 // the shared phrase this item links to; the id an export carries
 	Phrase        string
 	Grammar       string
 	Transcription string
+	Examples      []string // the phrase's short usage examples in order, nil when it has none
 }
 
 // ItemTranslation is one item's per-locale translation/notes. Both may be
@@ -313,7 +314,8 @@ func (s *Store) UpdateMeta(ctx context.Context, id int64, title, language, scrip
 // relinkItemsToListLanguage points each of listID's items at the phrase with
 // the same text in the list's (just changed) language and script, creating it
 // where no list has it and copying the old phrase's translations (a
-// translation the new phrase already has is kept). The old phrases other lists
+// translation the new phrase already has is kept) and, when the new phrase has
+// none of its own, its examples. The old phrases other lists
 // still link are left alone; those no list links any more are deleted here
 // explicitly, because delete_orphan_phrases only fires on deleted links, not
 // on re-pointed ones.
@@ -338,6 +340,18 @@ func relinkItemsToListLanguage(ctx context.Context, tx pgx.Tx, listID int64) err
 			AND np.phrase = op.phrase AND np.grammar = op.grammar AND np.transcription = op.transcription
 		JOIN phrase_translation t ON t.phrase_id = op.id
 		WHERE i.list_id = $1
+		ON CONFLICT DO NOTHING`, listID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO phrase_examples (phrase_id, position, example)
+		SELECT np.id, e.position, e.example
+		FROM vocabulary_items i JOIN vocabulary_lists l ON l.id = i.list_id JOIN phrases op ON op.id = i.phrase_id
+		JOIN phrases np ON np.language = l.language AND np.script = l.script
+			AND np.phrase = op.phrase AND np.grammar = op.grammar AND np.transcription = op.transcription
+		JOIN phrase_examples e ON e.phrase_id = op.id
+		WHERE i.list_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM phrase_examples own WHERE own.phrase_id = np.id)
 		ON CONFLICT DO NOTHING`, listID); err != nil {
 		return err
 	}
@@ -375,7 +389,7 @@ func (s *Store) Begin(ctx context.Context) (pgx.Tx, error) {
 // Items returns listID's common fields, in position order.
 func (s *Store) Items(ctx context.Context, listID int64) ([]Item, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT i.position, p.id, p.phrase, p.grammar, p.transcription
+		`SELECT i.id, i.position, p.id, p.phrase, p.grammar, p.transcription
 		   FROM vocabulary_items i JOIN phrases p ON p.id = i.phrase_id
 		  WHERE i.list_id = $1 ORDER BY i.position`, listID)
 	if err != nil {
@@ -386,12 +400,28 @@ func (s *Store) Items(ctx context.Context, listID int64) ([]Item, error) {
 	var out []Item
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.Position, &it.PhraseID, &it.Phrase, &it.Grammar, &it.Transcription); err != nil {
+		if err := rows.Scan(&it.ID, &it.Position, &it.PhraseID, &it.Phrase, &it.Grammar, &it.Transcription); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	phraseIDs := make([]int64, len(out))
+	for i, it := range out {
+		phraseIDs[i] = it.PhraseID
+	}
+	examples, err := s.examplesByPhrase(ctx, phraseIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Examples = examples[out[i].PhraseID]
+	}
+	return out, nil
 }
 
 // AddItem appends a new item at the next free position and returns it. The
@@ -485,8 +515,9 @@ func (s *Store) UpdateItem(ctx context.Context, listID int64, position int, phra
 // every list that links it. When another phrase (same language and script)
 // already has exactly those values, id is merged into it instead: its
 // translations are copied over (the surviving phrase's own non-blank
-// translation wins, a blank one is filled), every list link is re-pointed,
-// and id is deleted. Returns the id the phrase has afterwards: id itself, or
+// translation wins, a blank one is filled), its examples are added to the
+// survivor's (see mergeExamples), every list link is re-pointed, and id is
+// deleted. Returns the id the phrase has afterwards: id itself, or
 // the survivor's after a merge. The new values are normalised first, like
 // findOrCreatePhrase's.
 func retargetPhrase(ctx context.Context, tx pgx.Tx, id int64, phrase, grammar, transcription string) (int64, error) {
@@ -523,6 +554,9 @@ func retargetPhrase(ctx context.Context, tx pgx.Tx, id int64, phrase, grammar, t
 			WHERE btrim(coalesce(phrase_translation.translation, '')) = ''`, id, survivorID); err != nil {
 		return 0, err
 	}
+	if err := mergeExamples(ctx, tx, id, survivorID); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE vocabulary_items SET phrase_id = $2 WHERE phrase_id = $1`, id, survivorID); err != nil {
 		return 0, err
 	}
@@ -530,162 +564,10 @@ func retargetPhrase(ctx context.Context, tx pgx.Tx, id int64, phrase, grammar, t
 	return survivorID, err
 }
 
-// SetItemTranscriptionIfBlank writes transcription at (listID, position),
-// but only if the item still has the given phrase (stale-target guard, same
-// rationale as SetItemTranslationIfAbsent's own doc comment) AND its
-// transcription is still blank (background-generate-title-transcription-
-// translation's universal blank-check rule). Runs the phrase check, the
-// blank check, and the write inside one transaction (FOR UPDATE on the
-// read) so a concurrent edit can never slip in between. Returns
-// ErrItemNotFound if phrase no longer matches (or position is gone);
-// applied is false (not an error) when the transcription was already
-// non-blank.
-func (s *Store) SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (applied bool, err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
-
-	cur, err := lockItemPhraseIfStill(ctx, tx, listID, position, phrase)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(cur.transcription) != "" {
-		return false, nil
-	}
-	if _, err := retargetPhrase(ctx, tx, cur.id, cur.phrase, cur.grammar, transcription); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // itemPhrase is the shared phrase row an item links to.
 type itemPhrase struct {
 	id                             int64
 	phrase, grammar, transcription string
-}
-
-// lockItemPhraseIfStill is lockItemPhrase plus the stale-target guard (see B3
-// in specs/features/phraseforge-export-import.md): a background job is made
-// for a specific (listID, position, phrase) triple, and by the time it runs the
-// item at that position may have moved, been deleted or been replaced, so
-// writing its result to whatever sits there now would corrupt the wrong item.
-// If the stored phrase is no longer phrase this is ErrItemNotFound, not a
-// silent no-op, so the caller fails the job instead of reporting success.
-func lockItemPhraseIfStill(ctx context.Context, tx pgx.Tx, listID int64, position int, phrase string) (itemPhrase, error) {
-	cur, err := lockItemPhrase(ctx, tx, listID, position)
-	if err != nil {
-		return itemPhrase{}, err
-	}
-	if cur.phrase != phrase {
-		return itemPhrase{}, ErrItemNotFound
-	}
-	return cur, nil
-}
-
-// lockItemPhrase locks the item at (listID, position) and the phrase it links
-// to, and returns that phrase. Returns ErrItemNotFound if position doesn't
-// exist. The phrase is resolved here, inside the caller's transaction, so a
-// merge that re-pointed the item since a job was queued is followed rather
-// than missed.
-func lockItemPhrase(ctx context.Context, tx pgx.Tx, listID int64, position int) (itemPhrase, error) {
-	var cur itemPhrase
-	err := tx.QueryRow(ctx, `
-		SELECT p.id, p.phrase, p.grammar, p.transcription
-		FROM vocabulary_items i JOIN phrases p ON p.id = i.phrase_id
-		WHERE i.list_id = $1 AND i.position = $2
-		FOR UPDATE OF i, p`, listID, position).Scan(&cur.id, &cur.phrase, &cur.grammar, &cur.transcription)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return itemPhrase{}, ErrItemNotFound
-	}
-	return cur, err
-}
-
-// SetItemGrammarIfBlank sets one item's grammar tags at (listID,
-// position), with exactly SetItemTranscriptionIfBlank's guards: the item
-// must still have phrase (else ErrItemNotFound), and an already non-blank
-// grammar is left alone (applied false, not an error).
-func (s *Store) SetItemGrammarIfBlank(ctx context.Context, listID int64, position int, phrase, grammar string) (applied bool, err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
-
-	cur, err := lockItemPhraseIfStill(ctx, tx, listID, position, phrase)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(cur.grammar) != "" {
-		return false, nil
-	}
-	if _, err := retargetPhrase(ctx, tx, cur.id, cur.phrase, grammar, cur.transcription); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// SetItemTranslationIfAbsent upserts one item's translation/notes at
-// (listID, position), but only if the item still has the given phrase
-// (stale-target guard, B3 fix) AND no translation already exists for this
-// locale (background-generate-title-transcription-translation's universal
-// blank-check rule — notes is passed through unconditionally by the caller,
-// see main.go's itemTranslationWriteback adapter, so it is not itself part
-// of the "absent" check). Runs the phrase check, the absence check, and the
-// upsert/delete inside one transaction (with FOR UPDATE on both reads) so a
-// concurrent edit can never slip between the checks and the write. Returns
-// ErrItemNotFound if phrase no longer matches (or position is gone);
-// applied is false (not an error) when a translation for this locale
-// already existed.
-func (s *Store) SetItemTranslationIfAbsent(ctx context.Context, listID int64, position int, phrase, locale, translation, notes string) (applied bool, err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
-
-	cur, err := lockItemPhraseIfStill(ctx, tx, listID, position, phrase)
-	if err != nil {
-		return false, err
-	}
-
-	var existingTranslation string
-	err = tx.QueryRow(ctx, `SELECT coalesce(translation, '') FROM phrase_translation WHERE phrase_id = $1 AND locale = $2 FOR UPDATE`, cur.id, locale).Scan(&existingTranslation)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return false, err
-	}
-	if strings.TrimSpace(existingTranslation) != "" {
-		return false, nil
-	}
-
-	if translation == "" && notes == "" {
-		if _, err := tx.Exec(ctx, `DELETE FROM phrase_translation WHERE phrase_id = $1 AND locale = $2`, cur.id, locale); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO phrase_translation (phrase_id, locale, translation, notes)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (phrase_id, locale) DO UPDATE SET
-			translation = EXCLUDED.translation, notes = EXCLUDED.notes, updated_at = now()`,
-		cur.id, locale, nullIfEmpty(translation), nullIfEmpty(notes)); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // DeleteItem removes the item at position and shifts every later item in the
@@ -826,6 +708,11 @@ type SyncItem struct {
 	// present locale with both fields blank clears it, an absent one is left
 	// alone.
 	Translations map[string]SyncTranslation
+	// Examples replaces the phrase's usage examples (normalised and checked as
+	// in SetItemExamples; an invalid list fails the sync with
+	// ErrInvalidExamples); an empty non-nil list clears them, nil leaves them
+	// alone.
+	Examples []string
 }
 
 // syncMoveOffset moves a list's old links out of the way of the new ones; it
@@ -870,6 +757,15 @@ func (s *Store) SyncItemsTx(ctx context.Context, tx pgx.Tx, listID int64, items 
 		resolved[i] = id
 		if err := writeSyncTranslations(ctx, tx, id, it.Translations); err != nil {
 			return err
+		}
+		if it.Examples != nil {
+			stored, err := NormalizeExamples(it.Examples)
+			if err != nil {
+				return err
+			}
+			if err := replaceExamples(ctx, tx, id, stored); err != nil {
+				return err
+			}
 		}
 	}
 	return relinkItems(ctx, tx, listID, resolved)
@@ -928,20 +824,40 @@ func writeSyncTranslations(ctx context.Context, tx pgx.Tx, phraseID int64, trans
 }
 
 // relinkItems makes listID's links exactly phraseIDs, in order. The old links
-// are moved out of the way first, the new ones added, then the moved ones
-// deleted: deleting first would let delete_orphan_phrases remove a phrase that
-// is about to be linked again, together with its translations. The bulk move
-// is safe against the (list_id, position) primary key because every moved
-// position is at least syncMoveOffset, which is above any position a list
-// has, so no moved row can land on an existing one (DeleteItemTx shifts by
-// one instead, where a bulk update could collide).
+// are moved out of the way first; each new position then takes over the moved
+// link to the same phrase, if there is one (the nth occurrence of a phrase
+// pairs with the nth old link to it), so an item that stays keeps its id and
+// the jobs queued for it stay valid. Positions left without a link get a new
+// one, and the moved links nothing took over are deleted last: deleting first
+// would let delete_orphan_phrases remove a phrase that is about to be linked
+// again, together with its translations. The bulk move is safe against the
+// (list_id, position) primary key because every moved position is at least
+// syncMoveOffset, which is above any position a list has, so no moved row can
+// land on an existing one (DeleteItemTx shifts by one instead, where a bulk
+// update could collide).
 func relinkItems(ctx context.Context, tx pgx.Tx, listID int64, phraseIDs []int64) error {
 	if _, err := tx.Exec(ctx, `UPDATE vocabulary_items SET position = position + $2 WHERE list_id = $1`, listID, syncMoveOffset); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
+		WITH wanted AS (
+			SELECT t.id AS phrase_id, (t.ord - 1)::int AS position,
+			       row_number() OVER (PARTITION BY t.id ORDER BY t.ord) AS nth
+			FROM unnest($2::bigint[]) WITH ORDINALITY AS t(id, ord)
+		), moved AS (
+			SELECT position, phrase_id,
+			       row_number() OVER (PARTITION BY phrase_id ORDER BY position) AS nth
+			FROM vocabulary_items WHERE list_id = $1 AND position >= $3
+		)
+		UPDATE vocabulary_items i SET position = wanted.position
+		FROM moved JOIN wanted ON wanted.phrase_id = moved.phrase_id AND wanted.nth = moved.nth
+		WHERE i.list_id = $1 AND i.position = moved.position`, listID, phraseIDs, syncMoveOffset); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO vocabulary_items (list_id, position, phrase_id)
-		SELECT $1, (t.ord - 1)::int, t.id FROM unnest($2::bigint[]) WITH ORDINALITY AS t(id, ord)`, listID, phraseIDs); err != nil {
+		SELECT $1, (t.ord - 1)::int, t.id FROM unnest($2::bigint[]) WITH ORDINALITY AS t(id, ord)
+		WHERE NOT EXISTS (SELECT 1 FROM vocabulary_items i WHERE i.list_id = $1 AND i.position = (t.ord - 1)::int)`, listID, phraseIDs); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `DELETE FROM vocabulary_items WHERE list_id = $1 AND position >= $2`, listID, syncMoveOffset)
@@ -967,6 +883,33 @@ func (s *Store) TranslatedLocales(ctx context.Context, listID int64, position in
 			return nil, err
 		}
 		out[locale] = true
+	}
+	return out, rows.Err()
+}
+
+// TranslationsByItem returns, for each item of listID that has any, its
+// non-blank translations by site locale (keyed by item id, then locale code).
+func (s *Store) TranslationsByItem(ctx context.Context, listID int64) (map[int64]map[string]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT i.id, t.locale, t.translation FROM vocabulary_items i
+		JOIN phrase_translation t ON t.phrase_id = i.phrase_id
+		WHERE i.list_id = $1 AND btrim(coalesce(t.translation, '')) <> ''`, listID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[int64]map[string]string{}
+	for rows.Next() {
+		var itemID int64
+		var locale, translation string
+		if err := rows.Scan(&itemID, &locale, &translation); err != nil {
+			return nil, err
+		}
+		if out[itemID] == nil {
+			out[itemID] = map[string]string{}
+		}
+		out[itemID][locale] = translation
 	}
 	return out, rows.Err()
 }

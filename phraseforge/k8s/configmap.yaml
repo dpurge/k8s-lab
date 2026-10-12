@@ -156,14 +156,14 @@ data:
       maxAttempts: 3
       prompt: |
         You extract vocabulary from the given text for a language learner. Respond ONLY with one item per line, in this exact format:
-        phrase {grammar} [transcription] = translation
+        phrase {grammar} [transcription] | usage
         No preamble, numbering, bullets, comments or code fences, only the item lines.
 
         - phrase: the dictionary form, never the inflected form found in the text. Nouns in the singular, verbs in the infinitive (Arabic: 3rd person masculine singular perfect; Latin: 1st person singular present), adjectives in the masculine singular. Keep the original script and spelling, with the vowel signs and accents a dictionary gives. Prefer single words; add a short fixed phrase only when its meaning needs it. Skip names, numbers and very common words.
         - {grammar}: the part of speech N, V, Adj, Adv, Pron, Prep, Conj, Num, Part or Phrase, then the tags the language uses (for example N m, N f, V sep). Leave it out if unsure.
         - [transcription]: only for a language written in a script other than Latin, Cyrillic and Greek (for example Arabic, Persian, Hebrew, Yiddish, Mandarin, Japanese): the word in Latin script, in the standard scholarly transliteration, with every diacritic, as it is pronounced. Never leave it out for such a language.
-        - translation after =: into Polish, as a dictionary gives it: lowercase unless a name that is normally capitalized, senses separated with "; " (never "/"), no parentheses, no notes.
-        Each of {grammar}, [transcription] and = translation is left out entirely, without empty brackets, when it does not apply.
+        - usage after |: a short phrase copied from the text, in its original language and spelling, that shows the word as it is used there: a noun phrase, a verb with its object, or a subject with an intransitive verb. At most 80 characters, never a whole sentence, never translated, never made up: cut the sentence down around the word instead of rewriting it. Leave it out if the text has no short phrase for the word.
+        Each of {grammar}, [transcription] and | usage is left out entirely, without empty brackets, when it does not apply.
 
         {{grammarPrompt}}
 
@@ -172,19 +172,19 @@ data:
         Example 1.
         Input: كتب الطالب الدرس في المدرسة.
         Output:
-        كَتَبَ {V} [kataba] = pisać
-        طَالِبٌ {N m sg} [ṭālib] = uczeń; student
-        دَرْسٌ {N m sg} [dars] = lekcja
-        مَدْرَسَةٌ {N f sg} [madrasa] = szkoła
+        كَتَبَ {V} [kataba] | كتب الطالب الدرس
+        طَالِبٌ {N m sg} [ṭālib] | كتب الطالب
+        دَرْسٌ {N m sg} [dars] | الدرس في المدرسة
+        مَدْرَسَةٌ {N f sg} [madrasa] | في المدرسة
 
         Example 2.
         Input: Die Kinder lesen jeden Tag ein neues Buch.
         Output:
-        das Kind {N n} = dziecko
-        lesen {V} = czytać
-        der Tag {N m} = dzień
-        neu {Adj} = nowy
-        das Buch {N n} = książka
+        das Kind {N n} | Die Kinder lesen
+        lesen {V} | lesen jeden Tag ein neues Buch
+        der Tag {N m} | jeden Tag
+        neu {Adj} | ein neues Buch
+        das Buch {N n} | ein neues Buch
     generateModels:
       provider: ollama
       model: gemma4:12b
@@ -225,7 +225,7 @@ data:
     # The transcription, generateVocabulary and generateModels prompts above
     # carry the same two placeholders: a prompt in this file replaces the
     # embedded default, so it must contain a placeholder to use its snippet.
-    # Keep these prompts equal to prompt-eval's prompt/default/system files
+    # Keep these prompts equal to prompt-eval's prompt/phraseforge/default/system files
     # (config_test.go checks it).
     vocabularyItem:
       provider: ollama
@@ -240,22 +240,46 @@ data:
           "grammar": "grammar tags attached to the original phrase, follow the description below; null if unsure",
           "transcription": "only if a transcription is described below, otherwise null",
           "translation": "the meaning of the phrase in the target language",
-          "notes": null
+          "notes": null,
+          "example": "a short phrase that shows how the word is used, or null",
+          "newSense": null,
+          "rewrite": null
         }
 
         Rules:
-        - translation: as a dictionary of the target language gives it. Lowercase, unless it is a name that is normally capitalized. Several senses are joined with "; " (never with "/" or a comma). No parentheses, no explanation, no full stop.
+        - translation: as a dictionary of the target language gives it. Lowercase, unless it is a name that is normally capitalized. Several senses are joined with "; " (never with "/" or a comma). No parentheses, no explanation, no full stop. When an existing translation is shown below, give it unchanged.
         - notes: null, almost always. Write a note only when the translation could be misunderstood without it (a false friend, an unusual sense). Keep it short and write it in the target language, never in English unless English is the target language.
+        - example: one short phrase in the source language that shows how the word is used (a noun phrase, a verb with its object, or a subject with an intransitive verb): at most 80 characters, never a whole sentence. Take it from the usage below, shortened or corrected if needed. It must never be one of the known examples: if the usage is empty or already among the known examples, use null.
+        - newSense: null when no existing translation is shown below or when it already covers the usage. When it does not cover the meaning the usage shows, give that one extra meaning in the target language here, in the style of the translation, without "; ". The extra meaning goes only in newSense: translation stays exactly the existing translation, and notes stay null.
+        - rewrite: null when the phrase is already a dictionary headword, or when the usage is empty. When it is not (a different case than a dictionary gives, or a joined form, such as a noun or a preposition with a personal suffix attached), give the dictionary form as {"phrase": "...", "grammar": "...", "transcription": "..."}: the grammar tags and the transcription of the new phrase, following the descriptions below (null if none is described). The other fields still describe the original phrase.
 
         {{grammarPrompt}}
 
         {{transcriptionPrompt}}
 
+        Usage in the text this phrase came from (unknown if empty):
+        {{usage}}
+
+        Known examples of this phrase, never repeat one of them (none if empty):
+        {{examples}}
+
+        Existing translation of this phrase in the target language (none if empty):
+        {{translation}}
+
         Example 1. Translate from German to Polish: der Koffer
-        {"phrase": "der Koffer", "grammar": "N m", "transcription": null, "translation": "walizka", "notes": null}
+        {"phrase": "der Koffer", "grammar": "N m", "transcription": null, "translation": "walizka", "notes": null, "example": "einen Koffer packen", "newSense": null, "rewrite": null}
 
         Example 2. Translate from Standard Arabic to English: مُهَنْدِسَةٌ
-        {"phrase": "مُهَنْدِسَةٌ", "grammar": "N f sg", "transcription": "muhandisa", "translation": "engineer", "notes": null}
+        {"phrase": "مُهَنْدِسَةٌ", "grammar": "N f sg", "transcription": "muhandisa", "translation": "engineer", "notes": null, "example": "مُهَنْدِسَةٌ مَاهِرَةٌ", "newSense": null, "rewrite": null}
+
+        Example 3. Translate from German to Polish: Kinder (usage: die Kinder spielen)
+        {"phrase": "Kinder", "grammar": "N pl", "transcription": null, "translation": "dzieci", "notes": null, "example": "die Kinder spielen", "newSense": null, "rewrite": {"phrase": "das Kind", "grammar": "N n", "transcription": null}}
+
+        Example 4. Translate from Standard Arabic to English: كِتَابُهُ (usage: قرأت كتابه)
+        {"phrase": "كِتَابُهُ", "grammar": "N m sg", "transcription": "kitābuhu", "translation": "his book", "notes": null, "example": null, "newSense": null, "rewrite": {"phrase": "كِتَابٌ", "grammar": "N m sg", "transcription": "kitāb"}}
+
+        Example 5. Translate from German to Polish: Hahn (usage: den Hahn aufdrehen; existing translation: kogut)
+        {"phrase": "Hahn", "grammar": "N m", "transcription": null, "translation": "kogut", "notes": null, "example": "den Hahn aufdrehen", "newSense": "kran", "rewrite": null}
 
         Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
     modelsItem:
@@ -284,3 +308,162 @@ data:
         {"phrase": "لَنْ تَكُونَ هَذِهِ النِّهَايَةَ", "transcription": "lan takūna hāḏihi n-nihāya", "translation": "this will not be the end"}
 
         Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
+    checkVocabulary:
+      provider: ollama
+      model: gemma4:12b
+      numCtx: 8192
+      timeoutSeconds: 1800
+      maxAttempts: 3
+      prompt: |
+        You check vocabulary for a language learner. Below are phrases in {{sourceLanguage}} that the learner's dictionary already knows. Each one comes with a usage, a short phrase from a new text in which the word occurs, with the examples and translations the dictionary already has for it. For each phrase decide two things: whether the usage should be added as one more example, and whether it shows a meaning that none of the existing translations covers.
+
+        needsExample is true when the usage is a correct short phrase that shows the word in a use the known examples do not show: another construction, another object or subject, or another sense. It is false when the usage repeats a known example, differs from one only in a trivial way, or is not a correct use of the phrase. When the phrase has no examples yet, a correct usage gives true.
+
+        needsSense is true when the usage shows a meaning of the word that none of the translations listed covers (a different sense, not just a different construction). It is false when a listed translation already covers the meaning of the usage, and false when the phrase has no translation.
+
+        Return ONLY valid JSON without a code fence and without explanations, with one entry for every numbered phrase:
+
+        {"results": [{"n": 1, "needsExample": true, "needsSense": false}, {"n": 2, "needsExample": false, "needsSense": false}]}
+
+        Example. Phrases in German:
+        1. der Koffer
+           usage: den Koffer packen
+           examples: ein schwerer Koffer
+           translations: pl: walizka
+        2. der Tag
+           usage: jeden Tag
+           examples: jeden Tag | der erste Tag
+           translations: pl: dzień
+        3. der Hahn
+           usage: den Hahn aufdrehen
+           examples: ein junger Hahn
+           translations: pl: kogut
+        Answer:
+        {"results": [{"n": 1, "needsExample": true, "needsSense": false}, {"n": 2, "needsExample": false, "needsSense": false}, {"n": 3, "needsExample": true, "needsSense": true}]}
+
+        Phrases in {{sourceLanguage}}:
+        {{candidates}}
+        Answer:
+    # reviewVocabulary reviews one vocabulary item and proposes corrections. A
+    # blank provider or model means the vocabularyItem ones; set both (for
+    # example provider: openrouter and a more capable model) to review with a
+    # stronger model without touching the other purposes.
+    reviewVocabulary:
+      numCtx: 8192
+      timeoutSeconds: 1800
+      maxAttempts: 3
+      prompt: |
+        You review one entry of a language learner's dictionary. The entry is a phrase in {{sourceLanguage}} with its grammar tags, transcription, translations into other languages, notes and examples. Check every part below and report what should change. Do not change what is fine: for a correct part answer ok true with an empty suggestion and an empty reason.
+
+        Return ONLY valid JSON without a code fence and without explanations:
+
+        {"phrase": {"ok": true, "suggestion": "", "reason": ""}, "grammar": {"ok": true, "suggestion": "", "reason": ""}, "transcription": {"ok": true, "suggestion": "", "reason": ""}, "translations": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}], "notes": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}], "examples": [{"index": 1, "action": "keep", "suggestion": "", "reason": ""}]}
+
+        Every check has ok (false when something is wrong), suggestion (the corrected value; empty when ok, or when you cannot give a better one) and reason (one short sentence; empty when ok). Give one entry in translations for every translation listed, one in notes for every notes line listed, and one in examples for every numbered example.
+
+        Checks:
+        - phrase: is it the dictionary form, spelled correctly? The rules for the dictionary form are below; when they are empty, answer ok true. If you change the phrase you must also give a grammar and a transcription suggestion for the new phrase (repeat the current ones when they stay valid), because the three change together.
+        - grammar: are the tags correct for the phrase, and only tags from the description below?
+        - transcription: does it match the phrase and follow the transcription rules below?
+        - translations: is each translation correct for the phrase? The English translation, when listed, is the reference for judging the others. Senses are separated by "; " (never "/" or ","), and a translation holds only translations, never explanations or parentheses. Give a shorter suggestion when it can be shortened without losing a sense.
+        - notes: are they really needed? If the translation alone is enough to understand the phrase, answer ok false with an empty suggestion, which means remove the notes. If they are needed, suggest a shorter text when possible.
+        - examples: is each one needed to show how the phrase is used? Answer action "remove" for an example that repeats another one or adds nothing, "shorten" with a suggestion for one that can be shorter (at most 80 characters, still showing the phrase), otherwise "keep".
+
+        Dictionary form of the phrase:
+        {{dictionaryPrompt}}
+
+        Grammar tags:
+        {{grammarPrompt}}
+
+        Transcription:
+        {{transcriptionPrompt}}
+
+        Example. Entry in German:
+        phrase: der Koffer
+        grammar: N f
+        transcription: none
+        translations:
+        - en: suitcase; case; (a bag for travelling)
+        - pl: walizka
+          notes: walizka na kółkach, duża torba podróżna używana na wyjazdach
+        examples:
+        1. ein schwerer Koffer
+        2. ein schwerer Koffer
+        3. Er packt den Koffer für die lange Reise nach Italien im Sommer.
+        Answer:
+        {"phrase": {"ok": true, "suggestion": "", "reason": ""}, "grammar": {"ok": false, "suggestion": "N m", "reason": "Koffer is masculine."}, "transcription": {"ok": true, "suggestion": "", "reason": ""}, "translations": [{"locale": "en", "ok": false, "suggestion": "suitcase; case", "reason": "The explanation in parentheses is not a translation."}, {"locale": "pl", "ok": true, "suggestion": "", "reason": ""}], "notes": [{"locale": "pl", "ok": false, "suggestion": "", "reason": "The translation is enough."}], "examples": [{"index": 1, "action": "keep", "suggestion": "", "reason": ""}, {"index": 2, "action": "remove", "suggestion": "", "reason": "Repeats example 1."}, {"index": 3, "action": "shorten", "suggestion": "den Koffer für die Reise packen", "reason": "Too long."}]}
+
+        Entry in {{sourceLanguage}}:
+        phrase: {{phrase}}
+        grammar: {{grammar}}
+        transcription: {{transcription}}
+        translations:
+        {{translations}}
+        examples:
+        {{examples}}
+        Answer:
+    # reviewTranscription reviews the transcription of one text or dialog. A blank provider or model means the reviewVocabulary
+    # ones (and through them vocabularyItem's); set both to review with a
+    # different model.
+    reviewTranscription:
+      numCtx: 16384
+      timeoutSeconds: 1800
+      maxAttempts: 3
+      prompt: |
+        You review the transcription of a text in {{sourceLanguage}} written for a language learner. The text is the source of truth. Below it is the transcription and the vocabulary list made from the text (phrases with their translations). Check the transcription against the text and report what should change. Do not change what is fine.
+
+        Return ONLY valid JSON without a code fence and without explanations:
+
+        {"ok": true, "suggestion": "", "reason": ""}
+
+        ok is false when something is wrong. suggestion is the whole corrected transcription, with the same line structure; it is empty when ok, or when you cannot give a better one. reason is one short sentence; it is empty when ok.
+
+        Check:
+        - faithfulness: the transcription follows the text sentence by sentence, with nothing missing, added or reordered, and the words are the words of the text;
+        - rules: it follows the transcription rules below. When the rules are empty, answer ok true.
+
+        Transcription rules:
+        {{transcriptionPrompt}}
+
+        Text in {{sourceLanguage}}:
+        {{text}}
+
+        Transcription:
+        {{transcription}}
+
+        Vocabulary:
+        {{vocabulary}}
+
+        Answer:
+    # reviewTranslation reviews the translations of one text or dialog. A blank provider or model means the reviewVocabulary
+    # ones (and through them vocabularyItem's); set both to review with a
+    # different model.
+    reviewTranslation:
+      numCtx: 16384
+      timeoutSeconds: 1800
+      maxAttempts: 3
+      prompt: |
+        You review the translations of a text in {{sourceLanguage}} written for a language learner. The text is the source of truth. Below it are its translations into other languages and the vocabulary list made from the text (phrases with their translations), which shows how the course renders the words. Check every translation against the text and report what should change. Do not change what is fine: for a correct translation answer ok true with an empty suggestion and an empty reason.
+
+        Return ONLY valid JSON without a code fence and without explanations:
+
+        {"translations": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}]}
+
+        Give one entry for every translation listed. ok is false when something is wrong. suggestion is the whole corrected translation, keeping the structure of the text (lines, paragraphs, dialog turns, markup); it is empty when ok, or when you cannot give a better one. reason is one short sentence; it is empty when ok.
+
+        Check each translation:
+        - faithful: nothing missing, added or changed in meaning;
+        - natural: it reads naturally in its own language;
+        - vocabulary: it renders the words of the vocabulary list the way the list does.
+        The English translation, when listed, is the reference for judging the others.
+
+        Text in {{sourceLanguage}}:
+        {{text}}
+
+        Translations:
+        {{translations}}
+
+        Vocabulary:
+        {{vocabulary}}
+
+        Answer:

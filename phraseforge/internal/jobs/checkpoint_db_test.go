@@ -162,3 +162,28 @@ func TestProgressIsStoredReadBackAndClearedOnlyWhenDone(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteRecordsASkippedJobAsCancelledWithItsReason(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	s := New(pool)
+	for _, tt := range []struct {
+		name       string
+		jobErr     error
+		wantStatus Status
+		wantError  string
+	}{
+		{"skipped", fmt.Errorf("%w: item no longer exists", ErrSkipped), StatusCancelled, "skipped: item no longer exists"},
+		{"failed", fmt.Errorf("boom"), StatusFailed, "boom"},
+	} {
+		id := insertJob(t, pool, "running")
+		s.complete(ctx, id, nil, tt.jobErr, false)
+		var status, errText string
+		if err := pool.QueryRow(ctx, "SELECT status, error FROM jobs WHERE id=$1", id).Scan(&status, &errText); err != nil {
+			t.Fatal(err)
+		}
+		if Status(status) != tt.wantStatus || errText != tt.wantError {
+			t.Errorf("%s: recorded (%s, %q), want (%s, %q)", tt.name, status, errText, tt.wantStatus, tt.wantError)
+		}
+	}
+}

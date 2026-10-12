@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -136,80 +135,6 @@ func (f *fakeTextWriteback) SetTranscriptionIfBlank(ctx context.Context, id int6
 	return true, nil
 }
 
-// fakeItemTranscriptionWriteback is a fake ItemTranscriptionWriteback,
-// recording the (listID, position, phrase, transcription) it was called
-// with — stands in for *vocabulary.Store/*models.Store in HandleGenerate's
-// item-transcription writeback dispatch tests. If wantPhrase is set and
-// doesn't match the phrase passed in, it returns errPhraseMismatch instead
-// of recording the call — simulating the real stores' guarded UPDATE
-// affecting zero rows when the item at that position has moved or been
-// replaced since the job was enqueued (see B3 in
-// specs/features/phraseforge-export-import.md).
-type fakeItemTranscriptionWriteback struct {
-	listID            int64
-	position          int
-	phrase            string
-	transcription     string
-	calls             int
-	wantPhrase        string
-	alreadyHasContent bool // when false (default), every non-mismatched call applies
-}
-
-func (f *fakeItemTranscriptionWriteback) SetItemTranscriptionIfBlank(ctx context.Context, listID int64, position int, phrase, transcription string) (bool, error) {
-	if f.wantPhrase != "" && phrase != f.wantPhrase {
-		return false, errPhraseMismatch
-	}
-	if f.alreadyHasContent {
-		return false, nil
-	}
-	f.calls++
-	f.listID = listID
-	f.position = position
-	f.phrase = phrase
-	f.transcription = transcription
-	return true, nil
-}
-
-// fakeItemTranslationWriteback is a fake ItemTranslationWriteback, standing
-// in for the main.go-level vocabulary/models adapter in HandleGenerate's
-// item-translation writeback dispatch tests. Mirrors
-// fakeItemTranscriptionWriteback's wantPhrase/errPhraseMismatch simulation.
-type fakeItemTranslationWriteback struct {
-	resourceType      string
-	listID            int64
-	position          int
-	phrase            string
-	locale            string
-	translation       string
-	calls             int
-	wantPhrase        string
-	alreadyHasContent bool // when false (default), every non-mismatched call applies
-}
-
-func (f *fakeItemTranslationWriteback) SetItemTranslation(ctx context.Context, resourceType string, listID int64, position int, phrase, locale, translation string) (bool, error) {
-	if f.wantPhrase != "" && phrase != f.wantPhrase {
-		return false, errPhraseMismatch
-	}
-	if f.alreadyHasContent {
-		return false, nil
-	}
-	f.calls++
-	f.resourceType = resourceType
-	f.listID = listID
-	f.position = position
-	f.phrase = phrase
-	f.locale = locale
-	f.translation = translation
-	return true, nil
-}
-
-// errPhraseMismatch stands in for vocabulary.ErrItemNotFound/
-// models.ErrItemNotFound (the ai package never imports either store package
-// directly, so it can't reference those sentinels by name) — the real
-// stores' guarded UPDATE returns exactly this class of error when phrase no
-// longer matches what's stored at (listID, position).
-var errPhraseMismatch = errors.New("item phrase mismatch: item has moved or been replaced")
-
 // fakeTranslationWriteback is a fake TranslationWriteback (the plain,
 // non-item resource path) — used to confirm an item resource type never
 // falls through to it.
@@ -278,165 +203,42 @@ func TestWritebackTitleSkipsWhenAlreadyBlank(t *testing.T) {
 	}
 }
 
-// TestWritebackItemTranscription covers HandleGenerate's new item-level
-// transcription dispatch: resource type selects vocabulary vs. models,
-// position 0 (a valid real position) must still dispatch — resource type
-// alone, not a zero-check on ItemPosition, disambiguates — and the payload's
-// Content (the item's phrase, per buildBackfillPayload) is threaded through
-// as the writeback's stale-target guard.
-func TestWritebackItemTranscription(t *testing.T) {
-	vocab := &fakeItemTranscriptionWriteback{}
-	modelsW := &fakeItemTranscriptionWriteback{}
-	svc := &Service{vocabItems: vocab, modelsItems: modelsW}
-
-	p := generatePayload{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 3, Content: "phrase-a"}
-	if applied, err := svc.writeback(context.Background(), p, "  trxn  "); err != nil || !applied {
-		t.Fatalf("writeback: applied=%v err=%v", applied, err)
-	}
-	if vocab.calls != 1 || vocab.listID != 42 || vocab.position != 3 || vocab.phrase != "phrase-a" || vocab.transcription != "trxn" {
-		t.Errorf("vocab writeback = %+v, want calls=1 listID=42 position=3 phrase=phrase-a transcription=%q", vocab, "trxn")
-	}
-	if modelsW.calls != 0 {
-		t.Errorf("modelsW.calls = %d, want 0", modelsW.calls)
-	}
-
-	p2 := generatePayload{Kind: "transcription", ResourceType: "models_item", ResourceID: 7, ItemPosition: 0, Content: "phrase-b"}
-	if applied, err := svc.writeback(context.Background(), p2, "zero-position"); err != nil || !applied {
-		t.Fatalf("writeback: applied=%v err=%v", applied, err)
-	}
-	if modelsW.calls != 1 || modelsW.listID != 7 || modelsW.position != 0 || modelsW.phrase != "phrase-b" {
-		t.Errorf("modelsW writeback = %+v, want calls=1 listID=7 position=0 phrase=phrase-b — position 0 must dispatch, not be treated as unset", modelsW)
-	}
-}
-
-// TestWritebackItemTranscriptionPhraseMismatchFailsJob covers B3
-// (specs/features/phraseforge-export-import.md): if the item at (listID,
-// position) no longer has the phrase the job was generated for — it moved
-// via a manual delete or a re-import while this job sat queued —
-// SetItemTranscription's guarded UPDATE affects zero rows and returns an
-// error; writeback must propagate that error (failing the job) rather than
-// treating it as a silent no-op success.
-func TestWritebackItemTranscriptionPhraseMismatchFailsJob(t *testing.T) {
-	vocab := &fakeItemTranscriptionWriteback{wantPhrase: "original-phrase"}
-	svc := &Service{vocabItems: vocab}
-
-	p := generatePayload{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 3, Content: "a-different-phrase"}
-	_, err := svc.writeback(context.Background(), p, "trxn")
-	if err == nil {
-		t.Fatal("writeback with a stale phrase = nil error, want an error — the job must fail, not silently succeed")
-	}
-	if vocab.calls != 0 {
-		t.Errorf("vocab.calls = %d, want 0 — a phrase mismatch must never be recorded as an applied write", vocab.calls)
-	}
-}
-
-// TestWritebackItemTranscriptionSkipsWhenAlreadyBlank mirrors
-// TestWritebackTitleSkipsWhenAlreadyBlank for the item-transcription path.
-func TestWritebackItemTranscriptionSkipsWhenAlreadyBlank(t *testing.T) {
-	vocab := &fakeItemTranscriptionWriteback{alreadyHasContent: true}
-	svc := &Service{vocabItems: vocab}
-
-	p := generatePayload{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 3, Content: "phrase-a"}
-	applied, err := svc.writeback(context.Background(), p, "trxn")
-	if err != nil {
-		t.Fatalf("writeback: %v, want nil error (a skip is still job success)", err)
-	}
-	if applied {
-		t.Error("applied = true, want false — the item's transcription already had content")
-	}
-	if vocab.calls != 0 {
-		t.Errorf("vocab.calls = %d, want 0 — a skip must never write", vocab.calls)
-	}
-}
-
-// TestWritebackItemTranslation covers HandleGenerate's new item-level
-// translation dispatch: a vocabulary_item/models_item resource type reaches
-// ItemTranslationWriteback, never the plain TranslationWriteback used for
-// text/dialog resource types, and the payload's Content (the item's phrase)
-// is threaded through as the writeback's stale-target guard.
-func TestWritebackItemTranslation(t *testing.T) {
-	items := &fakeItemTranslationWriteback{}
-	plain := &fakeTranslationWriteback{}
-	svc := &Service{itemTranslations: items, translations: plain}
-
-	p := generatePayload{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 2, Locale: "pl", Content: "phrase-a"}
-	if applied, err := svc.writeback(context.Background(), p, "  przetlumaczone  "); err != nil || !applied {
-		t.Fatalf("writeback: applied=%v err=%v", applied, err)
-	}
-	if items.calls != 1 || items.resourceType != "vocabulary_item" || items.listID != 42 || items.position != 2 || items.phrase != "phrase-a" || items.locale != "pl" || items.translation != "przetlumaczone" {
-		t.Errorf("items writeback = %+v, want the vocabulary_item dispatch fields", items)
-	}
-	if plain.calls != 0 {
-		t.Errorf("plain.calls = %d, want 0 — an item resource type must not fall through to the plain TranslationWriteback path", plain.calls)
-	}
-
-	p2 := generatePayload{Kind: "translation", ResourceType: "text", ResourceID: 5, Locale: "en"}
-	if applied, err := svc.writeback(context.Background(), p2, "translated"); err != nil || !applied {
-		t.Fatalf("writeback: applied=%v err=%v", applied, err)
-	}
-	if plain.calls != 1 {
-		t.Errorf("plain.calls = %d, want 1 — a text resource type must still use the plain TranslationWriteback path", plain.calls)
-	}
-}
-
-// TestWritebackItemTranslationPhraseMismatchFailsJob mirrors
-// TestWritebackItemTranscriptionPhraseMismatchFailsJob for the translation
-// writeback path (B3).
-func TestWritebackItemTranslationPhraseMismatchFailsJob(t *testing.T) {
-	items := &fakeItemTranslationWriteback{wantPhrase: "original-phrase"}
-	svc := &Service{itemTranslations: items}
-
-	p := generatePayload{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 2, Locale: "pl", Content: "a-different-phrase"}
-	_, err := svc.writeback(context.Background(), p, "przetlumaczone")
-	if err == nil {
-		t.Fatal("writeback with a stale phrase = nil error, want an error — the job must fail, not silently succeed")
-	}
-	if items.calls != 0 {
-		t.Errorf("items.calls = %d, want 0 — a phrase mismatch must never be recorded as an applied write", items.calls)
-	}
-}
-
-// TestWritebackItemTranslationSkipsWhenAlreadyBlank mirrors
-// TestWritebackTitleSkipsWhenAlreadyBlank for the item-translation path.
-func TestWritebackItemTranslationSkipsWhenAlreadyBlank(t *testing.T) {
-	items := &fakeItemTranslationWriteback{alreadyHasContent: true}
-	svc := &Service{itemTranslations: items}
-
-	p := generatePayload{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 42, ItemPosition: 2, Locale: "pl", Content: "phrase-a"}
-	applied, err := svc.writeback(context.Background(), p, "przetlumaczone")
-	if err != nil {
-		t.Fatalf("writeback: %v, want nil error (a skip is still job success)", err)
-	}
-	if applied {
-		t.Error("applied = true, want false — the item already had a translation for this locale")
-	}
-	if items.calls != 0 {
-		t.Errorf("items.calls = %d, want 0 — a skip must never write", items.calls)
-	}
-}
-
-// TestWritebackRejectsEmptyResultForNewPaths extends
-// TestWritebackRejectsEmptyResult's coverage to the title/item-transcription/
-// item-translation paths added in this pass — none of them may reach their
-// writeback interface with an empty result either.
-func TestWritebackRejectsEmptyResultForNewPaths(t *testing.T) {
+// TestWritebackRejectsEmptyTitleResult extends TestWritebackRejectsEmptyResult's
+// coverage to the title path: it may not reach its writeback interface with an
+// empty result either.
+func TestWritebackRejectsEmptyTitleResult(t *testing.T) {
 	texts := &fakeTextWriteback{}
-	vocab := &fakeItemTranscriptionWriteback{}
-	items := &fakeItemTranslationWriteback{}
-	svc := &Service{texts: texts, vocabItems: vocab, itemTranslations: items}
+	svc := &Service{texts: texts}
 
-	cases := []generatePayload{
-		{Kind: "title", ResourceType: "text", ResourceID: 1},
-		{Kind: "transcription", ResourceType: "vocabulary_item", ResourceID: 1, ItemPosition: 0},
-		{Kind: "translation", ResourceType: "vocabulary_item", ResourceID: 1, ItemPosition: 0, Locale: "en"},
+	p := generatePayload{Kind: "title", ResourceType: "text", ResourceID: 1}
+	if _, err := svc.writeback(context.Background(), p, "   \n\t  "); err == nil {
+		t.Error("writeback(kind=title, empty result) = nil error, want an error")
 	}
-	for _, p := range cases {
-		if _, err := svc.writeback(context.Background(), p, "   \n\t  "); err == nil {
-			t.Errorf("writeback(kind=%q, empty result) = nil error, want an error", p.Kind)
+	if texts.titleCalls != 0 {
+		t.Errorf("an empty result must never reach the writeback interface: titleCalls=%d", texts.titleCalls)
+	}
+}
+
+// TestWritebackRefusesItemResourceTypes covers a pre-existing item-level
+// generate_translation/generate_transcription row: items are filled by
+// HandleItemTranslation now, so HandleGenerate must fail such a row instead of
+// writing anything — in particular the plain translation store, which would
+// otherwise store it under an item resource type it knows nothing about.
+func TestWritebackRefusesItemResourceTypes(t *testing.T) {
+	texts := &fakeTextWriteback{}
+	plain := &fakeTranslationWriteback{}
+	svc := &Service{texts: texts, translations: plain}
+
+	for _, resourceType := range []string{"vocabulary_item", "models_item"} {
+		for _, kind := range []string{"transcription", "translation"} {
+			p := generatePayload{Kind: kind, ResourceType: resourceType, ResourceID: 1, Locale: "en"}
+			if _, err := svc.writeback(context.Background(), p, "result"); err == nil {
+				t.Errorf("writeback(kind=%q, resource_type=%q) = nil error, want it refused", kind, resourceType)
+			}
 		}
 	}
-	if texts.titleCalls != 0 || vocab.calls != 0 || items.calls != 0 {
-		t.Errorf("an empty result must never reach any writeback interface: titleCalls=%d vocabCalls=%d itemsCalls=%d", texts.titleCalls, vocab.calls, items.calls)
+	if plain.calls != 0 || texts.calls != 0 {
+		t.Errorf("a refused item row must write nothing: translation calls=%d, transcription calls=%d", plain.calls, texts.calls)
 	}
 }
 
@@ -495,11 +297,14 @@ func TestDefaultPrompts(t *testing.T) {
 }
 
 func TestPromptPlaceholders(t *testing.T) {
-	if got, want := strings.Join(PromptPlaceholders("title"), ","), "grammarPrompt,transcriptionPrompt"; got != want {
+	if got, want := strings.Join(PromptPlaceholders("title"), ","), "grammarPrompt,transcriptionPrompt,dictionaryPrompt"; got != want {
 		t.Errorf("title placeholders = %q, want %q", got, want)
 	}
-	for _, kind := range []string{"vocabulary_item", "models_item"} {
-		if got, want := strings.Join(PromptPlaceholders(kind), ","), "sourceLanguage,targetLanguage,phrase,grammarPrompt,transcriptionPrompt"; got != want {
+	for kind, want := range map[string]string{
+		"vocabulary_item": "sourceLanguage,targetLanguage,phrase,grammarPrompt,transcriptionPrompt,dictionaryPrompt,usage,examples,translation",
+		"models_item":     "sourceLanguage,targetLanguage,phrase,grammarPrompt,transcriptionPrompt,dictionaryPrompt",
+	} {
+		if got := strings.Join(PromptPlaceholders(kind), ","); got != want {
 			t.Errorf("%s placeholders = %q, want %q", kind, got, want)
 		}
 	}
