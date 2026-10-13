@@ -14,7 +14,7 @@ test("registers the pf-card custom element", () => {
   assert.ok(customElements.get("pf-card"), "expected pf-card to be defined");
 });
 
-test("leaves its children completely unchanged (no wrapping, no attribute changes, no click interception)", async () => {
+test("leaves its children unchanged (no wrapping, no attribute changes) and fires no select event", async () => {
   const el = document.createElement("pf-card");
   el.innerHTML =
     '<h2><a href="/texts/1">Sample Title</a></h2><div class="meta"><span class="badge">fra / latn</span></div>';
@@ -31,6 +31,42 @@ test("leaves its children completely unchanged (no wrapping, no attribute change
   });
   el.click();
   assert.equal(selectFired, false, "pf-card must never dispatch a select event — it is not a kb-card port");
+});
+
+function openableCard() {
+  const el = document.createElement("pf-card");
+  el.innerHTML =
+    '<h2><a href="#" data-open="7">Title</a></h2><div class="meta"><span class="badge">x</span><a href="#" data-tag-filter="t">t</a></div>';
+  document.body.appendChild(el);
+  let opened = 0;
+  el.querySelector("[data-open]").addEventListener("click", (e) => {
+    e.preventDefault();
+    opened++;
+  });
+  return { el, opened: () => opened };
+}
+
+test("a click on the card body opens the item through its [data-open] link", () => {
+  const { el, opened } = openableCard();
+  el.querySelector(".meta .badge").click();
+  assert.equal(opened(), 1);
+  el.click();
+  assert.equal(opened(), 2);
+});
+
+test("a click on the title link opens once (no double forward) and a tag link does not open", () => {
+  const { el, opened } = openableCard();
+  el.querySelector("[data-open]").click();
+  assert.equal(opened(), 1);
+  el.querySelector("[data-tag-filter]").click();
+  assert.equal(opened(), 1);
+});
+
+test("a card without [data-open] ignores body clicks", () => {
+  const el = document.createElement("pf-card");
+  el.innerHTML = "<h2>Plain</h2>";
+  document.body.appendChild(el);
+  el.click();
 });
 
 test("injects its stylesheet into <head> exactly once, even for multiple instances", async () => {

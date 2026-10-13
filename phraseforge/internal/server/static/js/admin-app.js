@@ -148,7 +148,7 @@
         <td>${esc(g.username)}</td>
         <td>${esc(T("role." + g.role))}</td>
         <td>${g.language ? `${esc(g.languageName)} (${esc(g.language)})` : `<em>${esc(T("admin.site_wide"))}</em>`}</td>
-        <td><button class="link-btn" type="button" data-revoke-id="${g.id}">${esc(T("texts.delete"))}</button></td>
+        <td><pf-button variant="danger" data-revoke-id="${g.id}">${esc(T("texts.delete"))}</pf-button></td>
       </tr>`,
         )
         .join("") || `<tr><td colspan="4"><em>${esc(T("admin.no_grants"))}</em></td></tr>`;
@@ -239,8 +239,8 @@
         <td>${c.transcription_ime ? esc(c.transcription_ime) : `<em>${esc(T("admin.ime_none"))}</em>`}</td>
         <td>${c.needs_transcription ? "✓" : "—"}</td>
         <td style="white-space:nowrap;">
-          <a href="#" data-edit-ime="${esc(key)}">${esc(T("texts.edit"))}</a>
-          <button class="link-btn" type="button" data-delete-ime="${esc(key)}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
+          <pf-button data-edit-ime="${esc(key)}">${esc(T("texts.edit"))}</pf-button>
+          <pf-button variant="danger" data-delete-ime="${esc(key)}">${esc(T("texts.delete"))}</pf-button>
         </td>
       </tr>`;
         })
@@ -278,7 +278,7 @@
           </label>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("admin.ime_save"))}</pf-button>
-            ${editingIme ? `<a href="#" id="imeCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
+            ${editingIme ? `<pf-button id="imeCancelEdit">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
           </div>
         </form>
       </div>
@@ -377,14 +377,13 @@
         <td>${p.model ? esc(p.model) : `<em>${esc(T("admin.llm_model_default"))}</em>`}</td>
         <td>${p.think ? "✓" : "—"}</td>
         <td>${p.timeout_seconds ? esc(String(p.timeout_seconds)) : `<em>${esc(T("admin.llm_timeout_default"))}</em>`}</td>
-        <td style="white-space:pre-wrap;">${esc(p.prompt)}</td>
         <td style="white-space:nowrap;">
-          <a href="#" data-edit-llm="${esc(key)}">${esc(T("texts.edit"))}</a>
-          <button class="link-btn" type="button" data-delete-llm="${esc(key)}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
+          <pf-button data-edit-llm="${esc(key)}">${esc(T("texts.edit"))}</pf-button>
+          <pf-button variant="danger" data-delete-llm="${esc(key)}">${esc(T("texts.delete"))}</pf-button>
         </td>
       </tr>`;
         })
-        .join("") || `<tr><td colspan="9"><em>${esc(T("admin.llm_no_configs"))}</em></td></tr>`;
+        .join("") || `<tr><td colspan="8"><em>${esc(T("admin.llm_no_configs"))}</em></td></tr>`;
 
     document.getElementById("tabLlm").innerHTML = `
       <div class="card" style="margin-bottom:1.5rem;">
@@ -418,21 +417,22 @@
               <input type="number" id="llm-timeout-seconds" min="1" max="3600" placeholder="${esc(T("admin.llm_timeout_placeholder"))}">
             </pf-field>
           </div>
-          <pf-field label="${esc(T("admin.llm_prompt"))}" for="llm-prompt">
-            <textarea id="llm-prompt" required style="height:16rem;" placeholder="${esc(T("admin.llm_prompt_placeholder"))}"></textarea>
-          </pf-field>
-          <p class="muted" id="llm-placeholders-hint"></p>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("admin.llm_save"))}</pf-button>
-            ${editingLlm ? `<a href="#" id="llmCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
+            ${editingLlm ? `<pf-button id="llmCancelEdit">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
           </div>
         </form>
+      </div>
+      <div class="card" style="margin-bottom:1.5rem;">
+        <h2 style="margin-top:0;">${esc(T("admin.llm_prompt"))}</h2>
+        <p class="muted" id="llm-placeholders-hint"></p>
+        <textarea id="llm-prompt" readonly aria-label="${esc(T("admin.llm_prompt"))}" style="height:16rem;"></textarea>
       </div>
       <div class="card" style="margin-bottom:1.5rem;">
         <h2 style="margin-top:0;">${esc(T("admin.llm_configs_heading"))}</h2>
         <div style="overflow-x:auto;">
           <table class="admin-table">
-            <thead><tr><th>${esc(T("admin.llm_kind"))}</th><th>${esc(T("admin.llm_source_language"))}</th><th>${esc(T("admin.llm_target_language"))}</th><th>${esc(T("admin.llm_provider"))}</th><th>${esc(T("admin.llm_model"))}</th><th>${esc(T("admin.llm_think"))}</th><th>${esc(T("admin.llm_timeout_seconds"))}</th><th>${esc(T("admin.llm_prompt"))}</th><th></th></tr></thead>
+            <thead><tr><th>${esc(T("admin.llm_kind"))}</th><th>${esc(T("admin.llm_source_language"))}</th><th>${esc(T("admin.llm_target_language"))}</th><th>${esc(T("admin.llm_provider"))}</th><th>${esc(T("admin.llm_model"))}</th><th>${esc(T("admin.llm_think"))}</th><th>${esc(T("admin.llm_timeout_seconds"))}</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -459,18 +459,13 @@
     }
     kindSelect.addEventListener("change", refreshLLMTarget);
 
-    // A new prompt starts from its kind's default, with the placeholders
-    // visible; changing the kind swaps the text only while the box still holds
-    // the default put there (never over the admin's own edits). A saved row
-    // always shows its stored prompt.
+    // The prompt is shown read-only: a row stores only provider, model, think
+    // and timeout, the text is always the kind's default, and the language's
+    // rules come from the Languages tab through the placeholders.
     const promptArea = document.getElementById("llm-prompt");
-    let prefilledDefault = null;
     function refreshLLMPrompt() {
       const kind = kindSelect.value;
-      if (!editingPrompt && (promptArea.value === "" || promptArea.value === prefilledDefault)) {
-        prefilledDefault = (data.llmDefaults || {})[kind] || "";
-        promptArea.value = prefilledDefault;
-      }
+      promptArea.value = (data.llmDefaults || {})[kind] || "";
       const names = ((data.llmPlaceholders || {})[kind] || []).map((n) => "{{" + n + "}}").join(", ");
       document.getElementById("llm-placeholders-hint").textContent = T("admin.llm_placeholders_hint").replace("%s", names);
     }
@@ -487,7 +482,6 @@
       document.getElementById("llm-source-language").value = editingPrompt.source_language;
       document.getElementById("llm-model").value = editingPrompt.model || "";
       document.getElementById("llm-timeout-seconds").value = editingPrompt.timeout_seconds || "";
-      document.getElementById("llm-prompt").value = editingPrompt.prompt;
     }
     refreshLLMTarget();
     refreshLLMPrompt();
@@ -522,7 +516,6 @@
         // matching apiAdminLLMPromptRequest.TimeoutSeconds's *int, nil-means-
         // absent contract.
         ...(timeoutSecondsRaw ? { timeoutSeconds: Number(timeoutSecondsRaw) } : {}),
-        prompt: document.getElementById("llm-prompt").value,
       };
       try {
         await apiFetch("/api/v1/admin/llm-prompts", { method: "POST", body: JSON.stringify(payload) });
@@ -538,6 +531,8 @@
         e.preventDefault();
         editingLlm = a.dataset.editLlm;
         renderLLMTab();
+        document.getElementById("llmForm").scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById("llm-model").focus({ preventScroll: true });
       });
     });
 
@@ -599,22 +594,21 @@
   }
 
   function renderLanguagesTab() {
-    const rows =
+    const tiles =
       snippetRows()
         .map((r) => {
           const key = `${r.language}|${r.field.id}`;
           return `
-      <tr>
-        <td>${esc(languageName(r.language))}</td>
-        <td>${esc(T(r.field.label))}</td>
-        <td style="white-space:pre-wrap;">${esc(r.text)}</td>
-        <td style="white-space:nowrap;">
-          <a href="#" data-edit-snippet="${esc(key)}">${esc(T("texts.edit"))}</a>
-          <button class="link-btn" type="button" data-delete-snippet="${esc(key)}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
-        </td>
-      </tr>`;
+      <pf-card>
+        <h3 class="snippet-title">${esc(languageName(r.language))} · ${esc(T(r.field.label))}</h3>
+        <pre class="snippet-text">${esc(r.text)}</pre>
+        <div class="form-actions">
+          <pf-button data-edit-snippet="${esc(key)}">${esc(T("texts.edit"))}</pf-button>
+          <pf-button variant="danger" data-delete-snippet="${esc(key)}">${esc(T("texts.delete"))}</pf-button>
+        </div>
+      </pf-card>`;
         })
-        .join("") || `<tr><td colspan="4"><em>${esc(T("admin.sections_no_configs"))}</em></td></tr>`;
+        .join("") || `<p><em>${esc(T("admin.sections_no_configs"))}</em></p>`;
     document.getElementById("tabLanguages").innerHTML = `
       <div class="card" style="margin-bottom:1.5rem;">
         <h2 style="margin-top:0;">${esc(T("admin.sections_heading"))}</h2>
@@ -633,19 +627,12 @@
           </pf-field>
           <div class="form-actions">
             <pf-button variant="primary" type="submit">${esc(T("admin.sections_save"))}</pf-button>
-            ${editingSnippet ? `<a href="#" id="snippetCancelEdit" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
+            ${editingSnippet ? `<pf-button id="snippetCancelEdit">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
           </div>
         </form>
       </div>
-      <div class="card">
-        <h2 style="margin-top:0;">${esc(T("admin.sections_configs_heading"))}</h2>
-        <div style="overflow-x:auto;">
-          <table class="admin-table">
-            <thead><tr><th>${esc(T("texts.field_language"))}</th><th>${esc(T("admin.snippet_field"))}</th><th>${esc(T("admin.snippet_text"))}</th><th></th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      </div>`;
+      <h2>${esc(T("admin.sections_configs_heading"))}</h2>
+      <div class="snippet-list">${tiles}</div>`;
     bindLanguagesTab();
   }
 
@@ -701,6 +688,10 @@
         e.preventDefault();
         editingSnippet = a.dataset.editSnippet;
         renderLanguagesTab();
+        // The form is above the list: bring it into view and put the cursor in
+        // the text, so it is clear which snippet is being edited.
+        document.getElementById("snippetForm").scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById("snippet-text").focus({ preventScroll: true });
       });
     });
     tab.querySelectorAll("[data-delete-snippet]").forEach((btn) => {

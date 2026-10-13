@@ -29,3 +29,8 @@ pf-card .meta {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+/* A card with an item link opens it on a click anywhere (component.js). */
+pf-card:has([data-open]) {
+  cursor: pointer;
+}

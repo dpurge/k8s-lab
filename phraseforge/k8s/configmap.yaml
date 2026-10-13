@@ -38,9 +38,9 @@ data:
       prompt: |
         You write the transcription of the source text in Latin script, the way language handbooks do.
 
-        - Use the standard scholarly transliteration of the source language: DIN 31635 for Arabic and Persian, Pinyin with tone marks for Mandarin, Hepburn for Japanese, SBL for Hebrew, YIVO for Yiddish, and the usual system for any other script.
-        - Transcribe the way the text is spoken, word by word: supply the vowels even when the text is written without them.
-        - Keep every diacritic and special letter of the system (ā ī ū ḥ ṭ ṣ š ǧ ḫ ʿ ʾ, tone marks, macrons); never replace them with plain letters.
+        - Follow the transcription rules below: they name the system for the language of the text.
+        - Transcribe the way the text is spoken, word by word.
+        - Keep every diacritic and special letter the rules require (tone marks, macrons, dots); never replace them with plain letters.
         - Capitalize as in normal text: the first word of each sentence and proper nouns; everything else in lower case.
         - Use only Latin punctuation (, . ! ? : ; ' " ( )), never the punctuation of the source script.
         - Preserve the line breaks and structure. Do not translate, explain or comment.
@@ -50,7 +50,7 @@ data:
 
         Example 1 (Arabic).
         Input: كتب الطالب الدرس في المدرسة.
-        Output: Kataba ṭ-ṭālib ad-dars fī l-madrasa.
+        Output: Kataba ṭ-ṭālib ad-dars fi-l-madrasa.
 
         Example 2 (Japanese).
         Input: 私は毎日学校に行きます。
@@ -161,7 +161,7 @@ data:
 
         - phrase: the dictionary form, never the inflected form found in the text. Nouns in the singular, verbs in the infinitive (Arabic: 3rd person masculine singular perfect; Latin: 1st person singular present), adjectives in the masculine singular. Keep the original script and spelling, with the vowel signs and accents a dictionary gives. Prefer single words; add a short fixed phrase only when its meaning needs it. Skip names, numbers and very common words.
         - {grammar}: the part of speech N, V, Adj, Adv, Pron, Prep, Conj, Num, Part or Phrase, then the tags the language uses (for example N m, N f, V sep). Leave it out if unsure.
-        - [transcription]: only for a language written in a script other than Latin, Cyrillic and Greek (for example Arabic, Persian, Hebrew, Yiddish, Mandarin, Japanese): the word in Latin script, in the standard scholarly transliteration, with every diacritic, as it is pronounced. Never leave it out for such a language.
+        - [transcription]: only when transcription rules are given below: the word in Latin script, following those rules, as it is pronounced. Never leave it out then.
         - usage after |: a short phrase copied from the text, in its original language and spelling, that shows the word as it is used there: a noun phrase, a verb with its object, or a subject with an intransitive verb. At most 80 characters, never a whole sentence, never translated, never made up: cut the sentence down around the word instead of rewriting it. Leave it out if the text has no short phrase for the word.
         Each of {grammar}, [transcription] and | usage is left out entirely, without empty brackets, when it does not apply.
 
@@ -199,7 +199,7 @@ data:
         - Choose 3 to 8 phrases, no more, and only the ones worth learning. Skip simple sentences and single words.
         - Order them from the simplest to the most complicated: each phrase a little longer or more involved than the one before it; where it helps, build a phrase up from the previous one.
         - Use the wording of the text. A part the learner can replace is written as "...".
-        - [transcription]: only for a language written in a script other than Latin, Cyrillic and Greek (for example Arabic, Persian, Hebrew, Yiddish, Mandarin, Japanese): the phrase in Latin script, in the standard scholarly transliteration, with every diacritic, as it is pronounced, capitalized only as a normal sentence is. Never leave it out for such a language.
+        - [transcription]: only when transcription rules are given below: the phrase in Latin script, following those rules, as it is pronounced, capitalized only as a normal sentence is. Never leave it out then.
         - translation after =: into Polish, short and natural, with "; " between alternatives (never "/") and no parentheses.
         Each of [transcription] and = translation is left out entirely, without empty brackets, when it does not apply.
 
@@ -215,9 +215,9 @@ data:
         Example 2.
         Input: لن تكون هذه النهاية، مهما اشتدت الصعوبات. سأواصل النضال من أجل تحقيق أحلامي.
         Output:
-        لَنْ تَكُونَ هَذِهِ النِّهَايَةَ [lan takūna hāḏihi n-nihāya] = to nie będzie koniec
-        سَأُوَاصِلُ النِّضَالَ [saʾuwāṣilu n-niḍāl] = będę kontynuować walkę
-        سَأُوَاصِلُ النِّضَالَ مِنْ أَجْلِ تَحْقِيقِ أَحْلَامِي [saʾuwāṣilu n-niḍāla min aǧli taḥqīqi aḥlāmī] = będę kontynuować walkę o realizację moich marzeń
+        لَنْ تَكُونَ هَذِهِ النِّهَايَةَ [lan takūna hāḏihi-n-nihāya] = to nie będzie koniec
+        سَأُوَاصِلُ النِّضَالَ [saʾuwāṣilu-n-niḍāl] = będę kontynuować walkę
+        سَأُوَاصِلُ النِّضَالَ مِنْ أَجْلِ تَحْقِيقِ أَحْلَامِي [saʾuwāṣilu-n-niḍāl min aǧl taḥqīq aḥlāmī] = będę kontynuować walkę o realizację moich marzeń
     # One structured (JSON) call per vocabulary/models item per site
     # locale. Templates use the prompt-eval placeholders {{sourceLanguage}},
     # {{targetLanguage}}, {{phrase}}, {{grammarPrompt}},
@@ -305,7 +305,7 @@ data:
         {"phrase": "Viele Menschen sind mit ... unzufrieden.", "transcription": null, "translation": "Wielu ludzi jest niezadowolonych z ..."}
 
         Example 2. Translate from Standard Arabic to English: لَنْ تَكُونَ هَذِهِ النِّهَايَةَ
-        {"phrase": "لَنْ تَكُونَ هَذِهِ النِّهَايَةَ", "transcription": "lan takūna hāḏihi n-nihāya", "translation": "this will not be the end"}
+        {"phrase": "لَنْ تَكُونَ هَذِهِ النِّهَايَةَ", "transcription": "lan takūna hāḏihi-n-nihāya", "translation": "this will not be the end"}
 
         Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
     checkVocabulary:

@@ -204,6 +204,10 @@ func (s *Server) Router() http.Handler {
 			r.Post("/vocabulary/{id}/items", s.apiAddVocabItem)
 			r.Put("/vocabulary/{id}/items/{position}", s.apiUpdateVocabItem)
 			r.Delete("/vocabulary/{id}/items/{position}", s.apiDeleteVocabItem)
+			// phraseforge-vocabulary-hide-items: a personal preference, so
+			// CanView is enough, not CanEdit.
+			r.Put("/vocabulary/{id}/items/{position}/hidden", s.apiHideVocabItem)
+			r.Delete("/vocabulary/{id}/items/{position}/hidden", s.apiUnhideVocabItem)
 			// background-generate-title-transcription-translation: same
 			// requireAuth/CanEdit authorization as add/update above.
 			r.Post("/vocabulary/{id}/items/{position}/generate-transcription", s.apiGenerateVocabItemTranscription)

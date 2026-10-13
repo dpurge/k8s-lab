@@ -26,7 +26,7 @@ func sampleAdminConfig() adminConfigExport {
 	for _, kind := range ai.ValidKinds {
 		prompts = append(prompts, ai.Prompt{
 			Kind: kind, SourceLanguage: "cmn", TargetLanguage: kind, Provider: "ollama",
-			Model: "gemma4:12b", Prompt: "Prompt for " + kind + "\n\n{{grammarPrompt}}\n\n{{transcriptionPrompt}}\n",
+			Model: "gemma4:12b",
 		})
 	}
 	prompts[0].TimeoutSeconds = &timeout
@@ -96,13 +96,13 @@ func importRequest(t *testing.T, body string) *http.Request {
 func TestImportAdminConfigRejectsBadFilesBeforeTouchingTheDatabase(t *testing.T) {
 	s := testAdminServer(nil)
 	cases := map[string]string{
-		"not JSON":             `nope`,
-		"unsupported version":  `{"version":2}`,
-		"unknown kind":         `{"version":1,"llm_prompts":[{"kind":"tag","source_language":"cmn","target_language":"x","provider":"ollama","prompt":"p"}]}`,
-		"unknown provider":     `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","provider":"nowhere","prompt":"p"}]}`,
-		"blank prompt":         `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","provider":"ollama","prompt":" "}]}`,
-		"blank section lang":   `{"version":1,"language_sections":[{"language":" ","grammar_prompt":"g"}]}`,
-		"IME without language": `{"version":1,"ime_configs":[{"script":"Hans"}]}`,
+		"not JSON":              `nope`,
+		"unsupported version":   `{"version":2}`,
+		"unknown kind":          `{"version":1,"llm_prompts":[{"kind":"tag","source_language":"cmn","target_language":"x","provider":"ollama","prompt":"p"}]}`,
+		"unknown provider":      `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","provider":"nowhere","prompt":"p"}]}`,
+		"blank source language": `{"version":1,"llm_prompts":[{"kind":"title","source_language":" ","target_language":"title","provider":"ollama"}]}`,
+		"blank section lang":    `{"version":1,"language_sections":[{"language":" ","grammar_prompt":"g"}]}`,
+		"IME without language":  `{"version":1,"ime_configs":[{"script":"Hans"}]}`,
 	}
 	for name, body := range cases {
 		rec := httptest.NewRecorder()

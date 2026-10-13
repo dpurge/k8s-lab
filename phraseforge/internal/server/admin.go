@@ -36,9 +36,9 @@ var adminAppI18nKeys = []string{
 	"admin.llm_source_language", "admin.llm_target_language", "admin.llm_target_not_applicable",
 	"admin.llm_provider", "admin.llm_model", "admin.llm_model_placeholder", "admin.llm_model_default",
 	"admin.llm_think", "admin.llm_timeout_seconds", "admin.llm_timeout_default", "admin.llm_timeout_placeholder",
-	"admin.llm_prompt", "admin.llm_prompt_placeholder", "admin.llm_save",
+	"admin.llm_prompt", "admin.llm_save",
 	"admin.llm_configs_heading", "admin.llm_delete_confirm", "admin.llm_no_configs",
-	"admin.sections_heading", "admin.sections_hint", "admin.sections_grammar", "admin.sections_transcription",
+	"admin.sections_heading", "admin.sections_hint", "admin.sections_grammar", "admin.sections_transcription", "admin.sections_dictionary",
 	"admin.sections_save", "admin.sections_configs_heading", "admin.sections_delete_confirm", "admin.sections_no_configs",
 	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_languages", "admin.tab_config",
 	"admin.snippet_field", "admin.snippet_text", "admin.llm_placeholders_hint",
@@ -247,7 +247,6 @@ type apiAdminLLMPromptRequest struct {
 	Provider       string `json:"provider"`
 	Model          string `json:"model"`
 	Think          bool   `json:"think"`
-	Prompt         string `json:"prompt"`
 	// TimeoutSeconds nil means "inherit the purpose default" — see
 	// ai.Prompt.TimeoutSeconds's own doc comment.
 	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
@@ -271,11 +270,11 @@ func (s *Server) apiSetAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	p := ai.Prompt{
 		Kind: req.Kind, SourceLanguage: req.SourceLanguage, TargetLanguage: req.TargetLanguage,
-		Provider: req.Provider, Model: req.Model, Think: req.Think, Prompt: req.Prompt,
+		Provider: req.Provider, Model: req.Model, Think: req.Think,
 		TimeoutSeconds: req.TimeoutSeconds,
 	}
-	if p.Kind == "" || p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
-		writeErr(w, http.StatusBadRequest, "validation_error", "kind, source language, target language, and prompt are required")
+	if p.Kind == "" || p.SourceLanguage == "" || p.TargetLanguage == "" {
+		writeErr(w, http.StatusBadRequest, "validation_error", "kind, source language, and target language are required")
 		return
 	}
 	if !ai.IsValidKind(p.Kind) {
@@ -432,8 +431,8 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM prompt kind must be one of "+strings.Join(ai.ValidKinds, ", "))
 			return
 		}
-		if p.SourceLanguage == "" || p.TargetLanguage == "" || strings.TrimSpace(p.Prompt) == "" {
-			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM prompt requires source_language, target_language, and prompt")
+		if strings.TrimSpace(p.SourceLanguage) == "" || strings.TrimSpace(p.TargetLanguage) == "" {
+			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM setting requires source_language and target_language")
 			return
 		}
 		if !slices.Contains(s.ai.Providers(), p.Provider) {
@@ -490,7 +489,7 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, p := range cfg.LLMPrompts {
-		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, provider, model, think, prompt, timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.Kind, p.SourceLanguage, p.TargetLanguage, p.Provider, strings.TrimSpace(p.Model), p.Think, p.Prompt, p.TimeoutSeconds); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, provider, model, think, timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7)`, p.Kind, p.SourceLanguage, p.TargetLanguage, p.Provider, strings.TrimSpace(p.Model), p.Think, p.TimeoutSeconds); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}

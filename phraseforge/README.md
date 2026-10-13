@@ -29,7 +29,7 @@ the migration Job and the database alone.
 
 ## LLM configuration
 
-LLM configuration is file-based with per-purpose (transcription/translation) defaults, and per-prompt admin overrides:
+LLM configuration is file-based with per-purpose (transcription/translation) defaults, and per-kind admin overrides of provider, model, think and timeout:
 
 **Configuration file:** mounted at `CONFIG_FILE` (default `/etc/phraseforge/config.yaml`), containing:
 - `providers.ollama.baseURL` and `providers.openrouter.baseURL` — provider connection URLs.
@@ -48,11 +48,11 @@ LLM configuration is file-based with per-purpose (transcription/translation) def
 - `OLLAMA_API_KEY` — Ollama API key (empty for local Ollama, which needs no auth).
 - `OPENROUTER_API_KEY` — OpenRouter API key.
 
-**Admin overrides:** in the admin panel's LLM tab, admins can set provider, model, and think (enable/disable thinking) per prompt, overriding the purpose defaults for that specific (kind, source_language, target_language) combination. A newly saved row inherits the purpose default.
+**Admin overrides:** in the admin panel's LLM tab, admins can set provider, model, and think (enable/disable thinking) (and timeout) per kind, overriding the purpose defaults for that specific (kind, source_language, target_language) combination. A newly saved row inherits the purpose default. The prompt text is never stored per row: it is the purpose default, shown read-only in the LLM tab, and a language's rules come from Admin > Languages.
 
 **Default prompts:** every purpose's default prompt is a file of prompt-eval's `prompt/phraseforge/default/system/` (`generate-title.txt`, `generate-vocabulary.txt`, ...), embedded in the binary from `internal/config/prompts/default/`. prompt-eval is the source of truth: `npm run sync-prompts` there copies the files into this repository and `npm run check-sync` fails when the copy differs. A prompt in `config.yaml` replaces the embedded default for its purpose, and an admin row replaces both. In Admin > LLM a new prompt starts from the default for its kind, with its placeholders visible, and the form lists the placeholders available for that kind. The admin kind names match the file names ("Generate title" is `generate-title.txt`).
 
-**Language snippets:** Admin > Languages holds, per language, a grammar-tag snippet, a transcription snippet and a dictionary-form snippet, one table row each. A snippet is defined once and inserted wherever a prompt contains its placeholder: `{{grammarPrompt}}` (grammar-tag conventions) `{{transcriptionPrompt}}` (transcription system) and `{{dictionaryPrompt}}` (the dictionary form of the phrases, used by the review prompt and any prompt that contains it) in the vocabulary/models item prompts and in the generate transcription, generate vocabulary and generate models prompts. A language without a snippet gets nothing, except that a language whose IME config needs transcription gets "Transcribe using the standard romanization for this language.". Grammar and transcription are only generated for an item whose language has the matching snippet. A prompt stored in `config.yaml` or as an admin row only uses a snippet if it contains the placeholder. Snippets are part of the admin configuration export/import.
+**Language snippets:** Admin > Languages holds, per language, a grammar-tag snippet, a transcription snippet and a dictionary-form snippet, one tile each. A snippet is defined once and inserted wherever a prompt contains its placeholder: `{{grammarPrompt}}` (grammar-tag conventions) `{{transcriptionPrompt}}` (transcription system) and `{{dictionaryPrompt}}` (the dictionary form of the phrases, used by the review prompt and any prompt that contains it) in the vocabulary/models item prompts and in the generate transcription, generate vocabulary and generate models prompts. A language without a snippet gets nothing, except that a language whose IME config needs transcription gets "Transcribe using the standard romanization for this language.". Grammar and transcription are only generated for an item whose language has the matching snippet. A prompt in `config.yaml` only uses a snippet if it contains the placeholder. Snippets are part of the admin configuration export/import.
 
 **Example config.yaml:**
 ```yaml

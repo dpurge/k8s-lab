@@ -102,3 +102,7 @@
 2026-10-12T17:39:59Z [domain] phraseforge check_vocabulary returns needsSense; phrases with translations get an item job per locale that may append a sense (payload flag); no cap.
 2026-10-12T17:39:59Z [gotcha] gemma4:12b puts a new sense into the reply's translation, not newSense; ai.senseFromTranslation recovers it only if the reply keeps every existing sense.
 2026-10-12T17:39:59Z [gotcha] In prompt-eval, promptfoo fills placeholders from test vars of the same name; referenceTranslation is the reference answer, translation is the existing translation.
+2026-10-13T16:36:57Z [domain] phraseforge llm_prompts rows hold only provider, model, think and timeout; the prompt text is the purpose default, and language rules live only in language_llm_sections.
+2026-10-13T16:36:57Z [domain] phraseforge hidden vocabulary words are per user and per phrase (vocabulary_hidden_phrases); only the detail API and Copy markdown honor it, other Items callers see all.
+2026-10-13T16:36:57Z [gotcha] phraseforge vocabulary item positions are 0-based; a handler test that hides position 1 hides the second item.
+2026-10-13T16:36:57Z [gotcha] phraseforge admin-app.js passes some i18n keys as label: "..." and calls T() later; a key missing from adminAppI18nKeys (server/admin.go) shows raw.

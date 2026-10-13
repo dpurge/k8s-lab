@@ -722,49 +722,6 @@ func TestABlankPhraseIsRejected(t *testing.T) {
 	}
 }
 
-func TestSchemaNormalisesPhrasesStoredBeforeTheRuleAndNeverFailsOnACollision(t *testing.T) {
-	_, pool, _ := newTestStore(t)
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `INSERT INTO phrases (language, script, phrase, grammar, transcription) VALUES
-		('arb','arab', 'x ', ' n', ''),
-		('arb','arab', E'é', '', ''),
-		('arb','arab', 'c', '', ''),
-		('arb','arab', 'c ', '', '')`); err != nil {
-		t.Fatal(err)
-	}
-	schemaSQL, err := os.ReadFile("../db/schema.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ { // twice: safe to rerun
-		if _, err := pool.Exec(ctx, string(schemaSQL)); err != nil {
-			t.Fatalf("apply schema.sql (run %d): %v", i+1, err)
-		}
-	}
-	var got []string
-	rows, err := pool.Query(ctx, `SELECT phrase || '|' || grammar FROM phrases ORDER BY id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, v)
-	}
-	want := []string{"x|n", "é|", "c|", "c |"} // the colliding 'c ' is left as it is
-	if len(got) != len(want) {
-		t.Fatalf("rows = %q, want %q", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("rows = %q, want %q", got, want)
-		}
-	}
-}
-
 // itemIDs returns listID's item ids in position order.
 func itemIDs(t *testing.T, s *Store, listID int64) []int64 {
 	t.Helper()

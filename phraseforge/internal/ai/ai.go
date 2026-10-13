@@ -112,7 +112,10 @@ type Prompt struct {
 	Provider       string `json:"provider"`
 	Model          string `json:"model"`
 	Think          bool   `json:"think"`
-	Prompt         string `json:"prompt"`
+	// Prompt is the system prompt in effect for the kind. It is never stored
+	// per row: language rules live only in language_llm_sections, the text only
+	// in the purpose default.
+	Prompt string `json:"-"`
 	// TimeoutSeconds is nil when this row has no override (the default for
 	// every pre-existing row) — "inherit the purpose default", not "no
 	// timeout". See resolveTimeoutSeconds.
@@ -222,7 +225,7 @@ func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, tran
 }
 
 func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
-	rows, err := s.db.Query(ctx, `SELECT kind, source_language, target_language, coalesce(provider, ''), coalesce(model, ''), think, prompt, timeout_seconds FROM llm_prompts ORDER BY kind, source_language, target_language`)
+	rows, err := s.db.Query(ctx, `SELECT kind, source_language, target_language, coalesce(provider, ''), coalesce(model, ''), think, timeout_seconds FROM llm_prompts ORDER BY kind, source_language, target_language`)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +233,7 @@ func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
 	var out []Prompt
 	for rows.Next() {
 		var p Prompt
-		if err := rows.Scan(&p.Kind, &p.SourceLanguage, &p.TargetLanguage, &p.Provider, &p.Model, &p.Think, &p.Prompt, &p.TimeoutSeconds); err != nil {
+		if err := rows.Scan(&p.Kind, &p.SourceLanguage, &p.TargetLanguage, &p.Provider, &p.Model, &p.Think, &p.TimeoutSeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -238,7 +241,7 @@ func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
 	return out, rows.Err()
 }
 func (s *Service) SetPrompt(ctx context.Context, p Prompt) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO llm_prompts(kind,source_language,target_language,provider,model,think,prompt,timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(kind,source_language,target_language) DO UPDATE SET provider=excluded.provider, model=excluded.model, think=excluded.think, prompt=excluded.prompt, timeout_seconds=excluded.timeout_seconds, updated_at=now()`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Provider), strings.TrimSpace(p.Model), p.Think, p.Prompt, p.TimeoutSeconds)
+	_, err := s.db.Exec(ctx, `INSERT INTO llm_prompts(kind,source_language,target_language,provider,model,think,timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(kind,source_language,target_language) DO UPDATE SET provider=excluded.provider, model=excluded.model, think=excluded.think, timeout_seconds=excluded.timeout_seconds, updated_at=now()`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Provider), strings.TrimSpace(p.Model), p.Think, p.TimeoutSeconds)
 	return err
 }
 
@@ -287,9 +290,8 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 	p := Prompt{Kind: kind, SourceLanguage: source, TargetLanguage: target, Provider: def.Provider, Model: def.Model, Think: def.Think}
 	var provider, model string
 	var think bool
-	var promptText string
 	var timeoutSeconds *int
-	err := s.db.QueryRow(ctx, `SELECT coalesce(provider, ''), coalesce(model, ''), think, prompt, timeout_seconds FROM llm_prompts WHERE kind=$1 AND source_language=$2 AND target_language=$3`, kind, source, target).Scan(&provider, &model, &think, &promptText, &timeoutSeconds)
+	err := s.db.QueryRow(ctx, `SELECT coalesce(provider, ''), coalesce(model, ''), think, timeout_seconds FROM llm_prompts WHERE kind=$1 AND source_language=$2 AND target_language=$3`, kind, source, target).Scan(&provider, &model, &think, &timeoutSeconds)
 	switch {
 	case err == nil:
 		if strings.TrimSpace(provider) != "" {
@@ -299,7 +301,6 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 			p.Model = model
 		}
 		p.Think = think
-		p.Prompt = promptText
 		p.TimeoutSeconds = timeoutSeconds
 	case errors.Is(err, pgx.ErrNoRows):
 		// No admin-configured override for this (kind, source, target) —
@@ -310,12 +311,10 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 		// Generate() doesn't hard-fail on a transient DB problem.
 		log.Printf("ai: lookup llm_prompts override for kind=%s source=%s target=%s: %v", kind, source, target, err)
 	}
-	// def.Prompt (config.yaml, previously a hardcoded switch here — see
-	// llm-purpose-timeout-and-prompt-config) is the fallback whenever no
-	// admin override supplied a non-blank prompt of its own.
-	if strings.TrimSpace(p.Prompt) == "" {
-		p.Prompt = def.Prompt
-	}
+	// The prompt text always comes from the purpose default: a row overrides
+	// only provider, model, think and timeout, so language rules have one home
+	// (language_llm_sections).
+	p.Prompt = def.Prompt
 	return p
 }
 

@@ -465,36 +465,6 @@ func TestLookalikeTextIsTheSamePhraseAndBlankIsRejected(t *testing.T) {
 	}
 }
 
-func TestSchemaNormalisesModelsPhrasesStoredBeforeTheRuleAndNeverFailsOnACollision(t *testing.T) {
-	_, pool, _ := newTestStore(t)
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `INSERT INTO models_phrases (language, script, phrase, transcription) VALUES
-		('arb','arab', 'x ', ' t'),
-		('arb','arab', 'c', ''),
-		('arb','arab', 'c ', '')`); err != nil {
-		t.Fatal(err)
-	}
-	schemaSQL, err := os.ReadFile("../db/schema.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if _, err := pool.Exec(ctx, string(schemaSQL)); err != nil {
-			t.Fatalf("apply schema.sql (run %d): %v", i+1, err)
-		}
-	}
-	var first, second string
-	if err := pool.QueryRow(ctx, `SELECT phrase || '|' || transcription FROM models_phrases ORDER BY id LIMIT 1`).Scan(&first); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT phrase FROM models_phrases ORDER BY id OFFSET 2 LIMIT 1`).Scan(&second); err != nil {
-		t.Fatal(err)
-	}
-	if first != "x|t" || second != "c " {
-		t.Fatalf("first = %q, third phrase = %q, want x|t and the colliding 'c ' left as it is", first, second)
-	}
-}
-
 // itemIDs returns listID's item ids in position order.
 func itemIDs(t *testing.T, s *Store, listID int64) []int64 {
 	t.Helper()

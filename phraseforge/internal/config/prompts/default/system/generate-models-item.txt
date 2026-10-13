@@ -15,6 +15,6 @@ Example 1. Translate from German to Polish: Viele Menschen sind mit ... unzufrie
 {"phrase": "Viele Menschen sind mit ... unzufrieden.", "transcription": null, "translation": "Wielu ludzi jest niezadowolonych z ..."}
 
 Example 2. Translate from Standard Arabic to English: لَنْ تَكُونَ هَذِهِ النِّهَايَةَ
-{"phrase": "لَنْ تَكُونَ هَذِهِ النِّهَايَةَ", "transcription": "lan takūna hāḏihi n-nihāya", "translation": "this will not be the end"}
+{"phrase": "لَنْ تَكُونَ هَذِهِ النِّهَايَةَ", "transcription": "lan takūna hāḏihi-n-nihāya", "translation": "this will not be the end"}
 
 Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}

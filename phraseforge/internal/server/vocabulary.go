@@ -39,7 +39,7 @@ var vocabularyAppI18nKeys = []string{
 	"vocabulary.generate_missing_translations", "vocabulary.generate_missing_translations_started",
 	"vocabulary.generate_missing_translations_none",
 	"texts.pagination_previous", "texts.pagination_next",
-	"vocabulary.review", "vocabulary.review_started", "vocabulary.review_none", "vocabulary.review_col", "vocabulary.review_pending", "vocabulary.review_open", "vocabulary.review_reviewed", "vocabulary.review_stale", "vocabulary.review_stale_warning", "vocabulary.review_again", "vocabulary.review_current", "vocabulary.review_suggested", "vocabulary.review_remove", "vocabulary.review_apply", "vocabulary.review_dismiss", "vocabulary.review_apply_all", "vocabulary.review_dismiss_all", "vocabulary.review_close", "vocabulary.review_none_open", "vocabulary.review_applied", "vocabulary.review_dismissed", "vocabulary.review_conflict", "vocabulary.review_remark", "vocabulary.review_nothing", "vocabulary.review_reviewed_at", "vocabulary.review_field_example", "vocabulary.review_title",
+	"vocabulary.review", "vocabulary.hide", "vocabulary.unhide", "vocabulary.show_hidden", "vocabulary.hide_hidden", "vocabulary.review_started", "vocabulary.review_none", "vocabulary.review_pending", "vocabulary.review_open", "vocabulary.review_reviewed", "vocabulary.review_stale", "vocabulary.review_stale_warning", "vocabulary.review_again", "vocabulary.review_current", "vocabulary.review_suggested", "vocabulary.review_remove", "vocabulary.review_apply", "vocabulary.review_dismiss", "vocabulary.review_apply_all", "vocabulary.review_dismiss_all", "vocabulary.review_close", "vocabulary.review_none_open", "vocabulary.review_applied", "vocabulary.review_dismissed", "vocabulary.review_conflict", "vocabulary.review_remark", "vocabulary.review_nothing", "vocabulary.review_reviewed_at", "vocabulary.review_field_example", "vocabulary.review_title",
 }
 
 func vocabularyAppI18n(loc string) map[string]string {
@@ -71,6 +71,9 @@ type apiVocabItem struct {
 	Notes         string `json:"notes"`
 	// Examples is the phrase's short usage examples, [] when it has none.
 	Examples []string `json:"examples"`
+	// Hidden is true when the current user hid this item's phrase; the item is
+	// still listed so the client can offer Unhide.
+	Hidden bool `json:"hidden"`
 }
 
 // apiVocabDetail serves both the client's View and Manage states — Manage
@@ -256,18 +259,29 @@ func (s *Server) apiGetVocabList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	rows := make([]vocabViewRow, len(items))
+	phraseIDs := make([]int64, len(items))
+	for i, it := range items {
+		phraseIDs[i] = it.PhraseID
+	}
+	hidden, err := s.vocab.HiddenPhraseIDs(r.Context(), u.ID, phraseIDs)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	var rows []vocabViewRow // visible items only: what Copy puts on the clipboard
 	apiItems := make([]apiVocabItem, len(items))
 	for i, it := range items {
 		t := trans[it.Position]
-		rows[i] = vocabViewRow{Item: it, Translation: t.Translation, Notes: t.Notes}
+		if !hidden[it.PhraseID] {
+			rows = append(rows, vocabViewRow{Item: it, Translation: t.Translation, Notes: t.Notes})
+		}
 		examples := it.Examples
 		if examples == nil {
 			examples = []string{}
 		}
 		apiItems[i] = apiVocabItem{
 			Position: it.Position, Phrase: it.Phrase, Grammar: it.Grammar, Transcription: it.Transcription,
-			Translation: t.Translation, Notes: t.Notes, Examples: examples,
+			Translation: t.Translation, Notes: t.Notes, Examples: examples, Hidden: hidden[it.PhraseID],
 		}
 	}
 	writeJSON(w, http.StatusOK, apiVocabDetail{

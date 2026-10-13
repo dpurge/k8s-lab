@@ -119,6 +119,8 @@ func newVocabAPI(t *testing.T) *vocabAPI {
 	r.Get("/api/v1/vocabulary/{id}", f.srv.apiGetVocabList)
 	r.Post("/api/v1/vocabulary/{id}/items", f.srv.apiAddVocabItem)
 	r.Put("/api/v1/vocabulary/{id}/items/{position}", f.srv.apiUpdateVocabItem)
+	r.Put("/api/v1/vocabulary/{id}/items/{position}/hidden", f.srv.apiHideVocabItem)
+	r.Delete("/api/v1/vocabulary/{id}/items/{position}/hidden", f.srv.apiUnhideVocabItem)
 	r.Post("/api/v1/vocabulary/{id}/review", f.srv.apiReviewVocabList)
 	r.Get("/api/v1/vocabulary/{id}/reviews", f.srv.apiListVocabReviews)
 	r.Post("/api/v1/vocabulary/{id}/items/{position}/review", f.srv.apiReviewVocabItem)

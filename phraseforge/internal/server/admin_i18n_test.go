@@ -8,8 +8,9 @@ import (
 	"phraseforge/internal/i18n"
 )
 
-// adminKeyUse matches a literal translation key passed to T() in admin-app.js.
-var adminKeyUse = regexp.MustCompile(`\bT\("([^"]+)"\)`)
+// adminKeyUse matches a literal translation key passed to T() in admin-app.js,
+// or stored as a label: "..." that is passed to T() later (the snippet fields).
+var adminKeyUse = regexp.MustCompile(`\bT\("([^"]+)"\)|\blabel: "([a-z]+\.[a-z0-9_]+)"`)
 
 // TestEveryAdminAppKeyIsServedAndTranslated: the admin page only receives the
 // keys listed in adminAppI18nKeys, so a key used in admin-app.js but missing
@@ -26,6 +27,9 @@ func TestEveryAdminAppKeyIsServedAndTranslated(t *testing.T) {
 	}
 	for _, use := range uses {
 		key := use[1]
+		if key == "" {
+			key = use[2]
+		}
 		if !slices.Contains(adminAppI18nKeys, key) {
 			t.Errorf("admin-app.js uses %s, missing from adminAppI18nKeys", key)
 		}

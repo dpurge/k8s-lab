@@ -324,7 +324,8 @@
         </div>
       </div>
       <textarea id="copy-vocabulary-markdown" class="copy-source" readonly>${esc(list.markdown)}</textarea>
-      ${renderItemsTable(list, false, list.canEdit)}
+      ${renderItemsTable(list, false, true)}
+      <div id="hiddenToggle" class="vocab-hidden-toggle"></div>
     `;
     document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
@@ -341,6 +342,7 @@
         }
       });
     }
+    wireHide(id, list);
     if (list.canEdit) wireReview(id, list);
     const editBtn = document.getElementById("editBtn");
     if (editBtn) editBtn.addEventListener("click", () => showManage(id, null));
@@ -378,26 +380,31 @@
     return `<div class="vocab-examples" dir="${esc(list.scriptDirection)}">${lines}</div>`;
   }
 
-  // withReview adds the editors' Review column (filled in by wireReview).
-  function renderItemsTable(list, withControls, withReview) {
+  // withActions adds the View page's Actions column: Hide for everyone (filled
+  // in by wireHide) and, for editors, the review controls (wireReview).
+  function renderItemsTable(list, withControls, withActions) {
     if (!list.items || list.items.length === 0) {
       return `<p class="empty-state" style="margin-top:1.5rem;">${esc(T("vocabulary.empty"))}</p>`;
     }
     const rows = list.items
       .map(
         (it) => `
-      <tr>
+      <tr${it.hidden ? ' class="vocab-hidden"' : ""}>
         <td class="${list.scriptEnlarged ? "prose-enlarged" : ""}" dir="${esc(list.scriptDirection)}" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.phrase)}</td>
         <td style="border-bottom:1px solid var(--border); padding:0.5rem; color:var(--muted);">${esc(it.grammar)}</td>
         <td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.transcription)}</td>
         <td style="border-bottom:1px solid var(--border); padding:0.5rem;">${it.translation ? esc(it.translation) : "—"}</td>
         <td style="border-bottom:1px solid var(--border); padding:0.5rem; color:var(--muted);">${esc(it.notes)}${renderExamples(list, it)}</td>
-        ${withReview ? `<td class="review-cell" data-review-position="${it.position}"></td>` : ""}
+        ${
+          withActions
+            ? `<td class="actions-cell">${list.canEdit ? `<span data-review-position="${it.position}"></span>` : ""}<span data-hide-position="${it.position}"></span></td>`
+            : ""
+        }
         ${
           withControls
             ? `<td style="border-bottom:1px solid var(--border); padding:0.5rem; white-space:nowrap;">
-                <a href="#" data-edit-position="${it.position}">${esc(T("texts.edit"))}</a>
-                <button class="link-btn" type="button" data-delete-position="${it.position}" style="margin-left:0.5rem;">${esc(T("texts.delete"))}</button>
+                <pf-button data-edit-position="${it.position}">${esc(T("texts.edit"))}</pf-button>
+                <pf-button variant="danger" data-delete-position="${it.position}">${esc(T("texts.delete"))}</pf-button>
               </td>`
             : ""
         }
@@ -414,7 +421,7 @@
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_transcription"))}</th>
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_translation"))}</th>
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_notes"))}</th>
-            ${withReview ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.review_col"))}</th>` : ""}
+            ${withActions ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_actions"))}</th>` : ""}
             ${withControls ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_actions"))}</th>` : ""}
           </tr>
         </thead>
@@ -454,7 +461,48 @@
     return b;
   }
 
-  // wireReview wires the View page's Review button and the Review column.
+  // wireHide fills the Actions column's Hide / Unhide buttons and the "Show
+  // hidden (N)" toggle under the table. Hidden rows stay in the table (the
+  // server lists them with hidden: true) and are only displayed while the toggle
+  // is on, so Hide and Unhide need no reload.
+  function wireHide(id, list) {
+    const table = root.querySelector(".vocab-items-table");
+    const toggleSlot = document.getElementById("hiddenToggle");
+    if (!table || !toggleSlot) return;
+    const itemAt = (position) => list.items.find((it) => it.position === position);
+
+    function refresh() {
+      table.querySelectorAll("[data-hide-position]").forEach((slot) => {
+        const position = Number(slot.dataset.hidePosition);
+        const item = itemAt(position);
+        slot.closest("tr").classList.toggle("vocab-hidden", item.hidden);
+        slot.replaceChildren(button(T(item.hidden ? "vocabulary.unhide" : "vocabulary.hide"), "secondary", () => setHidden(position, !item.hidden)));
+      });
+      const count = list.items.filter((it) => it.hidden).length;
+      const showing = table.classList.contains("show-hidden");
+      if (count === 0) table.classList.remove("show-hidden");
+      toggleSlot.replaceChildren(
+        ...(count === 0 ? [] : [button(fmt(showing ? "vocabulary.hide_hidden" : "vocabulary.show_hidden", { n: count }), "secondary", () => {
+          table.classList.toggle("show-hidden");
+          refresh();
+        })]),
+      );
+    }
+
+    async function setHidden(position, hidden) {
+      try {
+        await apiFetch(`/api/v1/vocabulary/${id}/items/${position}/hidden`, { method: hidden ? "PUT" : "DELETE" });
+        itemAt(position).hidden = hidden;
+      } catch (e) {
+        statusBar.setMessage(e.message, true);
+      }
+      refresh();
+    }
+
+    refresh();
+  }
+
+  // wireReview wires the View page's Review button and the review controls in the Actions column.
   // The column polls while a review waits in the job queue, and stops when the
   // table it belongs to has left the page.
   function wireReview(id, list) {
@@ -479,20 +527,14 @@
       if (pending.size > 0) timer = setTimeout(refresh, 8000);
     }
 
-    function link(label, onClick) {
-      const a = el("a", { href: "#" }, label);
-      a.addEventListener("click", (e) => { e.preventDefault(); onClick(); });
-      return a;
-    }
-
     function reviewCellContent(position, review, isPending) {
       const queue = () => queueReview(`/api/v1/vocabulary/${id}/items/${position}/review`);
       if (isPending) return [el("span", { class: "meta" }, T("vocabulary.review_pending"))];
-      if (!review) return [link(T("vocabulary.review"), queue)];
+      if (!review) return [button(T("vocabulary.review"), "secondary", queue)];
       const open = () => openReviewDialog(id, position, list, refresh, showView);
       const label = review.stale ? T("vocabulary.review_stale") : review.open > 0 ? fmt("vocabulary.review_open", { n: review.open }) : T("vocabulary.review_reviewed");
-      const out = [link(label, open)];
-      if (review.stale) out.push(" ", link(T("vocabulary.review"), queue));
+      const out = [button(label, "secondary", open)];
+      if (review.stale) out.push(button(T("vocabulary.review"), "secondary", queue));
       return out;
     }
 
@@ -703,8 +745,8 @@
             <pf-button variant="primary" type="submit">${esc(T(isEdit ? "vocabulary.save_item" : "vocabulary.add_item"))}</pf-button>
             ${isEdit && !editingItem.transcription ? `<pf-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</pf-button>` : ""}
             ${isEdit && !editingItem.translation ? `<pf-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</pf-button>` : ""}
+            ${isEdit ? `<pf-button id="cancelEditLink">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
           </div>
-          ${isEdit ? `<a href="#" id="cancelEditLink" class="back-link">${esc(T("vocabulary.cancel_edit"))}</a>` : ""}
         </form>
       </div>
 
@@ -795,9 +837,12 @@
     });
 
     root.querySelectorAll("[data-edit-position]").forEach((a) => {
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        showManage(id, Number(a.dataset.editPosition));
+      a.addEventListener("click", async () => {
+        await showManage(id, Number(a.dataset.editPosition));
+        // The form is above the table: bring its heading into view and put the
+        // cursor in the phrase, so it is clear which item is being edited.
+        document.getElementById("itemForm").closest(".form-card").previousElementSibling.scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById("field-source").focus({ preventScroll: true });
       });
     });
     root.querySelectorAll("[data-delete-position]").forEach((btn) => {
