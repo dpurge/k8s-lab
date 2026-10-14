@@ -65,7 +65,7 @@ func JobKind(payloadKind string) string {
 // <select> (populated from apiAdminBootstrap, which reads this slice) must
 // all agree with — a hardcoded copy in any of those places is exactly how
 // they drifted apart before.
-var ValidKinds = []string{"translation", "transcription", "title", "process_text", "process_dialog", "generate_vocabulary", "generate_models", "vocabulary_item", "models_item", "check_vocabulary", "review_vocabulary", "review_transcription", "review_translation"}
+var ValidKinds = []string{"translation", "transcription", "title", "process_text", "process_dialog", "generate_vocabulary", "generate_models", "vocabulary_item", "models_item", "check_vocabulary", "review_vocabulary", "review_transcription", "review_translation", "review_models"}
 
 // IsValidKind reports whether kind is one of ValidKinds.
 func IsValidKind(kind string) bool {
@@ -99,6 +99,8 @@ func PromptPlaceholders(kind string) []string {
 		return []string{"sourceLanguage", "text", "transcription", "vocabulary", "transcriptionPrompt"}
 	case "review_translation":
 		return []string{"sourceLanguage", "text", "translations", "vocabulary"}
+	case "review_models":
+		return []string{"sourceLanguage", "phrase", "transcription", "translations", "transcriptionPrompt"}
 	case "review_vocabulary":
 		return []string{"sourceLanguage", "phrase", "grammar", "transcription", "examples", "translations", "dictionaryPrompt", "grammarPrompt", "transcriptionPrompt"}
 	}
@@ -203,6 +205,8 @@ type Service struct {
 	translations TranslationWriteback
 	// items backs HandleItemTranslation.
 	items ItemStore
+	// modelsReviews backs HandleReviewModelsItem (see SetModelsReviewStore).
+	modelsReviews ReviewStore
 	// reviews backs HandleReviewItem (see SetReviewStore).
 	reviews ReviewStore
 	// textReviews backs HandleReviewResource (see SetTextReviewStore).
@@ -275,9 +279,13 @@ func (s *Service) purposeDefault(kind string) config.PurposeConfig {
 	case "check_vocabulary":
 		return s.cfg.CheckVocabulary
 	case "review_vocabulary":
-		return s.reviewVocabularyDefault()
-	case "review_transcription", "review_translation":
-		return s.reviewTextDefault(kind)
+		return s.cfg.ReviewVocabulary
+	case "review_models":
+		return s.cfg.ReviewModels
+	case "review_transcription":
+		return s.cfg.ReviewTranscription
+	case "review_translation":
+		return s.cfg.ReviewTranslation
 	case "translation":
 		return s.cfg.Translation
 	default:

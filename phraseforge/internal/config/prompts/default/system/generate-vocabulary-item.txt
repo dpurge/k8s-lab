@@ -16,7 +16,9 @@ Rules:
 - notes: null, almost always. Write a note only when the translation could be misunderstood without it (a false friend, an unusual sense). Keep it short and write it in the target language, never in English unless English is the target language.
 - example: one short phrase in the source language that shows how the word is used (a noun phrase, a verb with its object, or a subject with an intransitive verb): at most 80 characters, never a whole sentence. Take it from the usage below, shortened or corrected if needed. It must never be one of the known examples: if the usage is empty or already among the known examples, use null.
 - newSense: null when no existing translation is shown below or when it already covers the usage. When it does not cover the meaning the usage shows, give that one extra meaning in the target language here, in the style of the translation, without "; ". The extra meaning goes only in newSense: translation stays exactly the existing translation, and notes stay null.
-- rewrite: null when the phrase is already a dictionary headword, or when the usage is empty. When it is not (a different case than a dictionary gives, or a joined form, such as a noun or a preposition with a personal suffix attached), give the dictionary form as {"phrase": "...", "grammar": "...", "transcription": "..."}: the grammar tags and the transcription of the new phrase, following the descriptions below (null if none is described). The other fields still describe the original phrase.
+- rewrite: null when the phrase is already in the dictionary form described below, or when the usage is empty. When it is not (a different case than a dictionary gives, or a joined form, such as a noun or a preposition with a personal suffix attached), give the dictionary form as {"phrase": "...", "grammar": "...", "transcription": "..."}: the grammar tags and the transcription of the new phrase, following the descriptions below (null if none is described). The other fields still describe the original phrase.
+
+{{dictionaryPrompt}}
 
 {{grammarPrompt}}
 

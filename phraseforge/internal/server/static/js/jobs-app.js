@@ -106,23 +106,36 @@
   // specs/features/phraseforge-hash-navigation.md.
   let currentPage = 1;
 
-  async function loadAndRender(page = currentPage) {
-    statusBar.setMessage("");
-    currentPage = page;
+  // poll keeps the list up to date through pfPoll (poll.js) while the page
+  // shows a job that is pending or running; the Refresh button and every action
+  // kick it. show() replaces it, since the section's root outlives its renders.
+  let poll = null;
+
+  // fetchAndRender loads and renders one page without touching the status bar
+  // (a poll must not wipe a message being read) and says whether a job on it is
+  // still pending or running.
+  async function fetchAndRender(page) {
     let data;
     try {
       data = await apiFetch("/api/v1/admin/jobs?page=" + page);
     } catch (e) {
       statusBar.setMessage(e.message, true);
-      return;
+      return false;
     }
     // A bookmarked page that no longer exists (jobs cleared or deleted
     // since) lands on the last page instead of an empty one.
     if (page > data.pageCount) {
       window.pfRouter.replace({ section: "jobs", page: data.pageCount });
-      return;
+      return false;
     }
     render(data.items, data.pageCount);
+    return data.items.some((j) => j.status === "pending" || j.status === "running");
+  }
+
+  async function loadAndRender(page = currentPage) {
+    statusBar.setMessage("");
+    currentPage = page;
+    await poll.kick();
   }
 
   // Each action gets its own fixed table column so a row's buttons never
@@ -301,6 +314,8 @@
   window.pfSections.jobs = {
     setBootstrap(b) { BOOT = b; },
     show(route) {
+      if (poll) poll.stop();
+      poll = window.pfPoll({ run: () => fetchAndRender(currentPage), anchor: root });
       return loadAndRender(route ? route.page : 1);
     },
   };

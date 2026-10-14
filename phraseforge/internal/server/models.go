@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"phraseforge/internal/ai"
 	"phraseforge/internal/catalog"
 	"phraseforge/internal/i18n"
+	"phraseforge/internal/jobs"
 	"phraseforge/internal/models"
 	"phraseforge/internal/pagination"
 	"phraseforge/internal/tags"
@@ -31,6 +34,9 @@ var modelsAppI18nKeys = []string{
 	"texts.import_result_imported", "texts.import_result_deleted", "texts.import_result_unchanged",
 	"texts.import_result_errors", "texts.import_errors_close", "texts.err_import_file_read",
 	"texts.generate_transcription_started", "texts.generate_translation_started",
+	"models.generate_missing_translations", "models.generate_missing_translations_started",
+	"models.generate_missing_translations_none",
+	"vocabulary.review", "vocabulary.review_started", "vocabulary.review_none", "vocabulary.review_pending", "vocabulary.review_open", "vocabulary.review_reviewed", "vocabulary.review_stale", "vocabulary.review_stale_warning", "vocabulary.review_again", "vocabulary.review_current", "vocabulary.review_suggested", "vocabulary.review_apply", "vocabulary.review_dismiss", "vocabulary.review_apply_all", "vocabulary.review_dismiss_all", "vocabulary.review_close", "vocabulary.review_none_open", "vocabulary.review_applied", "vocabulary.review_dismissed", "vocabulary.review_conflict", "vocabulary.review_remark", "vocabulary.review_nothing", "vocabulary.review_reviewed_at",
 	"texts.pagination_previous", "texts.pagination_next",
 }
 
@@ -65,16 +71,18 @@ type apiModelsItem struct {
 // needs every field View does, plus canEdit to decide whether to show the
 // edit form/table controls at all.
 type apiModelsDetail struct {
-	ID              int64           `json:"id"`
-	Title           string          `json:"title"`
-	Language        string          `json:"language"`
-	Script          string          `json:"script"`
-	Tags            []string        `json:"tags"`
-	CanEdit         bool            `json:"canEdit"`
-	ScriptDirection string          `json:"scriptDirection"`
-	ScriptEnlarged  bool            `json:"scriptEnlarged"`
-	Markdown        string          `json:"markdown"`
-	Items           []apiModelsItem `json:"items"`
+	ID              int64    `json:"id"`
+	Title           string   `json:"title"`
+	Language        string   `json:"language"`
+	Script          string   `json:"script"`
+	Tags            []string `json:"tags"`
+	CanEdit         bool     `json:"canEdit"`
+	ScriptDirection string   `json:"scriptDirection"`
+	ScriptEnlarged  bool     `json:"scriptEnlarged"`
+	// NeedsTranscription: see apiVocabDetail.
+	NeedsTranscription bool            `json:"needsTranscription"`
+	Markdown           string          `json:"markdown"`
+	Items              []apiModelsItem `json:"items"`
 }
 
 type apiModelsListRequest struct {
@@ -224,6 +232,11 @@ func (s *Server) apiGetModelsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	needsTranscription, err := s.languageHasTranscription(r.Context(), l.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	items, err := s.models.Items(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -253,8 +266,9 @@ func (s *Server) apiGetModelsList(w http.ResponseWriter, r *http.Request) {
 		ID: l.ID, Title: l.Title, Language: l.Language, Script: l.Script,
 		Tags: listTags, CanEdit: canEdit,
 		ScriptDirection: scriptMeta.Direction, ScriptEnlarged: scriptMeta.Enlarged,
-		Markdown: modelsMarkdown(l.Language, l.Script, rows),
-		Items:    apiItems,
+		NeedsTranscription: needsTranscription,
+		Markdown:           modelsMarkdown(l.Language, l.Script, rows),
+		Items:              apiItems,
 	})
 }
 
@@ -475,4 +489,69 @@ func (s *Server) apiDeleteModelsItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// apiGenerateMissingModelsTranslations queues one structured item call per item
+// still missing its translation in the caller's locale, or missing a
+// transcription the language keeps: the Models counterpart of
+// apiGenerateMissingVocabTranslations. Jobs fill only what is blank at run time,
+// so a call made redundant by an edit in the meantime changes nothing.
+func (s *Server) apiGenerateMissingModelsTranslations(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_id", err.Error())
+		return
+	}
+	l, err := s.models.Get(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "models list not found")
+		return
+	}
+	canEdit, err := s.roles.CanEdit(r.Context(), u.ID, l.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if !canEdit {
+		writeErr(w, http.StatusForbidden, "forbidden", i18n.T(u.Locale, "models.err_no_edit_language"))
+		return
+	}
+	items, err := s.models.Items(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	existing, err := s.models.Translations(r.Context(), id, u.Locale)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	sections, err := s.ai.EffectiveSections(r.Context(), l.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	callerLocale := []i18n.Locale{{Code: u.Locale}}
+	enqueued := 0
+	for _, it := range items {
+		t, ok := existing[it.Position]
+		state := ai.ItemState{
+			ResourceType: "models_item", Transcription: it.Transcription,
+			Translated: map[string]bool{u.Locale: ok && strings.TrimSpace(t.Translation) != ""},
+		}
+		itemJobs, err := s.ai.ItemJobsFor(r.Context(), state, it.ID, l.Language, "", &sections, callerLocale)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		for _, j := range itemJobs {
+			if _, err := s.jobs.Enqueue(r.Context(), j.Kind, jobs.PriorityBackground, j.Payload); err != nil {
+				writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+			enqueued++
+		}
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"enqueued": enqueued})
 }

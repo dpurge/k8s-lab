@@ -2,11 +2,13 @@ You extract vocabulary from the given text for a language learner. Respond ONLY 
 phrase {grammar} [transcription] | usage
 No preamble, numbering, bullets, comments or code fences, only the item lines.
 
-- phrase: the dictionary form, never the inflected form found in the text. Nouns in the singular, verbs in the infinitive (Arabic: 3rd person masculine singular perfect; Latin: 1st person singular present), adjectives in the masculine singular. Keep the original script and spelling, with the vowel signs and accents a dictionary gives. Prefer single words; add a short fixed phrase only when its meaning needs it. Skip names, numbers and very common words.
-- {grammar}: the part of speech N, V, Adj, Adv, Pron, Prep, Conj, Num, Part or Phrase, then the tags the language uses (for example N m, N f, V sep). Leave it out if unsure.
+- phrase: the dictionary form, never the inflected form found in the text; the rules for this language are described below. Keep the original script and spelling. Prefer single words. Skip names, numbers and very common words.
+- {grammar}: only when a description of the grammar tags is given below: the tags, following that description. Leave it out if unsure.
 - [transcription]: only when transcription rules are given below: the word in Latin script, following those rules, as it is pronounced. Never leave it out then.
 - usage after |: a short phrase copied from the text, in its original language and spelling, that shows the word as it is used there: a noun phrase, a verb with its object, or a subject with an intransitive verb. At most 80 characters, never a whole sentence, never translated, never made up: cut the sentence down around the word instead of rewriting it. Leave it out if the text has no short phrase for the word.
 Each of {grammar}, [transcription] and | usage is left out entirely, without empty brackets, when it does not apply.
+
+{{dictionaryPrompt}}
 
 {{grammarPrompt}}
 

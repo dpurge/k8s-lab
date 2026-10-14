@@ -39,11 +39,11 @@
     const row = el("div", { class: "review-row meta" });
     root.querySelector(".resource-header").after(row);
     const state = {}; // part -> { pending, review }
-    let timer = null;
 
-    async function refresh() {
-      clearTimeout(timer);
-      if (!root.contains(row)) return;
+    // load fetches each part's review state, renders the row and says whether
+    // any part still waits for its review job. pfPoll (poll.js) keeps the row up
+    // to date while one does.
+    async function load() {
       let anyPending = false;
       for (const part of PARTS.filter((p) => parts[p])) {
         try {
@@ -54,8 +54,10 @@
         anyPending = anyPending || state[part].pending;
       }
       renderRow();
-      if (anyPending) timer = setTimeout(refresh, 8000);
+      return anyPending;
     }
+    const poll = window.pfPoll({ run: load, anchor: row });
+    const refresh = () => poll.kick();
 
     function renderRow() {
       row.replaceChildren();

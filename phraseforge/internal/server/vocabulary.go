@@ -80,16 +80,19 @@ type apiVocabItem struct {
 // needs every field View does, plus canEdit to decide whether to show the
 // edit form/table controls at all.
 type apiVocabDetail struct {
-	ID              int64          `json:"id"`
-	Title           string         `json:"title"`
-	Language        string         `json:"language"`
-	Script          string         `json:"script"`
-	Tags            []string       `json:"tags"`
-	CanEdit         bool           `json:"canEdit"`
-	ScriptDirection string         `json:"scriptDirection"`
-	ScriptEnlarged  bool           `json:"scriptEnlarged"`
-	Markdown        string         `json:"markdown"`
-	Items           []apiVocabItem `json:"items"`
+	ID              int64    `json:"id"`
+	Title           string   `json:"title"`
+	Language        string   `json:"language"`
+	Script          string   `json:"script"`
+	Tags            []string `json:"tags"`
+	CanEdit         bool     `json:"canEdit"`
+	ScriptDirection string   `json:"scriptDirection"`
+	ScriptEnlarged  bool     `json:"scriptEnlarged"`
+	// NeedsTranscription is whether the list's language has transcriptions at
+	// all; the page hides the column and field when it does not.
+	NeedsTranscription bool           `json:"needsTranscription"`
+	Markdown           string         `json:"markdown"`
+	Items              []apiVocabItem `json:"items"`
 }
 
 type apiVocabListRequest struct {
@@ -244,6 +247,11 @@ func (s *Server) apiGetVocabList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	needsTranscription, err := s.languageHasTranscription(r.Context(), l.Language)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	items, err := s.vocab.Items(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -288,8 +296,9 @@ func (s *Server) apiGetVocabList(w http.ResponseWriter, r *http.Request) {
 		ID: l.ID, Title: l.Title, Language: l.Language, Script: l.Script,
 		Tags: listTags, CanEdit: canEdit,
 		ScriptDirection: scriptMeta.Direction, ScriptEnlarged: scriptMeta.Enlarged,
-		Markdown: vocabularyMarkdown(l.Language, l.Script, rows),
-		Items:    apiItems,
+		NeedsTranscription: needsTranscription,
+		Markdown:           vocabularyMarkdown(l.Language, l.Script, rows),
+		Items:              apiItems,
 	})
 }
 

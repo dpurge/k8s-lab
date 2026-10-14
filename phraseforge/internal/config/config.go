@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,13 +40,15 @@ type Config struct {
 	// vocabulary list, which need a new usage example (one call per list).
 	CheckVocabulary PurposeConfig
 	// ReviewVocabulary reviews one vocabulary item (phrase, grammar,
-	// transcription, translations, notes, examples) and proposes corrections,
-	// meant for a more capable model than the generating one. A blank Provider
-	// or Model falls back to VocabularyItem's (see ai.purposeDefault).
+	// transcription, translations, notes, examples) and proposes corrections.
 	ReviewVocabulary PurposeConfig
+	// ReviewModels reviews one models item (phrase, transcription, translations).
+	ReviewModels PurposeConfig
 	// ReviewTranscription and ReviewTranslation review the transcription and the
-	// translations of one text or dialog, each with its own model and prompt; a
-	// blank Provider or Model falls back to ReviewVocabulary's.
+	// translations of one text or dialog.
+	//
+	// Each review has its own prompt, provider and model: a stronger model for
+	// reviews is set on every review purpose, none falls back to another's.
 	ReviewTranscription PurposeConfig
 	ReviewTranslation   PurposeConfig
 
@@ -130,6 +133,7 @@ type fileConfig struct {
 	ModelsItem          purposeFileConfig `yaml:"modelsItem"`
 	CheckVocabulary     purposeFileConfig `yaml:"checkVocabulary"`
 	ReviewVocabulary    purposeFileConfig `yaml:"reviewVocabulary"`
+	ReviewModels        purposeFileConfig `yaml:"reviewModels"`
 	ReviewTranscription purposeFileConfig `yaml:"reviewTranscription"`
 	ReviewTranslation   purposeFileConfig `yaml:"reviewTranslation"`
 }
@@ -142,6 +146,25 @@ type purposeFileConfig struct {
 	TimeoutSeconds int    `yaml:"timeoutSeconds"`
 	Prompt         string `yaml:"prompt"`
 	MaxAttempts    int    `yaml:"maxAttempts"`
+}
+
+// namedPurpose is one purpose's file configuration with its key in the file.
+type namedPurpose struct {
+	name   string
+	config purposeFileConfig
+}
+
+// purposes lists every purpose the file configures, under its key in the file.
+func (f fileConfig) purposes() []namedPurpose {
+	return []namedPurpose{
+		{"transcription", f.Transcription}, {"translation", f.Translation}, {"title", f.Title},
+		{"processText", f.ProcessText}, {"processDialog", f.ProcessDialog},
+		{"generateVocabulary", f.GenerateVocabulary}, {"generateModels", f.GenerateModels},
+		{"vocabularyItem", f.VocabularyItem}, {"modelsItem", f.ModelsItem},
+		{"checkVocabulary", f.CheckVocabulary}, {"reviewVocabulary", f.ReviewVocabulary},
+		{"reviewModels", f.ReviewModels}, {"reviewTranscription", f.ReviewTranscription},
+		{"reviewTranslation", f.ReviewTranslation},
+	}
 }
 
 func defaultFileConfig() fileConfig {
@@ -160,11 +183,11 @@ func defaultFileConfig() fileConfig {
 	// copied verbatim from ai.go's former hardcoded switch so upgrading
 	// doesn't change any existing behavior.
 	f.Transcription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultTranscriptionPrompt,
 	}
 	f.Translation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultTranslationPrompt,
 	}
 	f.Title = purposeFileConfig{
@@ -189,30 +212,33 @@ func defaultFileConfig() fileConfig {
 	}
 	// NumCtx left 0 (Ollama's default) to match the prompt-eval request.
 	f.VocabularyItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultVocabularyItemPrompt,
 	}
 	f.ModelsItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultModelsItemPrompt,
 	}
 	f.CheckVocabulary = purposeFileConfig{
 		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultCheckVocabularyPrompt,
 	}
-	// Provider and Model are left blank: the review uses the vocabularyItem
-	// ones until an operator or the admin sets a more capable model.
+	// Every purpose names its own provider and model, none falls back to another's:
+	// a stronger model for a review is set on that purpose alone.
 	f.ReviewVocabulary = purposeFileConfig{
-		NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultReviewVocabularyPrompt,
 	}
-	// Likewise blank: the review-vocabulary model is used until set.
+	f.ReviewModels = purposeFileConfig{
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Prompt: DefaultReviewModelsPrompt,
+	}
 	f.ReviewTranscription = purposeFileConfig{
-		NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultReviewTranscriptionPrompt,
 	}
 	f.ReviewTranslation = purposeFileConfig{
-		NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
 		Prompt: DefaultReviewTranslationPrompt,
 	}
 	return f
@@ -241,6 +267,11 @@ func Load() (Config, error) {
 	default:
 		if err := yaml.Unmarshal(data, &fc); err != nil {
 			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
+		}
+	}
+	for _, p := range fc.purposes() {
+		if strings.TrimSpace(p.config.Provider) == "" || strings.TrimSpace(p.config.Model) == "" {
+			return Config{}, fmt.Errorf("config file %s: %s.provider and %s.model must both be set; a purpose does not fall back to another's", path, p.name, p.name)
 		}
 	}
 	if fc.Ingest.MaxContentBytes <= 0 {
@@ -276,6 +307,7 @@ func Load() (Config, error) {
 		ModelsItem:          PurposeConfig(fc.ModelsItem),
 		CheckVocabulary:     PurposeConfig(fc.CheckVocabulary),
 		ReviewVocabulary:    PurposeConfig(fc.ReviewVocabulary),
+		ReviewModels:        PurposeConfig(fc.ReviewModels),
 		ReviewTranscription: PurposeConfig(fc.ReviewTranscription),
 		ReviewTranslation:   PurposeConfig(fc.ReviewTranslation),
 

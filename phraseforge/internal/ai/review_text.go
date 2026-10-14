@@ -10,14 +10,11 @@ import (
 	"unicode/utf8"
 
 	"k8s-lab/shared/llm"
-
-	"phraseforge/internal/config"
 )
 
 // The text and dialog reviews are two purposes, each with its own model,
 // prompt and reply schema: one reviews the transcription, one the translations.
-// Both default their provider and model to the review-vocabulary ones (see
-// reviewTextDefault), so one stronger model set for reviews serves all three.
+// Each has its own provider and model setting.
 const (
 	KindReviewTranscription = "review_transcription"
 	KindReviewTranslation   = "review_translation"
@@ -60,22 +57,6 @@ var ReviewTranscriptionSchema = json.RawMessage(`{"type":"object","required":["o
 // ReviewTranslationSchema is the reply schema of the translation review: one
 // check per locale; a suggestion is the whole corrected translation.
 var ReviewTranslationSchema = json.RawMessage(`{"type":"object","required":["translations"],"properties":{"translations":{"type":"array","items":{"type":"object","required":["locale","ok","suggestion","reason"],"properties":{"locale":{"type":"string"},"ok":{"type":"boolean"},"suggestion":{"type":"string"},"reason":{"type":"string"}}}}}}`)
-
-// reviewTextDefault is purpose kind's default with a blank provider or model
-// taken from reviewVocabulary (which itself falls back to vocabularyItem).
-func (s *Service) reviewTextDefault(kind string) config.PurposeConfig {
-	def := s.cfg.ReviewTranslation
-	if kind == KindReviewTranscription {
-		def = s.cfg.ReviewTranscription
-	}
-	vocabulary := s.reviewVocabularyDefault()
-	if strings.TrimSpace(def.Provider) == "" {
-		def.Provider, def.Model = vocabulary.Provider, vocabulary.Model
-	} else if strings.TrimSpace(def.Model) == "" {
-		def.Model = vocabulary.Model
-	}
-	return def
-}
 
 // TextReviewVocabulary is one phrase of the vocabulary attached to a text, with
 // its non-blank translations by locale.
@@ -199,7 +180,9 @@ func parseTextReviewReply(raw, part string, in TextReviewInput, sections Languag
 // in (the transcription or the translations) and returns its findings; the
 // other part is not sent. The call is corrected within the purpose's attempt
 // budget. A resource whose source and reviewed part together exceed
-// maxTextReviewChars is refused.
+// maxTextReviewChars is reviewed in paragraph chunks instead (see
+// reviewInChunks), one call each, and the chunk findings are merged into the
+// same one-finding-per-field shape.
 func (s *Service) ReviewResource(ctx context.Context, in TextReviewInput, part string) (ReviewResult, error) {
 	if !IsReviewPart(part) {
 		return ReviewResult{}, fmt.Errorf("review: unknown part %q", part)
@@ -209,13 +192,24 @@ func (s *Service) ReviewResource(ctx context.Context, in TextReviewInput, part s
 	} else {
 		in.Transcription = ""
 	}
+	if textReviewSize(in) > maxTextReviewChars {
+		return s.reviewInChunks(ctx, in, part)
+	}
+	return s.reviewOnce(ctx, in, part)
+}
+
+// textReviewSize is what one call would carry of in, in characters: the source
+// and the part that is reviewed (the other one is already cleared).
+func textReviewSize(in TextReviewInput) int {
 	size := utf8.RuneCountInString(in.Body) + utf8.RuneCountInString(in.Transcription)
 	for _, t := range in.Translations {
 		size += utf8.RuneCountInString(t.Translation)
 	}
-	if size > maxTextReviewChars {
-		return ReviewResult{}, fmt.Errorf("too long to review in one call: %d characters, the limit is %d", size, maxTextReviewChars)
-	}
+	return size
+}
+
+// reviewOnce is one review call of in, which must fit maxTextReviewChars.
+func (s *Service) reviewOnce(ctx context.Context, in TextReviewInput, part string) (ReviewResult, error) {
 	name, err := s.languageName(ctx, in.Language)
 	if err != nil {
 		return ReviewResult{}, err
@@ -337,4 +331,188 @@ func (s *Service) HandleReviewResource(ctx context.Context, id string, payload j
 		return nil, err
 	}
 	return json.Marshal(reviewJobResult{Response: json.RawMessage(strings.TrimSpace(string(result.Response))), Findings: len(findings)})
+}
+
+// paragraphRun is a text cut into blank-line separated paragraphs, with the
+// separator that stood after each one (see splitParagraphs).
+type paragraphRun struct {
+	parts, seps []string
+}
+
+func newParagraphRun(text string) paragraphRun {
+	parts, seps := splitParagraphs(strings.ReplaceAll(text, "\r\n", "\n"))
+	return paragraphRun{parts: parts, seps: seps}
+}
+
+// join is paragraphs from up to (not including) to, as they stood in the text.
+func (r paragraphRun) join(from, to int) string {
+	var b strings.Builder
+	for i := from; i < to; i++ {
+		if i > from {
+			b.WriteString(r.seps[i-1])
+		}
+		b.WriteString(r.parts[i])
+	}
+	return b.String()
+}
+
+// textChunk is the paragraphs [from, to) of a long resource.
+type textChunk struct{ from, to int }
+
+// planTextChunks groups paragraph indexes into chunks of at most limit
+// characters, where cost(i) is what paragraph i adds to a call. It fails on a
+// single paragraph that alone exceeds limit, naming it (1-based).
+func planTextChunks(count, limit int, cost func(i int) int) ([]textChunk, error) {
+	var chunks []textChunk
+	start, used := 0, 0
+	for i := 0; i < count; i++ {
+		c := cost(i)
+		if c > limit {
+			return nil, fmt.Errorf("paragraph %d alone is %d characters, the limit is %d", i+1, c, limit)
+		}
+		if used+c > limit {
+			chunks = append(chunks, textChunk{start, i})
+			start, used = i, 0
+		}
+		used += c
+	}
+	return append(chunks, textChunk{start, count}), nil
+}
+
+// reviewInChunks reviews a resource too long for one call: the source and the
+// reviewed part (each locale's translation) are cut into paragraphs, which must
+// match one to one, packed into chunks that fit, reviewed one call per chunk,
+// and the findings merged back into whole-text findings (see
+// mergeChunkFindings). A resource that cannot be cut this way fails with the
+// reason.
+func (s *Service) reviewInChunks(ctx context.Context, in TextReviewInput, part string) (ReviewResult, error) {
+	tooLong := func(why string) error {
+		return fmt.Errorf("too long to review in one call (%d characters, the limit is %d) and cannot be split: %s", textReviewSize(in), maxTextReviewChars, why)
+	}
+	body := newParagraphRun(in.Body)
+	type reviewed struct {
+		name string
+		run  paragraphRun
+	}
+	var parts []reviewed
+	if part == ReviewPartTranscription {
+		parts = append(parts, reviewed{"transcription", newParagraphRun(in.Transcription)})
+	} else {
+		for _, t := range in.Translations {
+			parts = append(parts, reviewed{"translation [" + t.Locale + "]", newParagraphRun(t.Translation)})
+		}
+	}
+	for _, p := range parts {
+		if len(p.run.parts) != len(body.parts) {
+			return ReviewResult{}, tooLong(fmt.Sprintf("the text has %d paragraphs but the %s has %d; they must match", len(body.parts), p.name, len(p.run.parts)))
+		}
+	}
+	chunks, err := planTextChunks(len(body.parts), maxTextReviewChars, func(i int) int {
+		n := utf8.RuneCountInString(body.parts[i])
+		for _, p := range parts {
+			n += utf8.RuneCountInString(p.run.parts[i])
+		}
+		return n
+	})
+	if err != nil {
+		return ReviewResult{}, tooLong(err.Error())
+	}
+
+	results := make([]ReviewResult, len(chunks))
+	for i, c := range chunks {
+		if err := ctx.Err(); err != nil {
+			return ReviewResult{}, err
+		}
+		sub := in
+		sub.Body = body.join(c.from, c.to)
+		if part == ReviewPartTranscription {
+			sub.Transcription = parts[0].run.join(c.from, c.to)
+		} else {
+			sub.Translations = make([]ReviewTranslation, len(in.Translations))
+			for k, t := range in.Translations {
+				sub.Translations[k] = ReviewTranslation{Locale: t.Locale, Translation: parts[k].run.join(c.from, c.to)}
+			}
+		}
+		if results[i], err = s.reviewOnce(ctx, sub, part); err != nil {
+			return ReviewResult{}, fmt.Errorf("chunk %d of %d: %w", i+1, len(chunks), err)
+		}
+	}
+
+	// The separator that stood between chunk i and chunk i+1 in the source.
+	chunkSeps := make([]string, len(chunks)-1)
+	for i := range chunkSeps {
+		chunkSeps[i] = body.seps[chunks[i].to-1]
+	}
+	var findings []ReviewFinding
+	merge := func(field, locale, current string, run paragraphRun) {
+		texts := make([]string, len(chunks))
+		perChunk := make([][]ReviewFinding, len(chunks))
+		for i, c := range chunks {
+			texts[i], perChunk[i] = run.join(c.from, c.to), results[i].Findings
+		}
+		if f, ok := mergeChunkFindings(field, locale, current, texts, chunkSeps, perChunk); ok {
+			findings = append(findings, f)
+		}
+	}
+	if part == ReviewPartTranscription {
+		if hasSnippet(in.Transcription) {
+			merge(ReviewFieldTranscription, "", in.Transcription, parts[0].run)
+		}
+	} else {
+		for k, t := range in.Translations {
+			if strings.TrimSpace(t.Translation) != "" {
+				merge(ReviewFieldTranslation, t.Locale, t.Translation, parts[k].run)
+			}
+		}
+	}
+	responses := make([]json.RawMessage, len(results))
+	for i, r := range results {
+		responses[i] = r.Response
+	}
+	response, err := json.Marshal(responses)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	return ReviewResult{Findings: findings, Response: response}, nil
+}
+
+// mergeChunkFindings folds the findings the chunks of one field (and locale)
+// got into one finding about the whole text. chunkTexts are the chunks as
+// stored and chunkSeps what stood between them. A chunk that got a
+// replacement contributes its suggestion, any other chunk its stored text; the
+// finding is a replacement if any chunk got one, else a comment if any chunk
+// has a reason. Reasons are labelled with their chunk when there are several.
+func mergeChunkFindings(field, locale, current string, chunkTexts, chunkSeps []string, perChunk [][]ReviewFinding) (ReviewFinding, bool) {
+	var merged strings.Builder
+	var reasons []string
+	replaced := false
+	for i, text := range chunkTexts {
+		if i > 0 {
+			merged.WriteString(chunkSeps[i-1])
+		}
+		idx := slices.IndexFunc(perChunk[i], func(f ReviewFinding) bool { return f.Field == field && f.Locale == locale })
+		if idx < 0 {
+			merged.WriteString(text)
+			continue
+		}
+		f := perChunk[i][idx]
+		if f.Action == ReviewReplace && f.Suggestion != "" {
+			replaced = true
+			text = f.Suggestion
+		}
+		merged.WriteString(text)
+		if f.Reason != "" {
+			reasons = append(reasons, fmt.Sprintf("Part %d of %d: %s", i+1, len(chunkTexts), f.Reason))
+		}
+	}
+	finding := ReviewFinding{Field: field, Locale: locale, Current: current, Reason: strings.Join(reasons, "\n")}
+	switch {
+	case replaced:
+		finding.Action, finding.Suggestion = ReviewReplace, merged.String()
+	case len(reasons) > 0:
+		finding.Action = ReviewComment
+	default:
+		return ReviewFinding{}, false
+	}
+	return finding, true
 }

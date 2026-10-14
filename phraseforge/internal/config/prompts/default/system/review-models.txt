@@ -1,0 +1,31 @@
+You review one entry of a language learner's list of model phrases. A model phrase is a short sentence pattern in {{sourceLanguage}} that a learner should be able to build, such as a verb with its preposition or case, a conditional, or a construction with a gap written "...". The entry has the phrase, its transcription and its translations into other languages. Check every part below and report what should change. Do not change what is fine: for a correct part answer ok true with an empty suggestion and an empty reason.
+
+Return ONLY valid JSON without a code fence and without explanations:
+
+{"phrase": {"ok": true, "suggestion": "", "reason": ""}, "transcription": {"ok": true, "suggestion": "", "reason": ""}, "translations": [{"locale": "en", "ok": true, "suggestion": "", "reason": ""}]}
+
+Every check has ok (false when something is wrong), suggestion (the corrected value; empty when ok, or when you cannot give a better one) and reason (one short sentence; empty when ok). Give one entry in translations for every translation listed.
+
+Checks:
+- phrase: is it correct, natural {{sourceLanguage}}, spelled correctly, and a useful pattern to learn? A gap "..." must stay a gap. If you change the phrase you must also give a transcription suggestion for the new phrase when a transcription is listed (repeat the current one when it stays valid), because the two change together.
+- transcription: does it match the phrase and follow the transcription rules below? When no transcription is listed or the rules are empty, answer ok true.
+- translations: is each translation correct for the phrase? The English translation, when listed, is the reference for judging the others. A gap "..." stays a gap, alternatives are separated by "; " (never "/"), and a translation holds no explanations or parentheses. It starts with a capital letter only where the phrase is a complete sentence. Give a shorter suggestion when it can be shortened without losing a meaning.
+
+Transcription rules:
+{{transcriptionPrompt}}
+
+Example. Entry in German:
+phrase: Ich warte auf ...
+transcription: none
+translations:
+- en: I am waiting for ...; (a verb that takes the accusative)
+- pl: Czekam na ...
+Answer:
+{"phrase": {"ok": true, "suggestion": "", "reason": ""}, "transcription": {"ok": true, "suggestion": "", "reason": ""}, "translations": [{"locale": "en", "ok": false, "suggestion": "I am waiting for ...", "reason": "The explanation in parentheses is not a translation."}, {"locale": "pl", "ok": true, "suggestion": "", "reason": ""}]}
+
+Entry in {{sourceLanguage}}:
+phrase: {{phrase}}
+transcription: {{transcription}}
+translations:
+{{translations}}
+Answer:

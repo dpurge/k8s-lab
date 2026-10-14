@@ -416,7 +416,7 @@ CREATE TRIGGER models_items_orphan_phrases
 -- language's rules live in language_llm_sections. timeout_seconds NULL means
 -- "inherit the purpose default".
 CREATE TABLE IF NOT EXISTS llm_prompts (
-    kind            text NOT NULL CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models', 'vocabulary_item', 'models_item', 'check_vocabulary', 'review_vocabulary', 'review_transcription', 'review_translation')),
+    kind            text NOT NULL,
     source_language text NOT NULL,
     target_language text NOT NULL,
     provider        text NOT NULL DEFAULT 'ollama',
@@ -427,6 +427,13 @@ CREATE TABLE IF NOT EXISTS llm_prompts (
     updated_at      timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (kind, source_language, target_language)
 );
+
+-- The kinds are kept outside CREATE TABLE so that adding one widens the check on
+-- an existing database too (CREATE TABLE IF NOT EXISTS would leave the old one).
+-- ai.ValidKinds is the list this must agree with.
+ALTER TABLE llm_prompts DROP CONSTRAINT IF EXISTS llm_prompts_kind_check;
+ALTER TABLE llm_prompts ADD CONSTRAINT llm_prompts_kind_check
+    CHECK (kind IN ('translation', 'transcription', 'title', 'process_text', 'process_dialog', 'generate_vocabulary', 'generate_models', 'vocabulary_item', 'models_item', 'check_vocabulary', 'review_vocabulary', 'review_transcription', 'review_translation', 'review_models'));
 
 -- Per-language snippets inserted where a prompt has {{grammarPrompt}},
 -- {{transcriptionPrompt}} or {{dictionaryPrompt}}; blank means "absent".
@@ -468,6 +475,15 @@ CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (created_at ASC) WHERE status 
 -- has it.
 CREATE TABLE IF NOT EXISTS vocabulary_reviews (
     item_id    bigint PRIMARY KEY REFERENCES vocabulary_items(id) ON DELETE CASCADE,
+    phrase     text NOT NULL,
+    findings   jsonb NOT NULL,
+    response   jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- The latest review of a models item: the same shape as vocabulary_reviews.
+CREATE TABLE IF NOT EXISTS models_reviews (
+    item_id    bigint PRIMARY KEY REFERENCES models_items(id) ON DELETE CASCADE,
     phrase     text NOT NULL,
     findings   jsonb NOT NULL,
     response   jsonb NOT NULL,

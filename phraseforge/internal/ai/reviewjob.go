@@ -26,6 +26,17 @@ type ReviewStore interface {
 	SaveReview(ctx context.Context, itemID int64, phrase string, findings, response json.RawMessage) error
 }
 
+// SetModelsReviewStore sets the store the models review job uses (the same
+// interface as ReviewStore, backed by the models tables).
+func (s *Service) SetModelsReviewStore(r ReviewStore) { s.modelsReviews = r }
+
+// NewReviewModelsJob builds the job reviewing models item itemID.
+func NewReviewModelsJob(itemID int64) (ItemJob, error) {
+	job, err := NewReviewJob(itemID)
+	job.Kind = KindReviewModelsItem
+	return job, err
+}
+
 // SetReviewStore sets the store the review job uses; a Service without one
 // fails review jobs with a clear error. It is a setter, not a New argument,
 // because only the review job needs it.
@@ -55,6 +66,18 @@ type reviewJobResult struct {
 // checked). An item deleted or changed since the job was queued, or while the
 // model worked, ends the job as skipped (see jobs.ErrSkipped).
 func (s *Service) HandleReviewItem(ctx context.Context, id string, payload json.RawMessage) (json.RawMessage, error) {
+	return performReviewJob(ctx, payload, s.reviews, s.ReviewItem)
+}
+
+// HandleReviewModelsItem is HandleReviewItem for a models item
+// (KindReviewModelsItem).
+func (s *Service) HandleReviewModelsItem(ctx context.Context, id string, payload json.RawMessage) (json.RawMessage, error) {
+	return performReviewJob(ctx, payload, s.modelsReviews, s.ReviewModelsItem)
+}
+
+// performReviewJob is the body both review jobs share: read the item from store,
+// review it, store the findings as open proposals.
+func performReviewJob(ctx context.Context, payload json.RawMessage, store ReviewStore, review func(context.Context, ReviewInput) (ReviewResult, error)) (json.RawMessage, error) {
 	var p ReviewJobPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, err
@@ -62,14 +85,14 @@ func (s *Service) HandleReviewItem(ctx context.Context, id string, payload json.
 	if p.ItemID == 0 {
 		return nil, fmt.Errorf("review job: item_id is required")
 	}
-	if s.reviews == nil {
+	if store == nil {
 		return nil, fmt.Errorf("review job: no review store configured")
 	}
-	in, err := s.reviews.ReviewSource(ctx, p.ItemID)
+	in, err := store.ReviewSource(ctx, p.ItemID)
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.ReviewItem(ctx, in)
+	result, err := review(ctx, in)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +107,7 @@ func (s *Service) HandleReviewItem(ctx context.Context, id string, payload json.
 	if err != nil {
 		return nil, err
 	}
-	if err := s.reviews.SaveReview(ctx, p.ItemID, in.Phrase, stored, result.Response); err != nil {
+	if err := store.SaveReview(ctx, p.ItemID, in.Phrase, stored, result.Response); err != nil {
 		return nil, err
 	}
 	return json.Marshal(reviewJobResult{Response: json.RawMessage(strings.TrimSpace(string(result.Response))), Findings: len(findings)})

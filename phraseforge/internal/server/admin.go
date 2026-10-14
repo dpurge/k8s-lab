@@ -32,7 +32,7 @@ var adminAppI18nKeys = []string{
 	"admin.ime_configs_heading", "admin.ime_remove_confirm", "admin.ime_no_configs",
 	"admin.llm_heading", "admin.llm_kind", "admin.llm_kind_translation", "admin.llm_kind_transcription",
 	"admin.llm_kind_title", "admin.llm_kind_process_text", "admin.llm_kind_process_dialog",
-	"admin.llm_kind_generate_vocabulary", "admin.llm_kind_generate_models", "admin.llm_kind_vocabulary_item", "admin.llm_kind_models_item", "admin.llm_kind_check_vocabulary", "admin.llm_kind_review_vocabulary", "admin.llm_kind_review_transcription", "admin.llm_kind_review_translation",
+	"admin.llm_kind_generate_vocabulary", "admin.llm_kind_generate_models", "admin.llm_kind_vocabulary_item", "admin.llm_kind_models_item", "admin.llm_kind_check_vocabulary", "admin.llm_kind_review_vocabulary", "admin.llm_kind_review_transcription", "admin.llm_kind_review_translation", "admin.llm_kind_review_models",
 	"admin.llm_source_language", "admin.llm_target_language", "admin.llm_target_not_applicable",
 	"admin.llm_provider", "admin.llm_model", "admin.llm_model_placeholder", "admin.llm_model_default",
 	"admin.llm_think", "admin.llm_timeout_seconds", "admin.llm_timeout_default", "admin.llm_timeout_placeholder",

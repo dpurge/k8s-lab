@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -12,6 +14,8 @@ import (
 
 const (
 	kindTitle         = "title"
+	kindTranscription = "transcription"
+	kindTranslation   = "translation"
 	contentTypeDialog = "dialog"
 )
 
@@ -227,9 +231,60 @@ func (s *Service) GenerateChunked(ctx context.Context, kind, sourceLanguage, tar
 		chunks[i], separators[i] = p.text, p.sepBefore
 	}
 	run := checkpoint.Start(ctx, "chunked/"+kind+"/"+sourceLanguage+"/"+targetLanguage+"/"+contentType, chunks)
-	return generateChunks(ctx, kind, contentType, chunks, separators, run, func(ctx context.Context, chunk string) (string, error) {
+	generate := func(ctx context.Context, chunk string) (string, error) {
 		return s.generateSplitting(ctx, kind, sourceLanguage, targetLanguage, contentType, chunk, false)
+	}
+	return generateChunks(ctx, kind, contentType, chunks, separators, run, func(ctx context.Context, chunk string) (string, error) {
+		out, err := generate(ctx, chunk)
+		if err != nil || (kind != kindTranscription && kind != kindTranslation) {
+			return out, err
+		}
+		return alignParagraphs(ctx, chunk, out, generate)
 	})
+}
+
+// blankLines is a paragraph break and whatever blank lines surround it.
+var blankLines = regexp.MustCompile(`\n[ \t]*\n\s*`)
+
+// alignParagraphs makes out, the reply to chunk, have exactly as many
+// blank-line separated paragraphs as chunk, so a transcription or translation
+// stays paragraph for paragraph with its source. A reply that already matches
+// is returned as it is. A one-paragraph chunk's reply has its blank lines
+// collapsed to line breaks. Otherwise the chunk is generated again one
+// paragraph per call; a blank paragraph stays blank without a call, and a
+// paragraph that gets an empty reply fails the job rather than store a text
+// that does not line up.
+func alignParagraphs(ctx context.Context, chunk, out string, generate func(context.Context, string) (string, error)) (string, error) {
+	src := newParagraphRun(strings.TrimSpace(chunk))
+	if len(newParagraphRun(strings.TrimSpace(out)).parts) == len(src.parts) {
+		return out, nil
+	}
+	if len(src.parts) == 1 {
+		return blankLines.ReplaceAllString(strings.TrimSpace(out), "\n"), nil
+	}
+	slog.Info("generated text lost its paragraphs, redoing it paragraph by paragraph", "paragraphs", len(src.parts))
+	var joined strings.Builder
+	for i, para := range src.parts {
+		if i > 0 {
+			joined.WriteString(src.seps[i-1])
+		}
+		if strings.TrimSpace(para) == "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		reply, err := generate(ctx, para)
+		if err != nil {
+			return "", fmt.Errorf("paragraph %d of %d: %w", i+1, len(src.parts), err)
+		}
+		reply = blankLines.ReplaceAllString(strings.TrimSpace(reply), "\n")
+		if reply == "" {
+			return "", fmt.Errorf("paragraph %d of %d: the model returned an empty reply", i+1, len(src.parts))
+		}
+		joined.WriteString(reply)
+	}
+	return joined.String(), nil
 }
 
 // GenerateLines is Generate for one chunk of input whose reply is a list, one

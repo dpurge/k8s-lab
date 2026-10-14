@@ -59,25 +59,45 @@ func TestRenderReviewPromptFillsEveryPlaceholderInOnePass(t *testing.T) {
 	}
 }
 
-func TestReviewVocabularyDefaultFallsBackToTheVocabularyItemModel(t *testing.T) {
-	item := config.PurposeConfig{Provider: "ollama", Model: "small"}
-	cases := []struct {
-		name, provider, model string
-		wantProvider, want    string
-	}{
-		{"nothing set", "", "", "ollama", "small"},
-		{"a stronger provider and model", "openrouter", "big", "openrouter", "big"},
-		{"model only: the provider stays vocabularyItem's", "", "big", "ollama", "small"},
-		{"provider only: the model stays vocabularyItem's", "openrouter", "", "openrouter", "small"},
+func TestEveryReviewPurposeUsesItsOwnProviderAndModel(t *testing.T) {
+	own := func(name string) config.PurposeConfig {
+		return config.PurposeConfig{Provider: "provider-" + name, Model: "model-" + name, NumCtx: 8192, MaxAttempts: 3}
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			s := &Service{cfg: config.Config{VocabularyItem: item, ReviewVocabulary: config.PurposeConfig{Provider: c.provider, Model: c.model, NumCtx: 8192, MaxAttempts: 3}}}
-			got := s.purposeDefault(KindReviewVocabulary)
-			if got.Provider != c.wantProvider || got.Model != c.want || got.NumCtx != 8192 || got.MaxAttempts != 3 {
-				t.Errorf("got %+v, want provider %s model %s and the rest of the review purpose kept", got, c.wantProvider, c.want)
-			}
-		})
+	s := &Service{cfg: config.Config{
+		VocabularyItem:      own("item"),
+		ReviewVocabulary:    own("vocabulary"),
+		ReviewModels:        own("models"),
+		ReviewTranscription: own("transcription"),
+		ReviewTranslation:   own("translation"),
+	}}
+	for kind, name := range map[string]string{
+		KindReviewVocabulary: "vocabulary", KindReviewModels: "models",
+		KindReviewTranscription: "transcription", KindReviewTranslation: "translation",
+	} {
+		if got := s.purposeDefault(kind); got != own(name) {
+			t.Errorf("%s: got %+v, want its own setting %+v", kind, got, own(name))
+		}
+	}
+
+	// A purpose left blank stays blank: nothing is borrowed from another purpose.
+	for _, kind := range []string{KindReviewVocabulary, KindReviewModels, KindReviewTranscription, KindReviewTranslation} {
+		blank := &Service{cfg: config.Config{
+			VocabularyItem: own("item"), ReviewVocabulary: own("vocabulary"), ReviewModels: own("models"),
+			ReviewTranscription: own("transcription"), ReviewTranslation: own("translation"),
+		}}
+		switch kind {
+		case KindReviewVocabulary:
+			blank.cfg.ReviewVocabulary = config.PurposeConfig{}
+		case KindReviewModels:
+			blank.cfg.ReviewModels = config.PurposeConfig{}
+		case KindReviewTranscription:
+			blank.cfg.ReviewTranscription = config.PurposeConfig{}
+		case KindReviewTranslation:
+			blank.cfg.ReviewTranslation = config.PurposeConfig{}
+		}
+		if got := blank.purposeDefault(kind); got.Provider != "" || got.Model != "" {
+			t.Errorf("%s left blank: got provider %q model %q, want it blank (no fallback)", kind, got.Provider, got.Model)
+		}
 	}
 }
 
@@ -224,8 +244,7 @@ func reviewService(t *testing.T, replies ...string) (*Service, *fakeOllama) {
 	ollama := newFakeOllama(t, replies)
 	cfg := config.Config{
 		Providers:        map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		VocabularyItem:   config.PurposeConfig{Provider: "ollama", Model: "item-model"},
-		ReviewVocabulary: config.PurposeConfig{Prompt: "Review {{phrase}} ({{sourceLanguage}})\nDICT {{dictionaryPrompt}}\n{{translations}}\n{{examples}}", MaxAttempts: 3},
+		ReviewVocabulary: config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "Review {{phrase}} ({{sourceLanguage}})\nDICT {{dictionaryPrompt}}\n{{translations}}\n{{examples}}", MaxAttempts: 3},
 	}
 	svc := New(pool, cfg, nil, nil, nil, nil)
 	if err := svc.SetLanguageSections(context.Background(), reviewSections); err != nil {

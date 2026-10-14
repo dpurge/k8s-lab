@@ -18,6 +18,11 @@
   // navigation.md).
   let listContext = { page: 1, tag: "" };
 
+  // listRequest numbers the list renders: a list response whose render has since
+  // been replaced (by a newer list render or a detail view) must not touch the
+  // page, where its container is gone or belongs to the newer render.
+  let listRequest = 0;
+
   // goTo changes the URL (adding a history entry), which renders the route;
   // the render functions below never touch the URL themselves.
   function goTo(route) {
@@ -149,6 +154,7 @@
   }
 
   async function showList(tagFilter, page = 1) {
+    const request = ++listRequest;
     statusBar.setMessage("");
     listContext = { page, tag: tagFilter || "" };
     const languageFilter = window.pfGetLanguageFilter();
@@ -194,14 +200,16 @@
     query.set("page", String(page));
     let items;
     let pageCount;
+    const isCurrent = () => request === listRequest && document.getElementById("listContainer") !== null;
     try {
       const data = await apiFetch("/api/v1/models?" + query.toString());
       items = data.items;
       pageCount = data.pageCount;
     } catch (e) {
-      statusBar.setMessage(e.message, true);
+      if (isCurrent()) statusBar.setMessage(e.message, true);
       return;
     }
+    if (!isCurrent()) return;
     // A bookmarked page that no longer exists (items deleted since) lands on
     // the last page instead of an empty one.
     if (page > pageCount) {
@@ -308,6 +316,8 @@
       <div class="resource-header">
         <div class="resource-actions">
           <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
+          ${list.canEdit ? `<pf-button variant="secondary" type="button" id="generateMissingTranslationsBtn">${esc(T("models.generate_missing_translations"))}</pf-button>` : ""}
+          ${list.canEdit ? `<pf-button variant="secondary" type="button" id="reviewBtn">${esc(T("vocabulary.review"))}</pf-button>` : ""}
           ${list.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
         </div>
         <div>
@@ -317,12 +327,24 @@
         </div>
       </div>
       <textarea id="copy-models-markdown" class="copy-source" readonly>${esc(list.markdown)}</textarea>
-      ${renderItemsTable(list, false)}
+      ${renderItemsTable(list, false, list.canEdit)}
     `;
     document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
       phraseforgeCopyMarkdown("copy-models-markdown", e.currentTarget.querySelector("button"));
     });
+    const generateMissingTranslationsBtn = document.getElementById("generateMissingTranslationsBtn");
+    if (generateMissingTranslationsBtn) {
+      generateMissingTranslationsBtn.addEventListener("click", async () => {
+        try {
+          const result = await apiFetch(`/api/v1/models/${id}/generate-missing-translations`, { method: "POST" });
+          statusBar.setMessage(result.enqueued > 0 ? T("models.generate_missing_translations_started") : T("models.generate_missing_translations_none"));
+        } catch (e) {
+          statusBar.setMessage(e.message, true);
+        }
+      });
+    }
+    if (list.canEdit) wireReview(id, list);
     const editBtn = document.getElementById("editBtn");
     if (editBtn) editBtn.addEventListener("click", () => showManage(id, null));
     const deleteBtn = document.getElementById("deleteBtn");
@@ -349,7 +371,9 @@
   }
 
   // withControls: View's table has no Edit/Delete column; Manage's does.
-  function renderItemsTable(list, withControls) {
+  // withActions adds the View page's Actions column with the review controls
+  // (filled in by wireReview).
+  function renderItemsTable(list, withControls, withActions) {
     if (!list.items || list.items.length === 0) {
       return `<p class="empty-state" style="margin-top:1.5rem;">${esc(T("models.empty"))}</p>`;
     }
@@ -358,8 +382,9 @@
         (it) => `
       <tr>
         <td class="${list.scriptEnlarged ? "prose-enlarged" : ""}" dir="${esc(list.scriptDirection)}" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.phrase)}</td>
-        <td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.transcription)}</td>
+        ${list.needsTranscription ? `<td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.transcription)}</td>` : ""}
         <td style="border-bottom:1px solid var(--border); padding:0.5rem;">${it.translation ? esc(it.translation) : "—"}</td>
+        ${withActions ? `<td class="actions-cell"><span data-review-position="${it.position}"></span></td>` : ""}
         ${
           withControls
             ? `<td style="border-bottom:1px solid var(--border); padding:0.5rem; white-space:nowrap;">
@@ -373,12 +398,13 @@
       .join("");
     return `
       <div style="overflow-x:auto; margin-top:1.5rem;">
-      <table class="vocab-table" style="width:100%; border-collapse:collapse;">
+      <table class="vocab-table models-items-table" style="width:100%; border-collapse:collapse;">
         <thead>
           <tr>
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("models.col_phrase"))}</th>
-            <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("models.col_transcription"))}</th>
+            ${list.needsTranscription ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("models.col_transcription"))}</th>` : ""}
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("models.col_translation"))}</th>
+            ${withActions ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("models.col_actions"))}</th>` : ""}
             ${withControls ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("models.col_actions"))}</th>` : ""}
           </tr>
         </thead>
@@ -386,6 +412,207 @@
       </table>
       </div>
     `;
+  }
+
+  // --- Review (specs/features/models-list-generate-review.md) ---
+  //
+  // A model reviews each item in the background; its proposals are stored and
+  // shown here, and nothing changes until the editor applies one. The proposals
+  // are model output, so the dialog is built with the DOM API (textContent),
+  // never from an HTML string. Mirrors vocabulary-app.js, for the fields a
+  // models item has: phrase (with its transcription), transcription, translation.
+
+  function fmt(key, values) {
+    return T(key).replace(/\{(\w+)\}/g, (_m, name) => (name in values ? values[name] : `{${name}}`));
+  }
+
+  function el(tag, props, ...children) {
+    const node = document.createElement(tag);
+    for (const [name, value] of Object.entries(props || {})) {
+      if (value == null || value === false) continue;
+      if (name === "class") node.className = value;
+      else node.setAttribute(name, value === true ? "" : value);
+    }
+    for (const child of children.flat()) {
+      if (child != null && child !== false) node.append(child);
+    }
+    return node;
+  }
+
+  function button(label, variant, onClick) {
+    const b = el("pf-button", { variant, type: "button" }, label);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  // wireReview wires the View page's Review button and the review controls in
+  // the Actions column. The column keeps itself up to date through pfPoll
+  // (poll.js) while a review waits in the job queue.
+  function wireReview(id, list) {
+    const table = root.querySelector(".models-items-table");
+
+    // load fetches the reviews, renders the column and says whether any item
+    // still waits for its review job.
+    async function load() {
+      let data;
+      try {
+        data = await apiFetch(`/api/v1/models/${id}/reviews`);
+      } catch (_e) {
+        return false; // the column stays as it was; the next action retries
+      }
+      const byPosition = new Map(data.reviews.map((r) => [r.position, r]));
+      const pending = new Set(data.pending);
+      table.querySelectorAll("[data-review-position]").forEach((cell) => {
+        const position = Number(cell.dataset.reviewPosition);
+        cell.replaceChildren(...reviewCellContent(position, byPosition.get(position), pending.has(position)));
+      });
+      return pending.size > 0;
+    }
+    // An empty list has no table, hence no column to keep up to date.
+    const poll = table ? window.pfPoll({ run: load, anchor: table }) : { kick() {} };
+    const refresh = () => poll.kick();
+
+    function reviewCellContent(position, review, isPending) {
+      const queue = () => queueReview(`/api/v1/models/${id}/items/${position}/review`);
+      if (isPending) return [el("span", { class: "meta" }, T("vocabulary.review_pending"))];
+      if (!review) return [button(T("vocabulary.review"), "secondary", queue)];
+      const open = () => openReviewDialog(id, position, list, refresh, showView);
+      const label = review.stale ? T("vocabulary.review_stale") : review.open > 0 ? fmt("vocabulary.review_open", { n: review.open }) : T("vocabulary.review_reviewed");
+      const out = [button(label, "secondary", open)];
+      if (review.stale) out.push(button(T("vocabulary.review"), "secondary", queue));
+      return out;
+    }
+
+    async function queueReview(path) {
+      try {
+        const result = await apiFetch(path, { method: "POST" });
+        statusBar.setMessage(result.enqueued > 0 ? fmt("vocabulary.review_started", { n: result.enqueued }) : T("vocabulary.review_none"));
+      } catch (e) {
+        statusBar.setMessage(e.message, true);
+      }
+      refresh();
+    }
+
+    const reviewBtn = document.getElementById("reviewBtn");
+    if (reviewBtn) reviewBtn.addEventListener("click", () => queueReview(`/api/v1/models/${id}/review`));
+    refresh();
+  }
+
+  // openReviewDialog shows one item's proposals with Apply and Dismiss for each
+  // and for all, inside pf-dialog's showContent. The dialog stays open while
+  // proposals are acted on; on close the View page reloads if anything was
+  // applied, else only the Review column refreshes.
+  async function openReviewDialog(listId, position, list, refreshColumn, reloadView) {
+    const confirmDialog = document.getElementById("confirmDialog");
+    const base = `/api/v1/models/${listId}/items/${position}/review`;
+    const container = el("div", { class: "review-dialog" });
+    let changed = false;
+    let message = "";
+
+    async function act(action, indexes) {
+      try {
+        const res = await apiFetch(`${base}/${action}`, { method: "POST", body: JSON.stringify({ indexes }) });
+        if (action === "apply") {
+          changed = changed || res.results.some((r) => r.outcome === "applied");
+          message = res.results.some((r) => r.outcome === "conflict") ? T("vocabulary.review_conflict") : "";
+        } else {
+          message = "";
+        }
+        render(res.review);
+      } catch (e) {
+        message = e.message;
+        await load();
+      }
+    }
+
+    async function requeue() {
+      try {
+        await apiFetch(base, { method: "POST" });
+        message = fmt("vocabulary.review_started", { n: 1 });
+      } catch (e) {
+        message = e.message;
+      }
+      render(currentView);
+    }
+
+    function values(rows) {
+      const dl = el("dl", { class: "review-values" });
+      for (const { label, text, dir } of rows) {
+        dl.append(el("dt", {}, label), el("dd", { dir }, text));
+      }
+      return dl;
+    }
+
+    // The proposal's own rows: what is stored now and what the model suggests.
+    function rowsOf(f) {
+      const dir = f.field === "phrase" ? list.scriptDirection || "ltr" : "auto";
+      const rows = [];
+      if (f.current) rows.push({ label: T("vocabulary.review_current"), text: f.current, dir });
+      if (f.action === "replace") rows.push({ label: T("vocabulary.review_suggested"), text: f.suggestion, dir });
+      if (f.field === "phrase" && f.action === "replace" && f.transcription) {
+        rows.push({ label: T("models.col_transcription"), text: f.transcription, dir: "ltr" });
+      }
+      return rows;
+    }
+
+    const fieldLabel = { phrase: "models.col_phrase", transcription: "models.col_transcription", translation: "models.col_translation" };
+
+    function proposal(f, n) {
+      const isOpen = f.status === "open";
+      const statusText = f.status === "applied" ? T("vocabulary.review_applied") : f.status === "dismissed" ? T("vocabulary.review_dismissed") : "";
+      const head = el("div", { class: "review-item-head" },
+        el("strong", {}, f.action === "comment" ? T("vocabulary.review_remark") : T(fieldLabel[f.field] || "vocabulary.review")),
+        f.locale ? el("span", { class: "badge" }, f.locale) : null,
+        f.action === "comment" ? el("span", { class: "meta" }, T(fieldLabel[f.field] || "vocabulary.review")) : null,
+        statusText ? el("span", { class: "review-status" }, statusText) : null,
+      );
+      const body = el("div", { class: `review-item${isOpen ? "" : " is-done"}` }, head, values(rowsOf(f)));
+      if (f.reason) body.append(el("div", { class: "review-reason" }, f.reason));
+      if (isOpen) {
+        const actions = el("div", { class: "review-actions" });
+        if (f.action !== "comment" && !currentView.stale) actions.append(button(T("vocabulary.review_apply"), "primary", () => act("apply", [n])));
+        actions.append(button(T("vocabulary.review_dismiss"), "secondary", () => act("dismiss", [n])));
+        body.append(actions);
+      }
+      return body;
+    }
+
+    let currentView = { findings: [], stale: false };
+    function render(view) {
+      currentView = view;
+      const open = view.findings.filter((f) => f.status === "open");
+      const applicable = open.filter((f) => f.action !== "comment");
+      const head = el("div", { class: "review-head" },
+        el("h2", { dir: list.scriptDirection || "ltr" }, view.phrase),
+        el("span", { class: "meta" }, `${T("vocabulary.review_reviewed_at")} ${new Date(view.createdAt).toLocaleString()}`),
+      );
+      const parts = [head];
+      if (view.stale) parts.push(el("div", { class: "review-warning" }, T("vocabulary.review_stale_warning")));
+      if (message) parts.push(el("div", { class: "review-message" }, message));
+      if (view.findings.length === 0) parts.push(el("p", { class: "review-message" }, T("vocabulary.review_nothing")));
+      view.findings.forEach((f, n) => parts.push(proposal(f, n)));
+      const footer = el("div", { class: "review-footer" });
+      if (applicable.length > 0 && !view.stale) footer.append(button(T("vocabulary.review_apply_all"), "primary", () => act("apply", [])));
+      if (open.length > 0) footer.append(button(T("vocabulary.review_dismiss_all"), "secondary", () => act("dismiss", [])));
+      footer.append(button(T("vocabulary.review_again"), "secondary", requeue));
+      if (view.findings.length > 0 && open.length === 0) parts.push(el("p", { class: "review-message" }, T("vocabulary.review_none_open")));
+      parts.push(footer);
+      container.replaceChildren(...parts);
+    }
+
+    async function load() {
+      try {
+        render(await apiFetch(base));
+      } catch (e) {
+        statusBar.setMessage(e.message, true);
+      }
+    }
+
+    await load();
+    if (currentView.findings.length === 0 && !currentView.phrase) return;
+    await confirmDialog.showContent(container, { okLabel: T("vocabulary.review_close"), wide: true, hideCancel: true });
+    if (changed) reloadView(listId);
+    else refreshColumn();
   }
 
   // showManage is the combined list-meta + item-entry + items-table view.

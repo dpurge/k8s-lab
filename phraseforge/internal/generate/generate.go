@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -163,6 +164,22 @@ func New(textsStore *texts.Store, dialogsStore *dialogs.Store, vocabStore *vocab
 	return &Service{texts: textsStore, dialogs: dialogsStore, vocab: vocabStore, models: modelsStore, ai: aiSvc, jobs: jobsSvc, db: db}
 }
 
+// dropUnneededTranscription calls clearAll when language has no transcription
+// (no section and not marked as needing one), because the model may emit a
+// [transcription] the prompt did not ask for, and a stored one would be
+// shown and kept. It is the same rule the item jobs apply
+// (ai.Service.EffectiveSections).
+func (s *Service) dropUnneededTranscription(ctx context.Context, language string, clearAll func()) error {
+	sections, err := s.ai.EffectiveSections(ctx, language)
+	if err != nil {
+		return fmt.Errorf("generate: load language sections for %s: %w", language, err)
+	}
+	if strings.TrimSpace(sections.TranscriptionPrompt) == "" {
+		clearAll()
+	}
+	return nil
+}
+
 // enqueueItemBackfill enqueues the structured item calls (ai.ItemJobsFor)
 // for one just-created/replaced vocabulary/models item — every site locale it
 // isn't already translated in (its phrase may be, through another list); each
@@ -274,6 +291,13 @@ func (s *Service) HandleGenerateVocab(ctx context.Context, id string, raw json.R
 	if err != nil {
 		return nil, fmt.Errorf("generate: vocabulary: %w", err)
 	}
+	if err := s.dropUnneededTranscription(ctx, src.Language, func() {
+		for i := range items {
+			items[i].Transcription = ""
+		}
+	}); err != nil {
+		return nil, err
+	}
 
 	existingID, found, err := s.lookupExistingVocab(ctx, p)
 	if err != nil {
@@ -321,6 +345,13 @@ func (s *Service) HandleGenerateModels(ctx context.Context, id string, raw json.
 		checkpoint.Start(ctx, "items/"+aiKindGenerateModels+"/"+src.Language, chunks))
 	if err != nil {
 		return nil, fmt.Errorf("generate: models: %w", err)
+	}
+	if err := s.dropUnneededTranscription(ctx, src.Language, func() {
+		for i := range items {
+			items[i].Transcription = ""
+		}
+	}); err != nil {
+		return nil, err
 	}
 
 	existingID, found, err := s.lookupExistingModels(ctx, p)

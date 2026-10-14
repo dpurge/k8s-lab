@@ -10,4 +10,4 @@ Part of speech (always capitalized):
   Conj = conjunction
   Num = numeral
   Part = particle
-  Phrase = fixed phrase or idiom
+  Ph = fixed phrase or idiom

@@ -55,32 +55,6 @@ func TestReviewTextPromptsAndPurposesAreSeparate(t *testing.T) {
 	}
 }
 
-func TestReviewTextPurposesFallBackToTheReviewVocabularyThenTheItemModelEachOnItsOwn(t *testing.T) {
-	item := config.PurposeConfig{Provider: "ollama", Model: "small"}
-	big := config.PurposeConfig{Provider: "openrouter", Model: "big"}
-	cases := []struct {
-		name                               string
-		vocab, transcription, translation  config.PurposeConfig
-		wantTranscription, wantTranslation string
-	}{
-		{"nothing set: the item model", config.PurposeConfig{}, config.PurposeConfig{}, config.PurposeConfig{}, "ollama/small", "ollama/small"},
-		{"the vocabulary review model serves both", big, config.PurposeConfig{}, config.PurposeConfig{}, "openrouter/big", "openrouter/big"},
-		{"each has its own setting", big, config.PurposeConfig{Provider: "openrouter", Model: "t1"}, config.PurposeConfig{Provider: "ollama", Model: "t2"}, "openrouter/t1", "ollama/t2"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			c.transcription.NumCtx, c.translation.NumCtx = 16384, 16384
-			s := &Service{cfg: config.Config{VocabularyItem: item, ReviewVocabulary: c.vocab, ReviewTranscription: c.transcription, ReviewTranslation: c.translation}}
-			for kind, want := range map[string]string{KindReviewTranscription: c.wantTranscription, KindReviewTranslation: c.wantTranslation} {
-				got := s.purposeDefault(kind)
-				if got.Provider+"/"+got.Model != want || got.NumCtx != 16384 {
-					t.Errorf("%s: got %+v, want %s with its own numCtx", kind, got, want)
-				}
-			}
-		})
-	}
-}
-
 var sectionsWithTranscription = LanguageSections{TranscriptionPrompt: "rules"}
 
 func TestParseTranslationReviewReply(t *testing.T) {
@@ -166,9 +140,8 @@ func textReviewService(t *testing.T, replies ...string) (*Service, *fakeOllama) 
 	ollama := newFakeOllama(t, replies)
 	cfg := config.Config{
 		Providers:           map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		VocabularyItem:      config.PurposeConfig{Provider: "ollama", Model: "item-model"},
-		ReviewTranscription: config.PurposeConfig{Prompt: "TR {{text}} ({{sourceLanguage}})\n{{transcription}}\n{{vocabulary}}\n{{transcriptionPrompt}}", MaxAttempts: 3},
-		ReviewTranslation:   config.PurposeConfig{Prompt: "TL {{text}} ({{sourceLanguage}})\n{{translations}}\n{{vocabulary}}", MaxAttempts: 3},
+		ReviewTranscription: config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "TR {{text}} ({{sourceLanguage}})\n{{transcription}}\n{{vocabulary}}\n{{transcriptionPrompt}}", MaxAttempts: 3},
+		ReviewTranslation:   config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "TL {{text}} ({{sourceLanguage}})\n{{translations}}\n{{vocabulary}}", MaxAttempts: 3},
 	}
 	svc := New(pool, cfg, nil, nil, nil, nil)
 	if err := svc.SetLanguageSections(context.Background(), LanguageSections{Language: "deu", TranscriptionPrompt: "rules"}); err != nil {

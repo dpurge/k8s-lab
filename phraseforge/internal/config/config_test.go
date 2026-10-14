@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -43,19 +44,24 @@ func TestLoadDefaultsWhenFileMissing(t *testing.T) {
 			t.Errorf("%s = %q, want %q (default)", c.name, c.got, c.want)
 		}
 	}
-	// Title/ProcessText/ProcessDialog default to NumCtx 8192, unlike
-	// Transcription/Translation which are left unset (0) — see
-	// specs/features/phraseforge-ingest-texts-dialogs.md.
+	// Every purpose states its context window: 4096 for the four that used to leave
+	// it unset (the window Ollama reports on both servers), 8192 or 16384 elsewhere.
 	numCtxCases := []struct {
 		name string
 		got  int
 		want int
 	}{
-		{"Transcription.NumCtx", cfg.Transcription.NumCtx, 0},
-		{"Translation.NumCtx", cfg.Translation.NumCtx, 0},
+		{"Transcription.NumCtx", cfg.Transcription.NumCtx, 4096},
+		{"Translation.NumCtx", cfg.Translation.NumCtx, 4096},
+		{"VocabularyItem.NumCtx", cfg.VocabularyItem.NumCtx, 4096},
+		{"ModelsItem.NumCtx", cfg.ModelsItem.NumCtx, 4096},
 		{"Title.NumCtx", cfg.Title.NumCtx, 8192},
 		{"ProcessText.NumCtx", cfg.ProcessText.NumCtx, 8192},
 		{"ProcessDialog.NumCtx", cfg.ProcessDialog.NumCtx, 8192},
+		{"ReviewVocabulary.NumCtx", cfg.ReviewVocabulary.NumCtx, 8192},
+		{"ReviewModels.NumCtx", cfg.ReviewModels.NumCtx, 8192},
+		{"ReviewTranscription.NumCtx", cfg.ReviewTranscription.NumCtx, 16384},
+		{"ReviewTranslation.NumCtx", cfg.ReviewTranslation.NumCtx, 16384},
 	}
 	for _, c := range numCtxCases {
 		if c.got != c.want {
@@ -336,6 +342,7 @@ func TestConfigMapItemPromptsMatchDefaults(t *testing.T) {
 		"modelsItem":          {cfg.ModelsItem.Prompt, DefaultModelsItemPrompt},
 		"checkVocabulary":     {cfg.CheckVocabulary.Prompt, DefaultCheckVocabularyPrompt},
 		"reviewVocabulary":    {cfg.ReviewVocabulary.Prompt, DefaultReviewVocabularyPrompt},
+		"reviewModels":        {cfg.ReviewModels.Prompt, DefaultReviewModelsPrompt},
 		"reviewTranscription": {cfg.ReviewTranscription.Prompt, DefaultReviewTranscriptionPrompt},
 		"reviewTranslation":   {cfg.ReviewTranslation.Prompt, DefaultReviewTranslationPrompt},
 		"transcription":       {cfg.Transcription.Prompt, DefaultTranscriptionPrompt},
@@ -347,15 +354,6 @@ func TestConfigMapItemPromptsMatchDefaults(t *testing.T) {
 		if pair[0] != pair[1] {
 			t.Errorf("configmap %s.prompt differs from its compiled-in default (a prompt change must reach both):\n%q\nvs\n%q", name, pair[0], pair[1])
 		}
-	}
-	// The review model is chosen in the settings: left blank it is the item model.
-	for name, c := range map[string]PurposeConfig{"reviewTranscription": cfg.ReviewTranscription, "reviewTranslation": cfg.ReviewTranslation} {
-		if c.Provider != "" || c.Model != "" {
-			t.Errorf("configmap %s sets provider %q model %q, want both blank", name, c.Provider, c.Model)
-		}
-	}
-	if cfg.ReviewVocabulary.Provider != "" || cfg.ReviewVocabulary.Model != "" {
-		t.Errorf("configmap reviewVocabulary sets provider %q model %q, want both blank (vocabularyItem's apply)", cfg.ReviewVocabulary.Provider, cfg.ReviewVocabulary.Model)
 	}
 	// Long pages are accepted in prod only through this value, so a typo in the
 	// key must not fall back silently to the 24 KiB default.
@@ -374,6 +372,88 @@ func TestLoadRejectsNonPositiveIngestMaxContentBytes(t *testing.T) {
 		_, err := Load()
 		if err == nil || !strings.Contains(err.Error(), "ingest.maxContentBytes must be greater than 0") {
 			t.Errorf("maxContentBytes %s: err = %v, want a 'must be greater than 0' error", value, err)
+		}
+	}
+}
+
+// TestConfigMapStatesEveryPurposeExplicitly: the ConfigMap names every field of
+// every purpose, so the deployment does not depend on the image's defaults, and
+// each value is the compiled-in default (a prompt change is made in both).
+func TestConfigMapStatesEveryPurposeExplicitly(t *testing.T) {
+	raw, err := os.ReadFile("../../k8s/configmap.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatal(err)
+	}
+	var stated map[string]any
+	if err := yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &stated); err != nil {
+		t.Fatal(err)
+	}
+	defaults := defaultFileConfig()
+	fields := map[string]func(purposeFileConfig) any{
+		"provider": func(c purposeFileConfig) any { return c.Provider }, "model": func(c purposeFileConfig) any { return c.Model },
+		"numCtx": func(c purposeFileConfig) any { return c.NumCtx }, "think": func(c purposeFileConfig) any { return c.Think },
+		"timeoutSeconds": func(c purposeFileConfig) any { return c.TimeoutSeconds }, "maxAttempts": func(c purposeFileConfig) any { return c.MaxAttempts },
+	}
+	for _, p := range defaults.purposes() {
+		got, ok := stated[p.name].(map[string]any)
+		if !ok {
+			t.Errorf("configmap has no %s block", p.name)
+			continue
+		}
+		if _, ok := got["prompt"]; !ok {
+			t.Errorf("configmap %s states no prompt", p.name)
+		}
+		for field, of := range fields {
+			value, ok := got[field]
+			if !ok {
+				t.Errorf("configmap %s does not state %s (it would rely on the image default)", p.name, field)
+				continue
+			}
+			if value != of(p.config) {
+				t.Errorf("configmap %s.%s = %v, the compiled-in default is %v", p.name, field, value, of(p.config))
+			}
+		}
+	}
+}
+
+// TestPurposesListsEveryPurposeOfTheFile: purposes() is what Load validates, so
+// a purpose added to the file configuration must be added to it too.
+func TestPurposesListsEveryPurposeOfTheFile(t *testing.T) {
+	fileType := reflect.TypeOf(fileConfig{})
+	want := map[string]bool{}
+	for i := 0; i < fileType.NumField(); i++ {
+		if fileType.Field(i).Type == reflect.TypeOf(purposeFileConfig{}) {
+			want[strings.Split(fileType.Field(i).Tag.Get("yaml"), ",")[0]] = true
+		}
+	}
+	got := map[string]bool{}
+	for _, p := range defaultFileConfig().purposes() {
+		got[p.name] = true
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("purposes() lists %v, the file configures %v", got, want)
+	}
+}
+
+func TestLoadRejectsAPurposeWithoutProviderOrModel(t *testing.T) {
+	for name, content := range map[string]string{
+		"blank provider": "reviewModels:\n  provider: \"\"\n",
+		"blank model":    "title:\n  model: \"\"\n",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CONFIG_FILE", path)
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), ".provider and ") || !strings.Contains(err.Error(), "must both be set") {
+			t.Errorf("%s: err = %v, want the purpose named and both settings required", name, err)
 		}
 	}
 }

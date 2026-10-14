@@ -36,6 +36,7 @@ var (
 	DefaultModelsItemPrompt          = readPrompt("system/generate-models-item.txt")
 	DefaultCheckVocabularyPrompt     = readPrompt("system/check-vocabulary.txt")
 	DefaultReviewVocabularyPrompt    = readPrompt("system/review-vocabulary.txt")
+	DefaultReviewModelsPrompt        = readPrompt("system/review-models.txt")
 	DefaultReviewTranscriptionPrompt = readPrompt("system/review-transcription.txt")
 	DefaultReviewTranslationPrompt   = readPrompt("system/review-translation.txt")
 )

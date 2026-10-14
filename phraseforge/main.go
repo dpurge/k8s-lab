@@ -158,6 +158,27 @@ func (w *reviewStore) SaveReview(ctx context.Context, itemID int64, phrase strin
 	return skipOnStaleItem(w.vocab.SaveReview(ctx, itemID, phrase, findings, response))
 }
 
+// modelsReviewStore adapts *models.Store to ai.ReviewStore, like reviewStore.
+type modelsReviewStore struct {
+	models *models.Store
+}
+
+func (w *modelsReviewStore) ReviewSource(ctx context.Context, itemID int64) (ai.ReviewInput, error) {
+	src, err := w.models.ReviewSource(ctx, itemID)
+	if err != nil {
+		return ai.ReviewInput{}, skipOnStaleItem(err)
+	}
+	in := ai.ReviewInput{Language: src.Language, Phrase: src.Phrase, Transcription: src.Transcription}
+	for _, t := range src.Translations {
+		in.Translations = append(in.Translations, ai.ReviewTranslation{Locale: t.Locale, Translation: t.Translation})
+	}
+	return in, nil
+}
+
+func (w *modelsReviewStore) SaveReview(ctx context.Context, itemID int64, phrase string, findings, response json.RawMessage) error {
+	return skipOnStaleItem(w.models.SaveReview(ctx, itemID, phrase, findings, response))
+}
+
 // skipOnStaleItem turns either store's item-gone or item-changed error into
 // the ai error that skips the job; any other error is returned unchanged.
 func skipOnStaleItem(err error) error {
@@ -196,6 +217,7 @@ func runServe(ctx context.Context, cfg config.Config) {
 	itemsSvc := &itemStore{vocab: vocabStore, models: modelsStore}
 	aiSvc := ai.New(pool, cfg, textStore, dialogStore, translationsSvc, itemsSvc)
 	aiSvc.SetReviewStore(&reviewStore{vocab: vocabStore})
+	aiSvc.SetModelsReviewStore(&modelsReviewStore{models: modelsStore})
 	aiSvc.SetTextReviewStore(resreview.New(pool))
 
 	// jobsSvc is phraseforge's single app-wide job queue (see
@@ -218,6 +240,7 @@ func runServe(ctx context.Context, cfg config.Config) {
 	jobsSvc.Register(ai.KindGenerateVocabularyItem, aiSvc.HandleItemTranslation)
 	jobsSvc.Register(ai.KindGenerateModelsItem, aiSvc.HandleItemTranslation)
 	jobsSvc.Register(ai.KindReviewVocabularyItem, aiSvc.HandleReviewItem)
+	jobsSvc.Register(ai.KindReviewModelsItem, aiSvc.HandleReviewModelsItem)
 	jobsSvc.Register(ai.KindReviewTextJob, aiSvc.HandleReviewResource)
 
 	// ingestSvc's two job kinds turn an ingest HTTP endpoint's staged raw

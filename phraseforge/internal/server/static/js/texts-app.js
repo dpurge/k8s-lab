@@ -15,6 +15,11 @@
   // forms and the view's back link return to it. Set by show(route).
   let listContext = { page: 1, tag: "" };
 
+  // listRequest numbers the list renders: a list response whose render has since
+  // been replaced (by a newer list render or a detail view) must not touch the
+  // page, where its container is gone or belongs to the newer render.
+  let listRequest = 0;
+
   // goTo changes the URL (adding a history entry), which renders the route;
   // the render functions below never touch the URL themselves.
   function goTo(route) {
@@ -154,6 +159,7 @@
   }
 
   async function showList(tagFilter, page = 1) {
+    const request = ++listRequest;
     statusBar.setMessage("");
     listContext = { page, tag: tagFilter || "" };
     // Read fresh on every call (not just at initial load) — same reasoning
@@ -207,14 +213,16 @@
     query.set("page", String(page));
     let items;
     let pageCount;
+    const isCurrent = () => request === listRequest && document.getElementById("listContainer") !== null;
     try {
       const data = await apiFetch("/api/v1/texts?" + query.toString());
       items = data.items;
       pageCount = data.pageCount;
     } catch (e) {
-      statusBar.setMessage(e.message, true);
+      if (isCurrent()) statusBar.setMessage(e.message, true);
       return;
     }
+    if (!isCurrent()) return;
     // A bookmarked page that no longer exists (items deleted since) lands on
     // the last page instead of an empty one.
     if (page > pageCount) {

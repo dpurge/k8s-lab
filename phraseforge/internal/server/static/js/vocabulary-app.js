@@ -23,6 +23,11 @@
   // navigation.md).
   let listContext = { page: 1, tag: "" };
 
+  // listRequest numbers the list renders: a list response whose render has since
+  // been replaced (by a newer list render or a detail view) must not touch the
+  // page, where its container is gone or belongs to the newer render.
+  let listRequest = 0;
+
   // goTo changes the URL (adding a history entry), which renders the route;
   // the render functions below never touch the URL themselves.
   function goTo(route) {
@@ -154,6 +159,7 @@
   }
 
   async function showList(tagFilter, page = 1) {
+    const request = ++listRequest;
     statusBar.setMessage("");
     listContext = { page, tag: tagFilter || "" };
     const languageFilter = window.pfGetLanguageFilter();
@@ -199,14 +205,16 @@
     query.set("page", String(page));
     let items;
     let pageCount;
+    const isCurrent = () => request === listRequest && document.getElementById("listContainer") !== null;
     try {
       const data = await apiFetch("/api/v1/vocabulary?" + query.toString());
       items = data.items;
       pageCount = data.pageCount;
     } catch (e) {
-      statusBar.setMessage(e.message, true);
+      if (isCurrent()) statusBar.setMessage(e.message, true);
       return;
     }
+    if (!isCurrent()) return;
     // A bookmarked page that no longer exists (items deleted since) lands on
     // the last page instead of an empty one.
     if (page > pageCount) {
@@ -392,7 +400,7 @@
       <tr${it.hidden ? ' class="vocab-hidden"' : ""}>
         <td class="${list.scriptEnlarged ? "prose-enlarged" : ""}" dir="${esc(list.scriptDirection)}" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.phrase)}</td>
         <td style="border-bottom:1px solid var(--border); padding:0.5rem; color:var(--muted);">${esc(it.grammar)}</td>
-        <td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.transcription)}</td>
+        ${list.needsTranscription ? `<td dir="ltr" style="border-bottom:1px solid var(--border); padding:0.5rem;">${esc(it.transcription)}</td>` : ""}
         <td style="border-bottom:1px solid var(--border); padding:0.5rem;">${it.translation ? esc(it.translation) : "—"}</td>
         <td style="border-bottom:1px solid var(--border); padding:0.5rem; color:var(--muted);">${esc(it.notes)}${renderExamples(list, it)}</td>
         ${
@@ -418,7 +426,7 @@
           <tr>
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_phrase"))}</th>
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_grammar"))}</th>
-            <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_transcription"))}</th>
+            ${list.needsTranscription ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_transcription"))}</th>` : ""}
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_translation"))}</th>
             <th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_notes"))}</th>
             ${withActions ? `<th style="text-align:left; border-bottom:1px solid var(--border); padding:0.5rem;">${esc(T("vocabulary.col_actions"))}</th>` : ""}
@@ -503,20 +511,19 @@
   }
 
   // wireReview wires the View page's Review button and the review controls in the Actions column.
-  // The column polls while a review waits in the job queue, and stops when the
-  // table it belongs to has left the page.
+  // The column keeps itself up to date through pfPoll (poll.js) while a review
+  // waits in the job queue.
   function wireReview(id, list) {
     const table = root.querySelector(".vocab-items-table");
-    let timer = null;
 
-    async function refresh() {
-      clearTimeout(timer);
-      if (!table || !root.contains(table)) return;
+    // load fetches the reviews, renders the column and says whether any item
+    // still waits for its review job.
+    async function load() {
       let data;
       try {
         data = await apiFetch(`/api/v1/vocabulary/${id}/reviews`);
       } catch (_e) {
-        return; // the column stays as it was; the next action retries
+        return false; // the column stays as it was; the next action retries
       }
       const byPosition = new Map(data.reviews.map((r) => [r.position, r]));
       const pending = new Set(data.pending);
@@ -524,8 +531,11 @@
         const position = Number(cell.dataset.reviewPosition);
         cell.replaceChildren(...reviewCellContent(position, byPosition.get(position), pending.has(position)));
       });
-      if (pending.size > 0) timer = setTimeout(refresh, 8000);
+      return pending.size > 0;
     }
+    // An empty list has no table, hence no column to keep up to date.
+    const poll = table ? window.pfPoll({ run: load, anchor: table }) : { kick() {} };
+    const refresh = () => poll.kick();
 
     function reviewCellContent(position, review, isPending) {
       const queue = () => queueReview(`/api/v1/vocabulary/${id}/items/${position}/review`);

@@ -269,6 +269,10 @@ var catalog = map[string]map[string]string{
 		"models.err_no_edit_language": "You don't have permission to create model lists in that language.",
 		"models.err_no_move_language": "You don't have permission to move this model list to that language.",
 
+		"models.generate_missing_translations":         "Generate",
+		"models.generate_missing_translations_started": "Translation generation started.",
+		"models.generate_missing_translations_none":    "Every item already has a translation.",
+
 		"profile.title":                 "Profile",
 		"profile.signed_in_as":          "Signed in as",
 		"profile.roles_heading":         "My roles",
@@ -339,6 +343,7 @@ var catalog = map[string]map[string]string{
 		"admin.llm_kind_review_vocabulary":    "Review vocabulary",
 		"admin.llm_kind_review_transcription": "Review transcription",
 		"admin.llm_kind_review_translation":   "Review translation",
+		"admin.llm_kind_review_models":        "Review models",
 		"admin.llm_source_language":           "Source language",
 		"admin.llm_target_language":           "Target language",
 		"admin.llm_target_not_applicable":     "not applicable",
@@ -617,6 +622,10 @@ var catalog = map[string]map[string]string{
 		"models.err_no_edit_language": "Nie masz uprawnień do tworzenia list modeli w tym języku.",
 		"models.err_no_move_language": "Nie masz uprawnień, aby przenieść tę listę modeli do tego języka.",
 
+		"models.generate_missing_translations":         "Generuj",
+		"models.generate_missing_translations_started": "Generowanie tłumaczeń rozpoczęte.",
+		"models.generate_missing_translations_none":    "Każdy element ma już tłumaczenie.",
+
 		"profile.title":                 "Profil",
 		"profile.signed_in_as":          "Zalogowano jako",
 		"profile.roles_heading":         "Moje role",
@@ -687,6 +696,7 @@ var catalog = map[string]map[string]string{
 		"admin.llm_kind_review_vocabulary":    "Przegląd słownictwa",
 		"admin.llm_kind_review_transcription": "Przegląd transkrypcji",
 		"admin.llm_kind_review_translation":   "Przegląd tłumaczenia",
+		"admin.llm_kind_review_models":        "Przegląd modeli",
 		"admin.llm_source_language":           "Język źródłowy",
 		"admin.llm_target_language":           "Język docelowy",
 		"admin.llm_target_not_applicable":     "nie dotyczy",

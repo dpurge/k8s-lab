@@ -11,31 +11,14 @@ import (
 
 	"k8s-lab/shared/llm"
 
-	"phraseforge/internal/config"
 	"phraseforge/internal/textnorm"
 )
 
 // KindReviewVocabulary is the purpose of the call that reviews one vocabulary
 // item (its phrase, grammar, transcription, translations, notes and examples)
 // and proposes corrections. It is meant for a more capable model than the one
-// that generated the item, so its provider and model default to the
-// vocabularyItem ones only until the admin sets its own (see purposeDefault).
+// that generated the item, so it has its own provider and model setting.
 const KindReviewVocabulary = "review_vocabulary"
-
-// reviewVocabularyDefault is the reviewVocabulary purpose's default with a blank
-// provider or model taken from vocabularyItem, so a review works out of the
-// box with the model that generates items and a stronger one is a settings
-// change (config.yaml or an admin LLM row) that touches no other purpose.
-func (s *Service) reviewVocabularyDefault() config.PurposeConfig {
-	def := s.cfg.ReviewVocabulary
-	if strings.TrimSpace(def.Provider) == "" {
-		def.Provider = s.cfg.VocabularyItem.Provider
-		def.Model = s.cfg.VocabularyItem.Model
-	} else if strings.TrimSpace(def.Model) == "" {
-		def.Model = s.cfg.VocabularyItem.Model
-	}
-	return def
-}
 
 // ReviewVocabularySchema is the reply schema of the review call, sent as the
 // call's format. Every check is {ok, suggestion, reason}: ok is false when

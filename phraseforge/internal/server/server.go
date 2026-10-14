@@ -4,12 +4,14 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -243,6 +245,13 @@ func (s *Server) Router() http.Handler {
 			// requireAuth/CanEdit authorization as add/update above.
 			r.Post("/models/{id}/items/{position}/generate-transcription", s.apiGenerateModelsItemTranscription)
 			r.Post("/models/{id}/items/{position}/generate-translation", s.apiGenerateModelsItemTranslation)
+			r.Post("/models/{id}/generate-missing-translations", s.apiGenerateMissingModelsTranslations)
+			r.Post("/models/{id}/review", s.apiReviewModelsList)
+			r.Get("/models/{id}/reviews", s.apiListModelsReviews)
+			r.Post("/models/{id}/items/{position}/review", s.apiReviewModelsItem)
+			r.Get("/models/{id}/items/{position}/review", s.apiGetModelsItemReview)
+			r.Post("/models/{id}/items/{position}/review/apply", s.apiApplyModelsItemReview)
+			r.Post("/models/{id}/items/{position}/review/dismiss", s.apiDismissModelsItemReview)
 
 			r.Get("/profile", s.apiGetProfile)
 			r.Post("/profile/locale", s.apiSetProfileLocale)
@@ -1002,4 +1011,15 @@ func render(w http.ResponseWriter, loc, name string, data map[string]any) {
 	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// languageHasTranscription is whether items of language carry a transcription:
+// the same rule generation applies (ai.Service.EffectiveSections), so the
+// page shows exactly the transcriptions that can be generated.
+func (s *Server) languageHasTranscription(ctx context.Context, language string) (bool, error) {
+	sections, err := s.ai.EffectiveSections(ctx, language)
+	if err != nil {
+		return false, fmt.Errorf("load language sections for %s: %w", language, err)
+	}
+	return strings.TrimSpace(sections.TranscriptionPrompt) != "", nil
 }
