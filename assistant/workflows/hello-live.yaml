@@ -1,0 +1,31 @@
+id: hello-live
+version: 1
+description: The hello conversation on a real model (the cheapest chat model that is available), to see how a model follows a workflow. It asks for the user's name, then greets them.
+state_schema:
+  type: object
+  properties:
+    name: {type: string, description: "The user's name, as they gave it."}
+    greeting: {type: string, description: "One short sentence greeting the user by name."}
+    asked: {type: boolean, description: "True once the user has been asked for their name."}
+  required: [name, greeting]
+  additionalProperties: false
+start: ask
+limits: {max_steps: 6, max_tokens: 20000, max_retries: 2, max_visits: 3}
+model_tags: [chat]
+states:
+  ask:
+    instructions: >-
+      Look at asked in the run state. If it is not true, the user's message so
+      far is only a greeting, never their name: reply with the ask_user action
+      (payload {"question": "What is your name?"}) and set asked to true in the
+      state patch. If asked is true, the observation is the user's answer: record
+      it, as typed, in name and go to greet. Never ask twice.
+    next: [greet]
+  greet:
+    instructions: >-
+      Write one short sentence greeting the user by name and record it in
+      greeting, then go to done.
+    next: [done]
+  done:
+    instructions: Finished.
+    end: true

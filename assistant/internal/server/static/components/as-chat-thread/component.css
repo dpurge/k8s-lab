@@ -1,0 +1,189 @@
+as-chat-thread {
+  display: flex;
+  flex-direction: column;
+  min-height: 24rem;
+}
+
+as-chat-thread .as-thread-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+as-chat-thread .as-thread-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+as-chat-thread .as-thread-meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+as-chat-thread .as-thread-status {
+  flex: 1;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+as-chat-thread .as-state-running,
+as-chat-thread .as-state-pending {
+  color: var(--link);
+}
+
+as-chat-thread .as-state-waiting {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+as-chat-thread .as-state-failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-chat-thread .as-thread-task {
+  color: var(--link);
+  font-size: 0.9rem;
+}
+
+as-chat-thread .as-thread-task[hidden],
+as-chat-thread .as-thread-remove[hidden] {
+  display: none;
+}
+
+as-chat-thread .as-thread-remove {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--danger);
+  background: var(--surface);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  padding: 0.15rem 0.7rem;
+  cursor: pointer;
+}
+
+as-chat-thread .as-thread-remove.armed {
+  background: var(--danger);
+  color: #fff;
+}
+
+as-chat-thread .as-thread-error,
+as-chat-thread .as-thread-send-error {
+  margin: 0.5rem 0 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-chat-thread .as-thread-error[hidden],
+as-chat-thread .as-thread-send-error[hidden] {
+  display: none;
+}
+
+as-chat-thread .as-thread-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 14rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0.8rem 0.2rem;
+}
+
+as-chat-thread .as-thread-none {
+  color: var(--muted);
+  margin: auto;
+}
+
+as-chat-thread .as-msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+  padding: 0.5rem 0.8rem;
+  border-radius: 10px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+
+as-chat-thread .as-msg-user {
+  align-self: flex-end;
+  background: var(--btn-bg);
+  color: #fff;
+  border-color: var(--btn-bg);
+}
+
+as-chat-thread .as-msg-who {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+as-chat-thread .as-msg-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+as-chat-thread .as-msg-time {
+  align-self: flex-end;
+  font-size: 0.7rem;
+  opacity: 0.6;
+}
+
+as-chat-thread .as-kind-question {
+  border-color: var(--warning);
+}
+
+as-chat-thread .as-kind-result {
+  border-color: var(--success);
+}
+
+as-chat-thread .as-kind-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+as-chat-thread .as-kind-info {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+as-chat-thread .as-thread-composer {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+as-chat-thread .as-thread-text {
+  flex: 1;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  resize: vertical;
+}
+
+as-chat-thread .as-thread-send {
+  font: inherit;
+  background: var(--btn-bg);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.5rem 1.3rem;
+  cursor: pointer;
+}
+
+as-chat-thread .as-thread-send:hover {
+  background: var(--btn-bg-hover);
+}
+
+as-chat-thread .as-thread-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

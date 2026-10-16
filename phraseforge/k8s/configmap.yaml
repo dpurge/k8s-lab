@@ -4,7 +4,7 @@ metadata:
   name: phraseforge-config
   namespace: app
 data:
-  # Every purpose's provider/model/timeoutSeconds/maxAttempts/prompt is declared
+  # Every purpose's provider/model/timeoutSeconds/maxAttempts/maxReplyTokens/prompt is declared
   # explicitly here (matching config.go's defaultFileConfig() values
   # verbatim) rather than left to the Go binary's own compiled-in
   # defaults — that's the whole point of llm-purpose-timeout-and-prompt-
@@ -37,6 +37,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You write the transcription of the source text in Latin script, the way language handbooks do.
 
@@ -64,6 +65,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations."
     title:
       provider: ollama
@@ -72,6 +74,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble."
     processText:
       provider: ollama
@@ -80,6 +83,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You clean raw text copied from a web page or a lesson down to the reading text itself, as Markdown.
 
@@ -130,6 +134,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You clean raw text copied from a web page or a lesson down to the dialog itself, as a Markdown transcript.
 
@@ -162,6 +167,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You extract vocabulary from the given text for a language learner. Respond ONLY with one item per line, in this exact format:
         phrase {grammar} [transcription] | usage
@@ -202,6 +208,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You extract the key sentence patterns of the given text for a language learner: the phrases with a complicated structure that a learner should be able to build, such as a verb with its preposition or case, a conditional, a relative or subordinate clause, or a construction with a gap. Respond ONLY with one item per line, in this exact format:
         phrase [transcription] = translation
@@ -245,6 +252,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 512
       prompt: |
         You are a dictionary. Return ONLY valid JSON without a code fence and without explanations:
 
@@ -304,6 +312,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 512
       prompt: |
         You are a translation system. Return ONLY valid JSON without a code fence and without explanations:
 
@@ -332,6 +341,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You check vocabulary for a language learner. Below are phrases in {{sourceLanguage}} that the learner's dictionary already knows. Each one comes with a usage, a short phrase from a new text in which the word occurs, with the examples and translations the dictionary already has for it. For each phrase decide two things: whether the usage should be added as one more example, and whether it shows a meaning that none of the existing translations covers.
 
@@ -373,6 +383,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You review one entry of a language learner's dictionary. The entry is a phrase in {{sourceLanguage}} with its grammar tags, transcription, translations into other languages, notes and examples. Check every part below and report what should change. Do not change what is fine: for a correct part answer ok true with an empty suggestion and an empty reason.
 
@@ -432,6 +443,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You review one entry of a language learner's list of model phrases. A model phrase is a short sentence pattern in {{sourceLanguage}} that a learner should be able to build, such as a verb with its preposition or case, a conditional, or a construction with a gap written "...". The entry has the phrase, its transcription and its translations into other languages. Check every part below and report what should change. Do not change what is fine: for a correct part answer ok true with an empty suggestion and an empty reason.
 
@@ -473,6 +485,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You review the transcription of a text in {{sourceLanguage}} written for a language learner. The text is the source of truth. Below it is the transcription and the vocabulary list made from the text (phrases with their translations). Check the transcription against the text and report what should change. Do not change what is fine.
 
@@ -508,6 +521,7 @@ data:
       think: false
       timeoutSeconds: 1800
       maxAttempts: 3
+      maxReplyTokens: 0
       prompt: |
         You review the translations of a text in {{sourceLanguage}} written for a language learner. The text is the source of truth. Below it are its translations into other languages and the vocabulary list made from the text (phrases with their translations), which shows how the course renders the words. Check every translation against the text and report what should change. Do not change what is fine: for a correct translation answer ok true with an empty suggestion and an empty reason.
 

@@ -1,0 +1,105 @@
+as-run-trace {
+  display: block;
+}
+
+as-run-trace .as-trace-table-wrap {
+  overflow-x: auto;
+}
+
+as-run-trace .as-trace-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+as-run-trace .as-trace-table th,
+as-run-trace .as-trace-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+as-run-trace .as-trace-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+as-run-trace .as-trace-row {
+  cursor: pointer;
+}
+
+as-run-trace .as-trace-row:hover,
+as-run-trace .as-trace-row:focus {
+  background: var(--surface-alt);
+}
+
+as-run-trace .as-trace-tokens,
+as-run-trace .as-trace-time {
+  text-align: right;
+}
+
+as-run-trace .as-trace-error {
+  white-space: normal;
+  min-width: 14rem;
+}
+
+as-run-trace .as-trace-error.has-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-run-trace .as-trace-detail {
+  padding: 0.25rem 0.5rem 0.75rem;
+  white-space: normal;
+}
+
+as-run-trace .as-trace-detail h4 {
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+as-run-trace .as-trace-detail pre {
+  margin: 0;
+  padding: 0.5rem;
+  background: var(--surface-alt);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+as-run-trace .as-trace-none,
+as-run-trace .as-trace-message {
+  color: var(--muted);
+  margin: 0.5rem 0;
+}
+
+as-run-trace .as-trace-message.error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-run-trace .as-badge {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid currentColor;
+}
+
+as-run-trace .as-outcome-ok {
+  color: var(--success);
+}
+
+as-run-trace .as-outcome-retry {
+  color: var(--warning);
+}
+
+as-run-trace .as-outcome-rejected,
+as-run-trace .as-outcome-failed {
+  color: var(--danger);
+}

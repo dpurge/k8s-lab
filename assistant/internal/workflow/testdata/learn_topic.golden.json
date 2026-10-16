@@ -1,0 +1,1829 @@
+{
+  "steps": [
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "intake",
+          "instructions": "Find out what the user wants to learn and what they want to achieve. Recall what is already known about them with memory_search. If the goal is not clear, ask. When it is clear, record it in goal, set level to unknown, and go to plan.",
+          "tools": [
+            {
+              "name": "memory_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "plan"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {},
+        "observation": "I want to learn Arabic"
+      },
+      "reply": "{\"state_patch\":{},\"action\":{\"type\":\"tool\",\"tool\":\"memory_search\",\"args\":{\"query\":\"learner Arabic\"}}}",
+      "input_tokens": 1316,
+      "output_tokens": 26
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "intake",
+          "instructions": "Find out what the user wants to learn and what they want to achieve. Recall what is already known about them with memory_search. If the goal is not clear, ask. When it is clear, record it in goal, set level to unknown, and go to plan.",
+          "tools": [
+            {
+              "name": "memory_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "plan"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {},
+        "observation": {
+          "memories": []
+        }
+      },
+      "reply": "{\"state_patch\":{\"goal\":\"learn Arabic\"},\"action\":{\"type\":\"ask_user\",\"payload\":{\"text\":\"What do you want to do with Arabic, and what do you know already?\"}}}",
+      "input_tokens": 1314,
+      "output_tokens": 39
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "intake",
+          "instructions": "Find out what the user wants to learn and what they want to achieve. Recall what is already known about them with memory_search. If the goal is not clear, ask. When it is clear, record it in goal, set level to unknown, and go to plan.",
+          "tools": [
+            {
+              "name": "memory_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "plan"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "goal": "learn Arabic"
+        },
+        "observation": "I want to read the news. I only know the alphabet."
+      },
+      "reply": "{\"state_patch\":{\"goal\":\"read Arabic news\",\"level\":\"unknown\"},\"action\":{\"type\":\"goto\",\"state\":\"plan\"}}",
+      "input_tokens": 1329,
+      "output_tokens": 26
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "plan",
+          "instructions": "Fetch the learning program for the goal with rag_search; use web_search only if the knowledge base has none. Record the unit titles in program and set unit_index to 0, then go to assess.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "web_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "assess"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "goal": "read Arabic news",
+          "level": "unknown"
+        }
+      },
+      "reply": "{\"state_patch\":{},\"action\":{\"type\":\"tool\",\"tool\":\"rag_search\",\"args\":{\"query\":\"Arabic learning program reading news\"}}}",
+      "input_tokens": 1341,
+      "output_tokens": 30
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "plan",
+          "instructions": "Fetch the learning program for the goal with rag_search; use web_search only if the knowledge base has none. Record the unit titles in program and set unit_index to 0, then go to assess.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "web_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "assess"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "goal": "read Arabic news",
+          "level": "unknown"
+        },
+        "observation": {
+          "documents": [
+            "RAG:Arabic learning program reading news"
+          ]
+        }
+      },
+      "reply": "{\"state_patch\":{\"program\":[\"Alphabet and sounds\",\"Basic grammar\",\"Reading simple news\"],\"unit_index\":0},\"action\":{\"type\":\"goto\",\"state\":\"assess\"}}",
+      "input_tokens": 1359,
+      "output_tokens": 37
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you ask a quiz question with ask_user, use this payload:\n{\"kind\": \"quiz\", \"number\": \u003cn\u003e, \"question\": \"\u003cone question\u003e\", \"options\": [\"\u003ca\u003e\", \"\u003cb\u003e\", \"\u003cc\u003e\"]}\n- Ask one question per message; number counts from 1.\n- Give options only for a multiple-choice question; leave the key out for an open question.\n- In the same reply, record the question in the run state key pending as {\"question\": \"\u003cthe same question\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the answer arrives, judge it against pending and update the counts of questions asked and answered correctly. In the same reply, set pending to null, unless you ask another question: then pending holds the new one.\n- Start with easy questions and make them harder only while the learner keeps answering correctly. When you can judge the level, stop asking and move on.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "assess",
+          "instructions": "Find out the user's level. Fetch the assessment with rag_search, then ask the questions one at a time with ask_user and record each one in pending, with the answer you expect. When an answer arrives, judge it against pending and update asked and correct in assessment. When you can judge the level, set level, list what they already master in mastered and what they miss in gaps, set pending to null, and go to teach.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "assess",
+            "teach"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "goal": "read Arabic news",
+          "level": "unknown",
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 0
+        }
+      },
+      "reply": "{\"state_patch\":{},\"action\":{\"type\":\"tool\",\"tool\":\"rag_search\",\"args\":{\"query\":\"Arabic placement test\"}}}",
+      "input_tokens": 1606,
+      "output_tokens": 27
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you ask a quiz question with ask_user, use this payload:\n{\"kind\": \"quiz\", \"number\": \u003cn\u003e, \"question\": \"\u003cone question\u003e\", \"options\": [\"\u003ca\u003e\", \"\u003cb\u003e\", \"\u003cc\u003e\"]}\n- Ask one question per message; number counts from 1.\n- Give options only for a multiple-choice question; leave the key out for an open question.\n- In the same reply, record the question in the run state key pending as {\"question\": \"\u003cthe same question\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the answer arrives, judge it against pending and update the counts of questions asked and answered correctly. In the same reply, set pending to null, unless you ask another question: then pending holds the new one.\n- Start with easy questions and make them harder only while the learner keeps answering correctly. When you can judge the level, stop asking and move on.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "assess",
+          "instructions": "Find out the user's level. Fetch the assessment with rag_search, then ask the questions one at a time with ask_user and record each one in pending, with the answer you expect. When an answer arrives, judge it against pending and update asked and correct in assessment. When you can judge the level, set level, list what they already master in mastered and what they miss in gaps, set pending to null, and go to teach.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "assess",
+            "teach"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "goal": "read Arabic news",
+          "level": "unknown",
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 0
+        },
+        "observation": {
+          "documents": [
+            "RAG:Arabic placement test"
+          ]
+        }
+      },
+      "reply": "{\"state_patch\":{\"assessment\":{\"asked\":1,\"correct\":0},\"pending\":{\"question\":\"Q1: write the letter alif\",\"expected\":\"ا\"}},\"action\":{\"type\":\"ask_user\",\"payload\":{\"kind\":\"quiz\",\"number\":1,\"question\":\"Q1: write the letter alif\"}}}",
+      "input_tokens": 1621,
+      "output_tokens": 57
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you ask a quiz question with ask_user, use this payload:\n{\"kind\": \"quiz\", \"number\": \u003cn\u003e, \"question\": \"\u003cone question\u003e\", \"options\": [\"\u003ca\u003e\", \"\u003cb\u003e\", \"\u003cc\u003e\"]}\n- Ask one question per message; number counts from 1.\n- Give options only for a multiple-choice question; leave the key out for an open question.\n- In the same reply, record the question in the run state key pending as {\"question\": \"\u003cthe same question\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the answer arrives, judge it against pending and update the counts of questions asked and answered correctly. In the same reply, set pending to null, unless you ask another question: then pending holds the new one.\n- Start with easy questions and make them harder only while the learner keeps answering correctly. When you can judge the level, stop asking and move on.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "assess",
+          "instructions": "Find out the user's level. Fetch the assessment with rag_search, then ask the questions one at a time with ask_user and record each one in pending, with the answer you expect. When an answer arrives, judge it against pending and update asked and correct in assessment. When you can judge the level, set level, list what they already master in mastered and what they miss in gaps, set pending to null, and go to teach.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "assess",
+            "teach"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "assessment": {
+            "asked": 1,
+            "correct": 0
+          },
+          "goal": "read Arabic news",
+          "level": "unknown",
+          "pending": {
+            "expected": "ا",
+            "question": "Q1: write the letter alif"
+          },
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 0
+        },
+        "observation": "A1 answer"
+      },
+      "reply": "{\"state_patch\":{\"assessment\":{\"asked\":2,\"correct\":1},\"pending\":{\"question\":\"Q2: what does kitab mean?\",\"expected\":\"book\"}},\"action\":{\"type\":\"ask_user\",\"payload\":{\"kind\":\"quiz\",\"number\":2,\"question\":\"Q2: what does kitab mean?\"}}}",
+      "input_tokens": 1639,
+      "output_tokens": 58
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you ask a quiz question with ask_user, use this payload:\n{\"kind\": \"quiz\", \"number\": \u003cn\u003e, \"question\": \"\u003cone question\u003e\", \"options\": [\"\u003ca\u003e\", \"\u003cb\u003e\", \"\u003cc\u003e\"]}\n- Ask one question per message; number counts from 1.\n- Give options only for a multiple-choice question; leave the key out for an open question.\n- In the same reply, record the question in the run state key pending as {\"question\": \"\u003cthe same question\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the answer arrives, judge it against pending and update the counts of questions asked and answered correctly. In the same reply, set pending to null, unless you ask another question: then pending holds the new one.\n- Start with easy questions and make them harder only while the learner keeps answering correctly. When you can judge the level, stop asking and move on.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "assess",
+          "instructions": "Find out the user's level. Fetch the assessment with rag_search, then ask the questions one at a time with ask_user and record each one in pending, with the answer you expect. When an answer arrives, judge it against pending and update asked and correct in assessment. When you can judge the level, set level, list what they already master in mastered and what they miss in gaps, set pending to null, and go to teach.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "assess",
+            "teach"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "assessment": {
+            "asked": 2,
+            "correct": 1
+          },
+          "goal": "read Arabic news",
+          "level": "unknown",
+          "pending": {
+            "expected": "book",
+            "question": "Q2: what does kitab mean?"
+          },
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 0
+        },
+        "observation": "A2 answer"
+      },
+      "reply": "{\"state_patch\":{\"level\":\"beginner\",\"mastered\":[\"alphabet\"],\"gaps\":[\"verb conjugation\"],\"assessment\":{\"asked\":2,\"correct\":2},\"pending\":null},\"action\":{\"type\":\"goto\",\"state\":\"teach\"}}",
+      "input_tokens": 1639,
+      "output_tokens": 46
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you present a lesson with ask_user, use this payload:\n{\"kind\": \"lesson\", \"title\": \"\u003cshort title\u003e\", \"explanation\": \"\u003cthe teaching text, a few short paragraphs\u003e\", \"examples\": [{\"text\": \"\u003cexample\u003e\", \"meaning\": \"\u003cwhat it means or does\u003e\"}], \"exercise\": {\"prompt\": \"\u003cone task for the learner\u003e\"}}\n- Teach only what the learner needs for this exercise.\n- Give two to four examples.\n- Ask exactly one exercise, and in the same reply record it in the run state key pending as {\"question\": \"\u003cthe exercise\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the learner's answer arrives, judge it against pending, say what was right and what was not before you move on, and record what they now master and what they still miss in the run state. Set pending to null unless you ask a new exercise.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "teach",
+          "instructions": "Teach the unit at unit_index. Fetch the lesson and exercises with rag_search and present them with ask_user, recording the exercise in pending with the answer you expect. When the user's answer arrives, judge it against pending, then set pending to null. After each lesson update lessons_done, mastered and gaps, and save anything worth remembering about the user with memory_add. Move to the next unit by raising unit_index. Go to assess if the level needs re-checking, and to done when the goal is reached.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "web_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "memory_add",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "teach",
+            "assess",
+            "done"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "assessment": {
+            "asked": 2,
+            "correct": 2
+          },
+          "gaps": [
+            "verb conjugation"
+          ],
+          "goal": "read Arabic news",
+          "level": "beginner",
+          "mastered": [
+            "alphabet"
+          ],
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 0
+        }
+      },
+      "reply": "{\"state_patch\":{},\"action\":{\"type\":\"tool\",\"tool\":\"rag_search\",\"args\":{\"query\":\"Basic grammar lesson 1\"}}}",
+      "input_tokens": 1715,
+      "output_tokens": 27
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you present a lesson with ask_user, use this payload:\n{\"kind\": \"lesson\", \"title\": \"\u003cshort title\u003e\", \"explanation\": \"\u003cthe teaching text, a few short paragraphs\u003e\", \"examples\": [{\"text\": \"\u003cexample\u003e\", \"meaning\": \"\u003cwhat it means or does\u003e\"}], \"exercise\": {\"prompt\": \"\u003cone task for the learner\u003e\"}}\n- Teach only what the learner needs for this exercise.\n- Give two to four examples.\n- Ask exactly one exercise, and in the same reply record it in the run state key pending as {\"question\": \"\u003cthe exercise\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the learner's answer arrives, judge it against pending, say what was right and what was not before you move on, and record what they now master and what they still miss in the run state. Set pending to null unless you ask a new exercise.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "teach",
+          "instructions": "Teach the unit at unit_index. Fetch the lesson and exercises with rag_search and present them with ask_user, recording the exercise in pending with the answer you expect. When the user's answer arrives, judge it against pending, then set pending to null. After each lesson update lessons_done, mastered and gaps, and save anything worth remembering about the user with memory_add. Move to the next unit by raising unit_index. Go to assess if the level needs re-checking, and to done when the goal is reached.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "web_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "memory_add",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "teach",
+            "assess",
+            "done"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "assessment": {
+            "asked": 2,
+            "correct": 2
+          },
+          "gaps": [
+            "verb conjugation"
+          ],
+          "goal": "read Arabic news",
+          "level": "beginner",
+          "mastered": [
+            "alphabet"
+          ],
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 0
+        },
+        "observation": {
+          "documents": [
+            "RAG:Basic grammar lesson 1"
+          ]
+        }
+      },
+      "reply": "{\"state_patch\":{\"unit_index\":1,\"pending\":{\"question\":\"Translate: the book\",\"expected\":\"الكتاب\"}},\"action\":{\"type\":\"ask_user\",\"payload\":{\"kind\":\"lesson\",\"title\":\"Nouns and the definite article\",\"exercise\":{\"prompt\":\"Translate: the book\"}}}}",
+      "input_tokens": 1729,
+      "output_tokens": 62
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you present a lesson with ask_user, use this payload:\n{\"kind\": \"lesson\", \"title\": \"\u003cshort title\u003e\", \"explanation\": \"\u003cthe teaching text, a few short paragraphs\u003e\", \"examples\": [{\"text\": \"\u003cexample\u003e\", \"meaning\": \"\u003cwhat it means or does\u003e\"}], \"exercise\": {\"prompt\": \"\u003cone task for the learner\u003e\"}}\n- Teach only what the learner needs for this exercise.\n- Give two to four examples.\n- Ask exactly one exercise, and in the same reply record it in the run state key pending as {\"question\": \"\u003cthe exercise\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the learner's answer arrives, judge it against pending, say what was right and what was not before you move on, and record what they now master and what they still miss in the run state. Set pending to null unless you ask a new exercise.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "teach",
+          "instructions": "Teach the unit at unit_index. Fetch the lesson and exercises with rag_search and present them with ask_user, recording the exercise in pending with the answer you expect. When the user's answer arrives, judge it against pending, then set pending to null. After each lesson update lessons_done, mastered and gaps, and save anything worth remembering about the user with memory_add. Move to the next unit by raising unit_index. Go to assess if the level needs re-checking, and to done when the goal is reached.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "web_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "memory_add",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "teach",
+            "assess",
+            "done"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "assessment": {
+            "asked": 2,
+            "correct": 2
+          },
+          "gaps": [
+            "verb conjugation"
+          ],
+          "goal": "read Arabic news",
+          "level": "beginner",
+          "mastered": [
+            "alphabet"
+          ],
+          "pending": {
+            "expected": "الكتاب",
+            "question": "Translate: the book"
+          },
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 1
+        },
+        "observation": "my exercise answer"
+      },
+      "reply": "{\"state_patch\":{\"lessons_done\":1,\"mastered\":[\"alphabet\",\"basic nouns\"],\"gaps\":[\"verb conjugation\"],\"pending\":null},\"action\":{\"type\":\"tool\",\"tool\":\"memory_add\",\"args\":{\"text\":\"Learner is a beginner in Arabic; goal: read news\"}}}",
+      "input_tokens": 1741,
+      "output_tokens": 57
+    },
+    {
+      "system": "You are the controller of a workflow. You work one step at a time. Each step you are given the workflow, the state you are in, the run state recorded so far and the latest observation. You never see earlier steps: whatever must be remembered has to be written into the run state.\n\nLanguage: arb\nThe user works with Modern Standard Arabic.\n- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.\n- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.\n- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.\n- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.\n\nWhen you present a lesson with ask_user, use this payload:\n{\"kind\": \"lesson\", \"title\": \"\u003cshort title\u003e\", \"explanation\": \"\u003cthe teaching text, a few short paragraphs\u003e\", \"examples\": [{\"text\": \"\u003cexample\u003e\", \"meaning\": \"\u003cwhat it means or does\u003e\"}], \"exercise\": {\"prompt\": \"\u003cone task for the learner\u003e\"}}\n- Teach only what the learner needs for this exercise.\n- Give two to four examples.\n- Ask exactly one exercise, and in the same reply record it in the run state key pending as {\"question\": \"\u003cthe exercise\u003e\", \"expected\": \"\u003cthe answer you expect\u003e\"}. The key names are exactly question and expected.\n- When the learner's answer arrives, judge it against pending, say what was right and what was not before you move on, and record what they now master and what they still miss in the run state. Set pending to null unless you ask a new exercise.\n\nThe input is one JSON object with these keys:\n- workflow: the workflow's id and what it is for.\n- state: the state you are in, its instructions, the tools you may call (with the arguments each takes) and the states you may move to.\n- run_state_schema: the JSON Schema of the run state. It lists every key the run state may hold and the type of each, including keys that are not in run_state yet.\n- run_state: everything recorded so far.\n- observation: the result of your previous action: a tool result, an error, or the user's message. It is absent at the start of a state.\n- retry: present only when your previous reply was refused. It holds that reply and the reason. Correct exactly that problem.\n\nReply with exactly one JSON object, written compactly on one line, with nothing before or after it: no code fence, no explanation.\n{\"state_patch\": {...}, \"action\": {...}}\n\nstate_patch holds only what changed in the run state. Use exactly the key names and types of run_state_schema: never rename a key and never add one the schema does not list. Set a key to null to delete it. A list you write replaces the whole old list, so write the complete list. Record what you will need in later steps, because you will not see this step again.\n\naction is exactly one of:\n- {\"type\": \"tool\", \"tool\": \"\u003cname\u003e\", \"args\": {...}} calls a tool this state lists. Its result is your next observation, in the same state. Use only the tools in state.tools, with the arguments their schema asks for.\n- {\"type\": \"goto\", \"state\": \"\u003cname\u003e\"} moves to a state listed in state.next. Do this when this state's work is finished.\n- {\"type\": \"ask_user\", \"payload\": {...}} sends the user a message and waits for the answer. The payload is what the user will see; follow the output rules above for its shape. Ask one thing at a time.\n\nExamples of the shape of a reply (the names are made up):\n{\"state_patch\":{\"topic\":\"cooking\"},\"action\":{\"type\":\"tool\",\"tool\":\"search\",\"args\":{\"query\":\"basic recipes\"}}}\n{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"next_state\"}}\n{\"state_patch\":{\"asked\":1},\"action\":{\"type\":\"ask_user\",\"payload\":{\"message\":\"What would you like to cook?\"}}}\n\nNever invent a tool result or the user's answer: if you lack information, call a tool or ask. Do not call the same tool with the same arguments twice in a row.",
+      "input": {
+        "workflow": {
+          "id": "learn-topic",
+          "description": "Teach the user a topic they want to learn, such as a language or a technology: find out their goal, fetch a learning program, assess their level with a short series of questions, then give lessons and exercises while keeping an up-to-date picture of their level, what they know and where their gaps are, until the goal is reached."
+        },
+        "state": {
+          "name": "teach",
+          "instructions": "Teach the unit at unit_index. Fetch the lesson and exercises with rag_search and present them with ask_user, recording the exercise in pending with the answer you expect. When the user's answer arrives, judge it against pending, then set pending to null. After each lesson update lessons_done, mastered and gaps, and save anything worth remembering about the user with memory_add. Move to the next unit by raising unit_index. Go to assess if the level needs re-checking, and to done when the goal is reached.",
+          "tools": [
+            {
+              "name": "rag_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "web_search",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "memory_add",
+              "args_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "next": [
+            "teach",
+            "assess",
+            "done"
+          ]
+        },
+        "run_state_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "asked": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "correct": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "description": "What the user wants to achieve, in their words.",
+              "type": "string"
+            },
+            "lessons_done": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "unknown",
+                "beginner",
+                "elementary",
+                "intermediate",
+                "advanced"
+              ]
+            },
+            "mastered": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending": {
+              "additionalProperties": false,
+              "description": "What the user was last asked and what a right answer looks like. You will not see the question again, so record it here when you ask; judge the user's answer against it when it arrives, then set pending to null.",
+              "properties": {
+                "expected": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "program": {
+              "description": "Titles of the units of the learning program, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "unit_index": {
+              "description": "Index in program of the unit being taught.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "goal",
+            "level"
+          ],
+          "type": "object"
+        },
+        "run_state": {
+          "assessment": {
+            "asked": 2,
+            "correct": 2
+          },
+          "gaps": [
+            "verb conjugation"
+          ],
+          "goal": "read Arabic news",
+          "lessons_done": 1,
+          "level": "beginner",
+          "mastered": [
+            "alphabet",
+            "basic nouns"
+          ],
+          "program": [
+            "Alphabet and sounds",
+            "Basic grammar",
+            "Reading simple news"
+          ],
+          "unit_index": 1
+        },
+        "observation": {
+          "saved": true
+        }
+      },
+      "reply": "{\"state_patch\":{},\"action\":{\"type\":\"goto\",\"state\":\"done\"}}",
+      "input_tokens": 1730,
+      "output_tokens": 15
+    }
+  ]
+}

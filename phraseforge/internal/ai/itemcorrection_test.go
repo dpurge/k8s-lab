@@ -180,3 +180,36 @@ func TestItemCallSharesBudgetAcrossServerErrorAndBadPhrase(t *testing.T) {
 		t.Errorf("messages per request = %v, want %v", fake.msgCount, want)
 	}
 }
+
+func TestCallItemWithCorrectionRetriesAContextOverflowAndCapsTheReply(t *testing.T) {
+	var mu sync.Mutex
+	var predicts []any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Options map[string]any `json:"options"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		mu.Lock()
+		predicts = append(predicts, in.Options["num_predict"])
+		first := len(predicts) == 1
+		mu.Unlock()
+		reply, replyTokens := `{"phrase":"der Koffer","translation":"walizka"}`, 50
+		if first {
+			reply, replyTokens = `{"phrase":"der Koffer","translation":"wal`, 2700 // a reply that ran away
+		}
+		fmt.Fprintf(w, `{"message":{"role":"assistant","content":%q},"done":false}`+"\n", reply)
+		fmt.Fprintf(w, `{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1400,"eval_count":%d}`+"\n", replyTokens)
+	}))
+	t.Cleanup(server.Close)
+	s := retryingService(server.URL, &sleepRecorder{})
+	cfg := config.PurposeConfig{MaxAttempts: 3, NumCtx: 4096, MaxReplyTokens: 512}
+
+	raw, err := s.callItemWithCorrection(context.Background(), vocabPayload("der Koffer"), Prompt{Provider: "ollama", Model: "test-model"}, cfg, VocabularyItemSchema,
+		[]llm.Message{{Role: "user", Content: "translate"}}, deuSections)
+	if err != nil || !strings.Contains(raw, "walizka") {
+		t.Fatalf("got (%q, %v), want the second attempt's reply", raw, err)
+	}
+	if !reflect.DeepEqual(predicts, []any{float64(512), float64(512)}) {
+		t.Errorf("num_predict per request = %v, want 512 twice", predicts)
+	}
+}

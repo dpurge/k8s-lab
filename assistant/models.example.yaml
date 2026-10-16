@@ -1,0 +1,45 @@
+# Example models.yaml. Copy it, edit it, check it with:
+#   go run . models validate models.yaml
+# The assistant reads it from ASSISTANT_MODELS_FILE (default /etc/assistant/models.yaml);
+# in the cluster it is a ConfigMap.
+
+providers:
+  # Ollama on the machine the assistant runs on. From a process on that machine
+  # use localhost; from a pod in the dev cluster, host.docker.internal reaches
+  # the laptop.
+  - id: laptop
+    type: ollama
+    base_url: http://host.docker.internal:11434
+  # Ollama on another machine in the network.
+  - id: gpu-box
+    type: ollama
+    base_url: http://gpu-box.lan:11434
+
+models:
+  # A call goes to the highest priority model that has every tag it asks for and
+  # is available, and falls back to lower ones. A higher number is tried first.
+  - id: gemma-gpu
+    provider: gpu-box
+    model: gemma4:12b
+    tags: [chat, review]
+    priority: 20
+    options: { num_ctx: 16384, think: false }
+  - id: gemma-laptop
+    provider: laptop
+    model: gemma4:12b
+    tags: [chat, review, cheap]
+    priority: 10
+    options: { num_ctx: 8192, think: false, num_predict: 2048 }
+    # Prices are US dollars per million tokens; omitted means 0, right for a local model.
+    price: { input_per_mtok: 0, output_per_mtok: 0 }
+  - id: embed-laptop
+    provider: laptop
+    model: bge-m3
+    tags: [embed]
+    priority: 10
+
+routing:
+  breaker:
+    failures: 3 # consecutive failures before a model is set aside
+    cooldown_seconds: 60
+    rate_limited_cooldown_seconds: 30

@@ -1,0 +1,72 @@
+as-new-task {
+  display: block;
+}
+
+as-new-task .as-new-task-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+as-new-task .as-new-task-about {
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+as-new-task .as-new-task-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+as-new-task select,
+as-new-task input,
+as-new-task textarea {
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+}
+
+as-new-task textarea {
+  box-sizing: border-box;
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  resize: vertical;
+}
+
+as-new-task .as-new-task-start {
+  font: inherit;
+  background: var(--btn-bg);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.4rem 1.2rem;
+  cursor: pointer;
+}
+
+as-new-task .as-new-task-start:hover {
+  background: var(--btn-bg-hover);
+}
+
+as-new-task .as-new-task-start:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+as-new-task .as-new-task-error {
+  margin: 0.5rem 0 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-new-task .as-new-task-error[hidden] {
+  display: none;
+}

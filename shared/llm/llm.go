@@ -20,6 +20,10 @@ type Config struct {
 	// means omit it, leaving Ollama's own default in effect. No effect on
 	// the openAI path, which has no equivalent per-request knob.
 	NumCtx int
+	// NumPredict caps the reply's length in tokens (options.num_predict), so
+	// a model stuck in a loop stops long before it fills the context window.
+	// Zero means omit it: no cap. No effect on the openAI path.
+	NumPredict int
 	// Think enables Ollama's hidden reasoning trace on thinking-capable
 	// models. Zero value (false) preserves prior behavior for every
 	// existing caller. No effect on the openAI path, which has no
@@ -218,8 +222,15 @@ func (c *Client) ollama(ctx context.Context, messages []Message, tools []map[str
 	if len(tools) > 0 {
 		in["tools"] = tools
 	}
+	options := map[string]any{}
 	if c.cfg.NumCtx > 0 {
-		in["options"] = map[string]any{"num_ctx": c.cfg.NumCtx}
+		options["num_ctx"] = c.cfg.NumCtx
+	}
+	if c.cfg.NumPredict > 0 {
+		options["num_predict"] = c.cfg.NumPredict
+	}
+	if len(options) > 0 {
+		in["options"] = options
 	}
 	if len(c.cfg.Format) > 0 {
 		in["format"] = c.cfg.Format

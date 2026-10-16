@@ -27,3 +27,7 @@ phraseforge/.docker/corp-ca/_corp-ca.pem
 # Node dev-time-only test tooling for kb-* Web Components (jsdom); never
 # used to build or ship the actual assets.
 node_modules/
+
+# assistant: local settings (secrets) and the temporary corporate CA copy used during Docker build
+assistant/.env
+assistant/.docker/corp-ca/_corp-ca.pem

@@ -1,0 +1,5 @@
+The user works with Modern Standard Arabic.
+- Write Arabic in Arabic script, right to left. Put full vowel marks (tashkeel) on the words and sentences the learner is studying, and leave them off in running instructions.
+- Next to every Arabic word or sentence the learner is studying, give a transcription in DIN 31635 Latin letters, then the meaning.
+- Give nouns with their gender and, where it is irregular, their broken plural. Give verbs in the past tense third person masculine singular, with the present form.
+- Keep Arabic and Latin text in separate phrases so the direction of the text stays clear.

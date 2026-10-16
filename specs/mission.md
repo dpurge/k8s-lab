@@ -1,7 +1,7 @@
 ---
-version: 1
+version: 2
 status: approved
-updated: 2026-09-21
+updated: 2026-10-16
 ---
 
 ## Problem
@@ -10,7 +10,7 @@ This project provides a local, k3d-based Kubernetes cluster for development. It 
 
 ## Users
 
-Developers who need a local environment for building and testing cloud-native applications. The project is developed and tested on Linux and macOS; Windows is also supported, via Git for Windows or WSL for the required shell tooling (`jq`, `sed`, `awk`, etc.). Each of the three primary applications (dictionary, phraseforge, knowledge) exposes HTTP-based REST APIs and browser GUIs accessible via Traefik ingress on `localhost:8080`.
+Developers who need a local environment for building and testing cloud-native applications. The project is developed and tested on Linux and macOS; Windows is also supported, via Git for Windows or WSL for the required shell tooling (`jq`, `sed`, `awk`, etc.). Each of the four applications (dictionary, phraseforge, knowledge, assistant) exposes HTTP-based REST APIs and browser GUIs accessible via Traefik ingress on `localhost:8080`.
 
 ## Value proposition
 

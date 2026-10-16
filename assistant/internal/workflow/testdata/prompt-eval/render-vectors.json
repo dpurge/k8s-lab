@@ -1,0 +1,144 @@
+{
+  "description": "Test vectors for rendering a system prompt template with per-axis snippets. Hand-written so that two independent implementations (JavaScript in prompt-eval, Go in an application) can be checked against the same expected text. A template may use the placeholders of the two axes (languageRules, outputRules) and the selector variables (language, output); a snippet may use only the selector variables. Each selected snippet is trimmed. A missing snippet renders empty. After substitution, three or more newlines collapse to two and the whole text is trimmed.",
+  "axes": [
+    { "dir": "lang", "file": "rules.txt", "placeholder": "languageRules", "selector": "language" },
+    { "dir": "output", "file": "rules.txt", "placeholder": "outputRules", "selector": "output" }
+  ],
+  "vectors": [
+    {
+      "name": "both axes selected",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xaa": "Rules for {{language}}: write A.", "xbb": "Rules B." }, "output": { "lesson": "Lesson for {{language}} as {{output}}.", "quiz": "Quiz rules." } },
+      "vars": { "language": "xaa", "output": "lesson" },
+      "expected": "Start.\nLang: xaa\nRules for xaa: write A.\n\nLesson for xaa as lesson.\nEnd."
+    },
+    {
+      "name": "other snippets of both axes",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xaa": "Rules for {{language}}: write A.", "xbb": "Rules B." }, "output": { "lesson": "Lesson for {{language}} as {{output}}.", "quiz": "Quiz rules." } },
+      "vars": { "language": "xbb", "output": "quiz" },
+      "expected": "Start.\nLang: xbb\nRules B.\n\nQuiz rules.\nEnd."
+    },
+    {
+      "name": "only the language selected",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xaa": "Rules for {{language}}: write A." }, "output": { "quiz": "Quiz rules." } },
+      "vars": { "language": "xaa" },
+      "expected": "Start.\nLang: xaa\nRules for xaa: write A.\n\nEnd."
+    },
+    {
+      "name": "only the output selected",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xaa": "Rules for {{language}}: write A." }, "output": { "quiz": "Quiz rules." } },
+      "vars": { "output": "quiz" },
+      "expected": "Start.\nLang: \n\nQuiz rules.\nEnd."
+    },
+    {
+      "name": "nothing selected",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xaa": "Rules A." }, "output": { "quiz": "Quiz rules." } },
+      "vars": {},
+      "expected": "Start.\nLang: \n\nEnd."
+    },
+    {
+      "name": "a language without a snippet renders empty rules",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xaa": "Rules A." }, "output": { "lesson": "Lesson for {{language}} as {{output}}." } },
+      "vars": { "language": "zzz", "output": "lesson" },
+      "expected": "Start.\nLang: zzz\n\nLesson for zzz as lesson.\nEnd."
+    },
+    {
+      "name": "an output kind without a snippet renders empty rules",
+      "template": "Start.\nLang: {{language}}\n{{languageRules}}\n\n{{outputRules}}\nEnd.",
+      "snippets": { "lang": { "xbb": "Rules B." }, "output": { "quiz": "Quiz rules." } },
+      "vars": { "language": "xbb", "output": "nokind" },
+      "expected": "Start.\nLang: xbb\nRules B.\n\nEnd."
+    },
+    {
+      "name": "snippets are trimmed",
+      "template": "A\n{{languageRules}}\nB",
+      "snippets": { "lang": { "xaa": "\n\n  rules  \n\n" } },
+      "vars": { "language": "xaa" },
+      "expected": "A\nrules\nB"
+    },
+    {
+      "name": "a template without placeholders is trimmed",
+      "template": "Just text.\n",
+      "snippets": {},
+      "vars": { "language": "xaa" },
+      "expected": "Just text."
+    },
+    {
+      "name": "a placeholder may appear twice",
+      "template": "{{language}} and {{language}}",
+      "snippets": {},
+      "vars": { "language": "xaa" },
+      "expected": "xaa and xaa"
+    },
+    {
+      "name": "adjacent placeholders",
+      "template": "{{language}}{{output}}",
+      "snippets": {},
+      "vars": { "language": "xaa", "output": "quiz" },
+      "expected": "xaaquiz"
+    },
+    {
+      "name": "unicode text is kept",
+      "template": "{{languageRules}}",
+      "snippets": { "lang": { "arb": "اكتب بالعربية — مرحبا" } },
+      "vars": { "language": "arb" },
+      "expected": "اكتب بالعربية — مرحبا"
+    },
+    {
+      "name": "the output kind is a variable in the template",
+      "template": "kind={{output}}",
+      "snippets": {},
+      "vars": { "output": "lesson" },
+      "expected": "kind=lesson"
+    },
+    {
+      "name": "an output snippet may use both selector variables",
+      "template": "{{outputRules}}",
+      "snippets": { "output": { "lesson": "For {{output}} in {{language}}." } },
+      "vars": { "language": "xaa", "output": "lesson" },
+      "expected": "For lesson in xaa."
+    },
+    {
+      "name": "five newlines collapse to a blank line",
+      "template": "a\n\n\n\n\nb",
+      "snippets": {},
+      "vars": {},
+      "expected": "a\n\nb"
+    },
+    {
+      "name": "two newlines are kept",
+      "template": "a\n\nb",
+      "snippets": {},
+      "vars": {},
+      "expected": "a\n\nb"
+    },
+    {
+      "name": "outer whitespace is trimmed, inner kept",
+      "template": "\n\n  text  here  \n\n",
+      "snippets": {},
+      "vars": {},
+      "expected": "text  here"
+    },
+    {
+      "name": "braces that are not a placeholder pass through, and inserted text is not scanned again",
+      "template": "{{languageRules}}",
+      "snippets": { "lang": { "xaa": "braces {x} and {{ alone" } },
+      "vars": { "language": "xaa" },
+      "expected": "braces {x} and {{ alone"
+    }
+  ],
+  "errors": [
+    { "name": "unknown placeholder in the template", "template": "Hi {{nope}} {{language}}", "snippets": {}, "error": "unknown placeholder {{nope}}" },
+    { "name": "a typo in a placeholder name", "template": "{{languageRule}}", "snippets": {}, "error": "unknown placeholder {{languageRule}}" },
+    { "name": "spaces inside the braces are not allowed", "template": "{{ language }}", "snippets": {}, "error": "unknown placeholder {{ language }}" },
+    { "name": "an empty placeholder", "template": "x {{}} y", "snippets": {}, "error": "unknown placeholder {{}}" },
+    { "name": "unknown placeholder in a language snippet", "template": "{{languageRules}}", "snippets": { "lang": { "xaa": "x {{nope}}" } }, "error": "unknown placeholder {{nope}}" },
+    { "name": "a language snippet cannot use an axis placeholder", "template": "{{languageRules}}", "snippets": { "lang": { "xaa": "{{languageRules}}" } }, "error": "unknown placeholder {{languageRules}}" },
+    { "name": "an output snippet cannot use an axis placeholder", "template": "{{outputRules}}", "snippets": { "output": { "quiz": "{{outputRules}}" } }, "error": "unknown placeholder {{outputRules}}" }
+  ]
+}

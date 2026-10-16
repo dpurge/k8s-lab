@@ -1,0 +1,56 @@
+# The models the dev cluster's assistant uses: the Ollama on the laptop that
+# runs the cluster, reached from a pod as host.docker.internal. Deployed as the
+# assistant-models ConfigMap by `task deploy-assistant`; check it with
+#   go run . models validate models.dev.yaml
+providers:
+  - id: laptop
+    type: ollama
+    base_url: http://host.docker.internal:11434
+  # Gemini on Vertex AI, billed to this project; authenticated with the token
+  # that `task refresh-assistant-vertex-token` writes.
+  - id: gcp
+    type: vertex
+    project: np-te-core-ai
+    location: us-central1
+  # Answers the hello workflow from inside the assistant, with no load, to try the
+  # interface by hand. It refuses every other workflow.
+  - id: demo
+    type: demo
+
+models:
+  - id: gemma-laptop
+    provider: laptop
+    model: gemma4:12b
+    tags: [chat, review, cheap]
+    priority: 10
+    # The laptop is CPU-bound: allow for a model load, then stop waiting when
+    # output has stalled.
+    options:
+      num_ctx: 8192
+      num_predict: 512
+      think: false
+      first_token_timeout_seconds: 300
+      idle_timeout_seconds: 60
+      overall_timeout_seconds: 600
+
+  # The cheapest quick Gemini the project lists. Prices are left out until they
+  # are copied from the Vertex AI price list, so its cost shows as $0.
+  - id: gemini-flash-lite
+    provider: gcp
+    model: gemini-2.5-flash-lite
+    tags: [chat, review, cheap]
+    priority: 20
+    options:
+      num_predict: 2048
+      overall_timeout_seconds: 120
+  - id: demo-hello
+    provider: demo
+    model: hello
+    tags: [demo]
+    priority: 1
+
+routing:
+  breaker:
+    failures: 3
+    cooldown_seconds: 60
+    rate_limited_cooldown_seconds: 30

@@ -1,0 +1,164 @@
+as-task-detail {
+  display: block;
+}
+
+as-task-detail .as-task-detail-back {
+  color: var(--link);
+  text-decoration: none;
+}
+
+as-task-detail .as-task-detail-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.5rem;
+  margin: 1rem 0;
+}
+
+as-task-detail dt {
+  color: var(--muted);
+}
+
+as-task-detail dd {
+  margin: 0;
+}
+
+as-task-detail .as-task-detail-id {
+  font-family: ui-monospace, monospace;
+}
+
+as-task-detail .as-task-detail-section h3 {
+  margin: 1rem 0 0.4rem;
+  font-size: 1rem;
+}
+
+as-task-detail pre {
+  margin: 0;
+  padding: 0.75rem;
+  background: var(--surface-alt);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+as-task-detail pre.as-task-detail-error,
+as-task-detail p.as-task-detail-error {
+  color: var(--danger);
+}
+
+as-task-detail .as-task-detail-none {
+  color: var(--muted);
+  margin: 0;
+}
+
+as-task-detail .as-live {
+  color: var(--link);
+}
+
+as-task-detail .as-badge {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  border: 1px solid currentColor;
+}
+
+as-task-detail .as-status-pending,
+as-task-detail .as-status-cancelled {
+  color: var(--muted);
+}
+
+as-task-detail .as-status-running {
+  color: var(--link);
+}
+
+as-task-detail .as-status-succeeded {
+  color: var(--success);
+}
+
+as-task-detail .as-status-failed {
+  color: var(--danger);
+}
+
+as-task-detail .as-task-detail-table-wrap {
+  overflow-x: auto;
+}
+
+as-task-detail .as-task-detail-calls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+as-task-detail .as-task-detail-calls-table th,
+as-task-detail .as-task-detail-calls-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+as-task-detail .as-task-detail-calls-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+as-task-detail .as-call-input,
+as-task-detail .as-call-output,
+as-task-detail .as-call-cost,
+as-task-detail .as-call-duration {
+  text-align: right;
+}
+
+as-task-detail .as-call-error {
+  white-space: normal;
+  min-width: 12rem;
+}
+
+as-task-detail .as-call-error.has-error {
+  color: var(--danger);
+}
+
+as-task-detail .as-outcome-ok {
+  color: var(--success);
+}
+
+as-task-detail .as-outcome-error,
+as-task-detail .as-outcome-timeout,
+as-task-detail .as-outcome-rate_limited {
+  color: var(--danger);
+}
+
+as-task-detail .as-outcome-canceled {
+  color: var(--muted);
+}
+
+as-task-detail .as-task-detail-failure {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+as-task-detail .as-task-detail-failure h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+  color: var(--danger);
+}
+
+as-task-detail .as-task-detail-failure pre {
+  background: none;
+  padding: 0;
+  font-weight: 600;
+}
+
+as-task-detail .as-task-detail-run-facts {
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+}
+
+as-task-detail .as-status-waiting {
+  color: var(--warning);
+}

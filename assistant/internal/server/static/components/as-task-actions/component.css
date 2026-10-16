@@ -1,0 +1,55 @@
+as-task-actions {
+  display: block;
+  margin: 0.75rem 0;
+}
+
+as-task-actions .as-actions-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+as-task-actions .as-actions-button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 1rem;
+  cursor: pointer;
+}
+
+as-task-actions .as-actions-button:hover {
+  background: var(--surface-alt);
+}
+
+as-task-actions .as-actions-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+as-task-actions .as-actions-retry {
+  color: var(--link);
+  border-color: var(--link);
+}
+
+as-task-actions .as-actions-cancel,
+as-task-actions .as-actions-remove {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+as-task-actions .as-actions-remove.armed {
+  background: var(--danger);
+  color: #fff;
+}
+
+as-task-actions .as-actions-error {
+  margin: 0.5rem 0 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-task-actions .as-actions-error[hidden] {
+  display: none;
+}

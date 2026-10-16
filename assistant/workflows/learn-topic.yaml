@@ -1,0 +1,105 @@
+id: learn-topic
+version: 1
+description: >-
+  Teach the user a topic they want to learn, such as a language or a
+  technology: find out their goal, fetch a learning program, assess their
+  level with a short series of questions, then give lessons and exercises
+  while keeping an up-to-date picture of their level, what they know and
+  where their gaps are, until the goal is reached.
+state_schema:
+  type: object
+  additionalProperties: false
+  required: [goal, level]
+  properties:
+    goal:
+      type: string
+      description: What the user wants to achieve, in their words.
+    level:
+      enum: [unknown, beginner, elementary, intermediate, advanced]
+    program:
+      type: array
+      items: {type: string}
+      description: Titles of the units of the learning program, in order.
+    unit_index:
+      type: integer
+      minimum: 0
+      description: Index in program of the unit being taught.
+    mastered:
+      type: array
+      items: {type: string}
+    gaps:
+      type: array
+      items: {type: string}
+    assessment:
+      type: object
+      additionalProperties: false
+      properties:
+        asked: {type: integer, minimum: 0}
+        correct: {type: integer, minimum: 0}
+    lessons_done:
+      type: integer
+      minimum: 0
+    pending:
+      type: object
+      additionalProperties: false
+      description: >-
+        What the user was last asked and what a right answer looks like. You
+        will not see the question again, so record it here when you ask; judge
+        the user's answer against it when it arrives, then set pending to null.
+      properties:
+        question: {type: string}
+        expected: {type: string}
+start: intake
+limits:
+  max_steps: 60
+  max_tokens: 200000
+  max_retries: 2
+  max_visits: 20
+states:
+  intake:
+    instructions: >-
+      Find out what the user wants to learn and what they want to achieve.
+      Recall what is already known about them with memory_search. If the goal
+      is not clear, ask. When it is clear, record it in goal, set level to
+      unknown, and go to plan.
+    tools: [memory_search]
+    next: [plan]
+    on_error: done
+  plan:
+    instructions: >-
+      Fetch the learning program for the goal with rag_search; use web_search
+      only if the knowledge base has none. Record the unit titles in program
+      and set unit_index to 0, then go to assess.
+    tools: [rag_search, web_search]
+    next: [assess]
+    on_error: done
+  assess:
+    instructions: >-
+      Find out the user's level. Fetch the assessment with rag_search, then
+      ask the questions one at a time with ask_user and record each one in
+      pending, with the answer you expect. When an answer arrives, judge it
+      against pending and update asked and correct in assessment. When you
+      can judge the level, set level, list what they already master in
+      mastered and what they miss in gaps, set pending to null, and go to
+      teach.
+    output: quiz
+    tools: [rag_search]
+    next: [assess, teach]
+    on_error: done
+  teach:
+    instructions: >-
+      Teach the unit at unit_index. Fetch the lesson and exercises with
+      rag_search and present them with ask_user, recording the exercise in
+      pending with the answer you expect. When the user's answer arrives,
+      judge it against pending, then set pending to null. After each lesson
+      update lessons_done, mastered and gaps, and save anything worth
+      remembering about the user with memory_add.
+      Move to the next unit by raising unit_index. Go to assess if the level
+      needs re-checking, and to done when the goal is reached.
+    output: lesson
+    tools: [rag_search, web_search, memory_add]
+    next: [teach, assess, done]
+    on_error: done
+  done:
+    instructions: Summarise the user's progress and what to do next.
+    end: true

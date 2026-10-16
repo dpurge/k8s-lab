@@ -399,6 +399,7 @@ func TestConfigMapStatesEveryPurposeExplicitly(t *testing.T) {
 		"provider": func(c purposeFileConfig) any { return c.Provider }, "model": func(c purposeFileConfig) any { return c.Model },
 		"numCtx": func(c purposeFileConfig) any { return c.NumCtx }, "think": func(c purposeFileConfig) any { return c.Think },
 		"timeoutSeconds": func(c purposeFileConfig) any { return c.TimeoutSeconds }, "maxAttempts": func(c purposeFileConfig) any { return c.MaxAttempts },
+		"maxReplyTokens": func(c purposeFileConfig) any { return c.MaxReplyTokens },
 	}
 	for _, p := range defaults.purposes() {
 		got, ok := stated[p.name].(map[string]any)

@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assistant.local/schemas/workflow.schema.json",
+  "title": "Assistant workflow",
+  "description": "A state machine an LLM walks, one validated step at a time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "description", "state_schema", "start", "limits", "states"],
+  "properties": {
+    "id": {
+      "description": "Workflow identifier, referenced by tasks.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "version": {
+      "description": "Workflow version, increased when its behaviour changes.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "description": {
+      "description": "What the workflow does; shown to the model on every step.",
+      "type": "string",
+      "minLength": 1
+    },
+    "state_schema": {
+      "description": "JSON Schema for the run state the model records its progress in.",
+      "type": "object"
+    },
+    "start": {
+      "description": "Name of the state a run begins in.",
+      "type": "string",
+      "minLength": 1
+    },
+    "limits": {
+      "description": "Guards that stop a runaway run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_steps", "max_tokens", "max_retries", "max_visits"],
+      "properties": {
+        "max_steps": {
+          "description": "Most steps one run may take.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_tokens": {
+          "description": "Most input plus output tokens one run may use.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_retries": {
+          "description": "Most consecutive invalid replies tolerated within one step.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_visits": {
+          "description": "Most times a run may enter the same state.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_tags": { "$ref": "#/$defs/model_tags" },
+    "states": {
+      "description": "The states of the machine, by name.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/$defs/state" }
+    }
+  },
+  "$defs": {
+    "model_tags": {
+      "description": "Tags a model must have to run a step. On a state they replace the workflow's list; an empty list on a state means any model.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instructions"],
+      "properties": {
+        "instructions": {
+          "description": "What the model should do in this state.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tools": {
+          "description": "Names of the tools the model may call in this state.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "next": {
+          "description": "Names of the states the model may move to from this one.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "end": {
+          "description": "Entering this state finishes the run successfully.",
+          "type": "boolean"
+        },
+        "on_error": {
+          "description": "State to go to, once per run, when a step in this state fails for good.",
+          "type": "string",
+          "minLength": 1
+        },
+        "model_tags": { "$ref": "#/$defs/model_tags" },
+        "output": {
+          "description": "Kind of output the state produces; selects the output prompt snippet.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        }
+      }
+    }
+  }
+}

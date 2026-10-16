@@ -407,8 +407,10 @@ func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def c
 		APIKey:   provider.APIKey,
 		Model:    prompt.Model,
 		NumCtx:   def.NumCtx,
-		Think:    prompt.Think,
-		Timeout:  time.Duration(timeoutSeconds) * time.Second,
+		// Cuts a looping reply short; the retry then asks again.
+		NumPredict: def.MaxReplyTokens,
+		Think:      prompt.Think,
+		Timeout:    time.Duration(timeoutSeconds) * time.Second,
 
 		FirstTokenTimeout: time.Duration(provider.FirstTokenTimeoutSeconds) * time.Second,
 		IdleTimeout:       time.Duration(provider.IdleTimeoutSeconds) * time.Second,

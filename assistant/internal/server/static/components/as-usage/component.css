@@ -1,0 +1,65 @@
+as-usage {
+  display: block;
+}
+
+as-usage .as-usage-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+as-usage .as-usage-filter select {
+  font: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+}
+
+as-usage .as-usage-summary {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+as-usage .as-usage-table-wrap {
+  overflow-x: auto;
+}
+
+as-usage .as-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+as-usage .as-usage-table th,
+as-usage .as-usage-table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+as-usage .as-usage-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+as-usage .as-usage-table .as-usage-calls,
+as-usage .as-usage-table .as-usage-input,
+as-usage .as-usage-table .as-usage-output,
+as-usage .as-usage-table .as-usage-cost,
+as-usage .as-usage-table th:nth-child(n + 3) {
+  text-align: right;
+}
+
+as-usage .as-usage-message {
+  color: var(--muted);
+  margin: 0.75rem 0;
+}
+
+as-usage .as-usage-message.error {
+  color: var(--danger);
+}

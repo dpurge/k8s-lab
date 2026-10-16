@@ -1,20 +1,22 @@
 ---
-version: 12
+version: 15
 status: approved
-updated: 2026-09-24
+updated: 2026-10-16
 ---
 
 ## Languages & runtimes
 
-- **Go 1.26.5** — all application modules and shared code (dictionary, phraseforge, knowledge, shared)
+- **Go 1.26.5** — all application modules and shared code (dictionary, phraseforge, knowledge, assistant, shared)
 
 ## Frameworks & libraries
 
 - **Chi HTTP router** (`go-chi/chi v5.3.2`) — request routing and middleware across all three applications
 - **PostgreSQL driver** (`jackc/pgx v5.10.0`) — direct pgx usage, no ORM, in all applications and shared utilities
 - **Crypto** (`golang.org/x/crypto v0.57.0`) — password hashing and bearer token generation
-- **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed by phraseforge and knowledge
+- **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed by phraseforge and knowledge, and by assistant for its Ollama path only (unchanged by it)
 - **Shared Postgres helpers** (`shared/postgres`) — database initialization and DSN utilities
+- **Prometheus client** (`prometheus/client_golang`) — `/metrics` endpoint, used by assistant
+- **YAML and JSON Schema** (`go.yaml.in/yaml/v3`, `santhosh-tekuri/jsonschema/v6`) — assistant's workflow files and the schemas that validate them; `go.yaml.in/yaml/v3` is the maintained fork of the archived `gopkg.in/yaml.v3`
 
 ### Frontend libraries (knowledge app only)
 
@@ -31,7 +33,7 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 - Kubernetes (manifests in `k8s/`)
 
 **Data systems:**
-- **PostgreSQL** (`postgres:18-alpine`) — relational database with two schemas: `dictionary` and `phraseforge`
+- **PostgreSQL** (`pgvector/pgvector:0.8.7-pg18-trixie`) — Postgres 18 with the pgvector 0.8.7 extension (Debian), relational database with two schemas: `dictionary` and `phraseforge`; assistant uses its own database named `assistant`
 - **Qdrant** (`qdrant/qdrant:v1.19.0`) — vector database for semantic search in the knowledge application
 - **Garage** (`dxflrs/garage:v2.3.0`) — S3-compatible object storage with `replication_factor = 1`
 - **NATS** (`nats:2.14.6-alpine`) — message queue with JetStream enabled
@@ -60,16 +62,18 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 | `dictionary` | `dictionary` | `dictionary/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/dictionary/roadmap.md` |
 | `phraseforge` | `phraseforge` | `phraseforge/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/phraseforge/roadmap.md` |
 | `knowledge` | `knowledge` | `knowledge/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/knowledge/roadmap.md` |
+| `assistant` | `assistant` | `assistant/CHANGELOG.md` | none (release workflow added in a later feature) | `specs/artifacts/assistant/roadmap.md` |
 | `environment` | `.` | `CHANGELOG.md` | none | |
 
-Built from: `shared/llm` and `shared/postgres` are consumed by phraseforge and
-knowledge; a change under `shared/` needs entries in both.
+Built from: `shared/llm` is consumed by phraseforge, knowledge and assistant
+(Ollama path only); `shared/postgres` by phraseforge and knowledge. A change under
+`shared/` needs entries in every artifact that consumes the changed package.
 
 ## Key conventions
 
 **Frontend components (per-app, not shared as files):**
 - Native Web Components (Custom Elements), light DOM only (no Shadow DOM) — so components keep inheriting each app's existing CSS custom-property theming instead of being isolated from it.
-- Naming: `<app-prefix>-<name>` custom element tags — e.g. knowledge uses `kb-*`; phraseforge has begun adopting `pf-*` (started with `pf-button`/`pf-nav` on its header — see `specs/artifacts/phraseforge/roadmap.md` for the remaining templates).
+- Naming: `<app-prefix>-<name>` custom element tags — e.g. knowledge uses `kb-*`, assistant uses `as-*`; phraseforge has begun adopting `pf-*` (started with `pf-button`/`pf-nav` on its header — see `specs/artifacts/phraseforge/roadmap.md` for the remaining templates).
 - File layout: one directory per component under that app's `static/components/<tag-name>/`: `component.js` (required — calls `customElements.define`), `component.html` (optional — a `<template>` fragment, fetched and cached on first use, following the same fetch+cache pattern phraseforge's `ime.js`/`pfLoadIme` already uses for IME data), `component.css` (optional — injected into `<head>` as a `<style>` tag once on first use, scoped by using the tag name as the outermost selector).
 - Loading: a consuming page includes one `<script src="/components/<tag>/component.js">` per component it uses; the component's own JS handles fetching its template and injecting its style, so the page needs nothing else.
 - Sharing model: **deliberate duplication**, not a shared file mechanism — each app (dictionary, phraseforge, knowledge are independent Go modules, each with its own `go:embed` static tree, no bundler) keeps its own copies of any component it needs. What's shared across apps is the *convention* (naming, file layout, light-DOM-plus-self-injecting-style pattern, testing approach below) — not literal files. This was an explicit choice over a Taskfile-copy-based sharing mechanism, favoring simplicity over strict DRY across apps.
@@ -97,7 +101,7 @@ knowledge; a change under `shared/` needs entries in both.
 
 **Kubernetes namespaces:**
 - `data` — Postgres, Qdrant, Garage, NATS
-- `app` — dictionary, phraseforge, knowledge
+- `app` — dictionary, phraseforge, knowledge, assistant
 - `workflows` — Argo Workflows and Argo Events
 - `kube-system` — k3s, Headlamp
 
@@ -127,6 +131,15 @@ knowledge; a change under `shared/` needs entries in both.
   `main.go` adapter (the same pattern as `ingest.Promoter`), never a direct import between the
   calling package and the queue's consumers.
 - Job handlers can write results back to the database via consumer-side interfaces (`TextWriteback`, `TranslationWriteback`) when optional resource-type and resource-id fields are present in the payload, enabling automatic content generation during background operations like ingest.
+
+**Schemas as contracts (assistant):**
+- Every contract lives under `assistant/schemas/`: `db/` (idempotent DDL), `api/` (OpenAPI), and as each slice needs them `messages/`, `documents/`, the workflow schema and the model-config schema. A test checks each code surface against its schema, so a schema and its code cannot drift apart.
+
+**Model routing (assistant):**
+- Models are configured in `models.yaml`, validated by `assistant/schemas/models.schema.json`: providers (an Ollama endpoint may be on localhost or on another machine; several can be listed), and models with tags and a priority. A call goes to the highest-priority available model that has the requested tags and falls back to lower ones; a circuit breaker, not pings, decides what is available. Every attempt is recorded in `llm_calls` and attributed to the user.
+
+**Tests never call a real LLM (assistant):**
+- LLM access sits behind an interface and tests use a scripted fake that returns canned responses. The whole suite must pass with no LLM reachable.
 
 **Structured logging:**
 - `log/slog`, JSON handler to stdout, configured once in `main.go`.

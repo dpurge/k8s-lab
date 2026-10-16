@@ -1,10 +1,4 @@
 # k8s-lab: local k3d-based Kubernetes dev cluster
-#
-# Developed and tested on Linux/macOS. Task's embedded shell interpreter
-# (mvdan.cc/sh) parses the shell syntax itself on every OS, but external
-# commands still need to be real binaries on PATH — on Windows that means
-# `sed`, `awk`, `grep`, `openssl`, and `curl` (all used below) require Git for
-# Windows or WSL; they don't ship with Windows.
 
 version: "3"
 
@@ -16,6 +10,7 @@ vars:
   REGISTRY_NAME: k8s-lab-registry
   REGISTRY_PORT: "5000"
   INGRESS_PORT: "8080"
+  ASSISTANT_TEST_DB_PORT: "15432"
   KUBECONFIG_PATH: .k3d/kubeconfig
   # Every kubectl call below goes through this instead of bare `kubectl`, so
   # it always targets this project's cluster only — via kubectl's own
@@ -26,7 +21,7 @@ vars:
   ARGO_WORKFLOWS_VERSION: v4.1.3
   HEADLAMP_VERSION: v0.45.0
   HEADLAMP_IMAGE: 'ghcr.io/headlamp-k8s/headlamp:{{.HEADLAMP_VERSION}}'
-  POSTGRES_IMAGE: postgres:18-alpine
+  POSTGRES_IMAGE: pgvector/pgvector:0.8.7-pg18-trixie
   PGADMIN_IMAGE: dpage/pgadmin4:9.11.0
   QDRANT_IMAGE: qdrant/qdrant:v1.19.0
   GARAGE_IMAGE: dxflrs/garage:v2.3.0
@@ -572,6 +567,191 @@ tasks:
     cmds:
       - npm install
       - npm test
+
+  # ── assistant ────────────────────────────────────────────────────────────────
+
+  # Vets and tests the assistant. No test calls an LLM or needs the network. The
+  # database tests need PostgreSQL: when the dev cluster's Postgres is up this
+  # creates the assistant_test database, forwards its port and points
+  # ASSISTANT_TEST_DATABASE_URL at it; otherwise they are skipped, loudly.
+  test-assistant:
+    desc: Vet and test the assistant (scripted fakes only; database tests use the dev cluster's Postgres when it is up).
+    cmds:
+      - |
+        port="{{.ASSISTANT_TEST_DB_PORT}}"
+        forward_pid=""
+        # kubectl here is a kuberlr launcher that starts the real kubectl as a
+        # child, so killing the launcher's pid leaves the forward running; the
+        # forward is stopped by its command line, which names this port.
+        cleanup() {
+            if [ -n "$forward_pid" ]; then
+                kill "$forward_pid" 2>/dev/null || true
+                pkill -f "port-forward -n data svc/postgres $port:5432" 2>/dev/null || true
+            fi
+        }
+        trap cleanup EXIT
+
+        if {{.KUBECTL}} get deploy/postgres -n data >/dev/null 2>&1 && [ -f .k3d/postgres.env ]; then
+            exists="$({{.KUBECTL}} exec -i -n data deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d postgres -At' <<'SQL'
+        SELECT 1 FROM pg_database WHERE datname = 'assistant_test'
+        SQL
+        )"
+            if [ -z "$exists" ]; then
+                echo "Creating database assistant_test..."
+                {{.KUBECTL}} exec -n data deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE assistant_test"'
+            fi
+            {{.KUBECTL}} port-forward -n data svc/postgres "$port:5432" >/dev/null 2>&1 &
+            forward_pid=$!
+            i=0
+            while [ "$i" -lt 30 ] && ! nc -z 127.0.0.1 "$port" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+            # The generated password is hex, so it needs no URL encoding.
+            . .k3d/postgres.env
+            export ASSISTANT_TEST_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${port}/assistant_test?sslmode=disable"
+        else
+            echo "Warning: the dev cluster's Postgres is not reachable; the database tests are skipped. Run 'task start-k8s' and 'task deploy-postgres'." >&2
+        fi
+
+        # Not `set -e`-aborted by a failing test: the port-forward must be
+        # stopped either way, and the test's exit status still decides.
+        status=0
+        (cd assistant && go vet ./... && go test -count=1 -race ./...) || status=$?
+        cleanup
+        exit "$status"
+
+  test-assistant-frontend:
+    desc: Run the assistant's as-* Web Component tests (Node+jsdom, dev-time only).
+    dir: assistant/internal/server/static/components
+    cmds:
+      - npm install
+      - npm test
+
+  deploy-assistant:
+    desc: Build and deploy the assistant to the running cluster.
+    cmds:
+      - task: _build-image
+        vars:
+          APP: assistant
+      - task: _check-image-size
+        vars:
+          APP: assistant
+      - task: _require-cluster
+      - task: _apply-namespaces
+      - task: _ensure-assistant-secret
+      - task: _ensure-assistant-models
+      - task: _ensure-assistant-workflows
+      - task: refresh-assistant-vertex-token
+      - task: _ensure-database
+        vars:
+          DB: assistant
+      - task: _migrate-db
+        vars:
+          APP: assistant
+          JOB_NAME: assistant-migrate
+      - '{{.KUBECTL}} apply -f assistant/k8s/'
+      - '{{.KUBECTL}} rollout restart deployment/assistant -n app'
+      - '{{.KUBECTL}} rollout status deployment/assistant -n app --timeout=120s'
+      - 'echo "assistant ready: http://assistant.localhost:{{.INGRESS_PORT}}/admin/"'
+
+  delete-assistant:
+    desc: Delete the assistant from the running cluster (its database is kept).
+    cmds:
+      - task: _require-cluster
+      - '{{.KUBECTL}} delete -f assistant/k8s/ --ignore-not-found'
+
+  migrate-assistant-db:
+    desc: Run the assistant's database migration Job against the running cluster.
+    cmds:
+      - task: _ensure-database
+        vars:
+          DB: assistant
+      - task: _migrate-db
+        vars:
+          APP: assistant
+          JOB_NAME: assistant-migrate
+
+  # Creates a database in the dev cluster's Postgres if it is missing.
+  _ensure-database:
+    internal: true
+    requires:
+      vars: [DB]
+    cmds:
+      - task: _require-cluster
+      - |
+        exists="$({{.KUBECTL}} exec -i -n data deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d postgres -At' <<'SQL'
+        SELECT 1 FROM pg_database WHERE datname = '{{.DB}}'
+        SQL
+        )"
+        if [ -z "$exists" ]; then
+            echo "Creating database {{.DB}}..."
+            {{.KUBECTL}} exec -n data deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE {{.DB}}"'
+        fi
+
+  # The assistant reads one variable, ASSISTANT_DATABASE_URL. Built from the
+  # generated Postgres credentials into a gitignored file, then projected as a
+  # Secret, like the other apps' credentials.
+  _ensure-assistant-secret:
+    internal: true
+    cmds:
+      - task: _ensure-db-secret
+      - |
+        . .k3d/postgres.env
+        # The generated password is hex, so it needs no URL encoding.
+        printf 'ASSISTANT_DATABASE_URL=postgres://%s:%s@postgres.data.svc.cluster.local:5432/assistant?sslmode=disable\n' "$POSTGRES_USER" "$POSTGRES_PASSWORD" > .k3d/assistant.env
+        chmod 600 .k3d/assistant.env
+        {{.KUBECTL}} create secret generic assistant-database \
+            --from-env-file=.k3d/assistant.env \
+            --namespace=app \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
+
+  # The models file is a ConfigMap built from assistant/models.dev.yaml, checked
+  # first so a mistake in it stops the deploy instead of the pod.
+  _ensure-assistant-models:
+    internal: true
+    cmds:
+      - (cd assistant && go run . models validate models.dev.yaml)
+      - |
+        {{.KUBECTL}} create configmap assistant-models \
+            --from-file=models.yaml=assistant/models.dev.yaml \
+            --namespace=app \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
+
+  # The workflow files are a ConfigMap with one key per assistant/workflows/*.yaml,
+  # checked first with the stub tools' names so a broken workflow stops the deploy.
+  _ensure-assistant-workflows:
+    internal: true
+    cmds:
+      - (cd assistant && go run . workflow validate --tools memory_search,memory_add,rag_search,web_search workflows/*.yaml)
+      - |
+        {{.KUBECTL}} create configmap assistant-workflows \
+            --from-file=assistant/workflows \
+            --namespace=app \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
+
+  # The assistant's access token for Vertex AI: a short-lived OAuth token of the
+  # gcloud account in ASSISTANT_VERTEX_ACCOUNT, written to a gitignored file and
+  # projected as a Secret, which the pod re-reads on every call (no restart).
+  # Run it again when a call fails with "401 ... token may have expired".
+  refresh-assistant-vertex-token:
+    desc: Write a fresh Vertex AI access token for the assistant into its Secret (valid about an hour).
+    vars:
+      ACCOUNT: '{{.ASSISTANT_VERTEX_ACCOUNT | default "nobody@example.com"}}'
+    cmds:
+      - task: _require-cluster
+      - |
+        set -e
+        mkdir -p .k3d
+        install -m 600 /dev/null .k3d/assistant-vertex-token
+        gcloud auth print-access-token --account='{{.ACCOUNT}}' > .k3d/assistant-vertex-token
+        {{.KUBECTL}} create secret generic assistant-vertex \
+            --from-file=token=.k3d/assistant-vertex-token \
+            --namespace=app \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
+        rm -f .k3d/assistant-vertex-token
+        echo "assistant-vertex token written for {{.ACCOUNT}}; the pod picks it up within about a minute"
 
   deploy-phraseforge:
     desc: Build and deploy the phraseforge app to the running cluster.

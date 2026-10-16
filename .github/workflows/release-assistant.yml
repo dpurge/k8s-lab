@@ -1,0 +1,101 @@
+# Build and release the assistant app: a tag and a Docker image pushed to GHCR.
+# Runs only when assistant/ (or the shared module it builds with) changed — this
+# repo hosts multiple independent components (see also release-phraseforge.yml),
+# each releasing on its own.
+#
+# Versioning is CalVer, assistant-v<year>.<month>.<micro>, where <micro>
+# auto-increments within the current month from the existing git tags, the same
+# scheme as release-phraseforge.yml, namespaced with an "assistant-" tag prefix so
+# the components' version sequences cannot collide in this shared repo.
+name: release-assistant
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'assistant/**'
+      - 'shared/**'
+      - '.github/workflows/release-assistant.yml'
+  workflow_dispatch:
+
+# Only one release run at a time; queue (do not cancel) concurrent merges so
+# each gets its own sequential CalVer micro version.
+concurrency:
+  group: release-assistant
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the git tag
+  packages: write # push the image to GHCR
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags (needed for versioning)
+
+      - name: Compute version (CalVer)
+        id: version
+        run: |
+          git fetch --tags --quiet
+
+          prefix="$(date -u +'%Y.%-m')"
+          last_micro="$(git tag -l "assistant-v${prefix}.*" | sed -E "s/^assistant-v${prefix}\.([0-9]+)$/\1/" | sort -n | tail -1)"
+          next_micro="${last_micro:-"-1"}"
+          next_micro=$((next_micro + 1))
+
+          tag="assistant-v${prefix}.${next_micro}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}" # GHCR requires a lowercase owner
+
+          {
+            echo "tag=${tag}"
+            echo "version=${prefix}.${next_micro}"
+            echo "image=ghcr.io/${owner}/assistant"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing ${tag}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: assistant/go.mod
+
+      # Tests that need no database or model run here; the database tests skip
+      # without ASSISTANT_TEST_DATABASE_URL, and no test calls a model.
+      - name: Test
+        working-directory: assistant
+        run: go vet ./... && go test -count=1 ./...
+
+      - name: Create and push tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      # No corporate-CA step needed here: the Dockerfile's bind mount tolerates
+      # .docker/corp-ca/ being empty, which is exactly its committed state.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: assistant
+          build-contexts: shared=./shared
+          push: true
+          tags: |
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.image }}:latest

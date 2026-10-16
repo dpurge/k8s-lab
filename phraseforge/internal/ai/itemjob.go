@@ -134,14 +134,22 @@ func (s *Service) HandleItemTranslation(ctx context.Context, id string, payload 
 // callItemWithCorrection calls the model and validates its reply, sending a
 // rejected reply back with the exact error for correction (see
 // runWithCorrection) instead of failing the job outright. The attempt budget
-// is the purpose's MaxAttempts.
+// is the purpose's MaxAttempts. A reply that overflowed the context window is
+// retried like a transient failure.
 func (s *Service) callItemWithCorrection(ctx context.Context, it loadedItem, prompt Prompt, def config.PurposeConfig, schema json.RawMessage, msgs []llm.Message, sections LanguageSections) (string, error) {
 	maxAttempts := effectiveMaxAttempts(def.MaxAttempts)
 	attempt := 0
 	return runWithCorrection(ctx, maxAttempts, s.sleeper(),
 		func(ctx context.Context, m []llm.Message) (string, error) {
 			attempt++
-			return s.callLLM(ctx, it.ResourceType, prompt, def, m, schema, attempt, maxAttempts)
+			out, err := s.callLLM(ctx, it.ResourceType, prompt, def, m, schema, attempt, maxAttempts)
+			var overflow *ContextOverflowError
+			if errors.As(err, &overflow) {
+				// An item is one word, so there is nothing to split. The overflow
+				// is a reply that ran away, which another attempt rarely repeats.
+				err = fmt.Errorf("%w: %w", llm.ErrStreamIncomplete, err)
+			}
+			return out, err
 		},
 		func(raw string) error {
 			_, err := decideItemWrites(it, raw, sections)
@@ -222,7 +230,22 @@ func decideItemWrites(it loadedItem, raw string, sections LanguageSections) (ite
 	}
 	r, err := parseVocabularyItemResponse(raw, it.Phrase)
 	if err != nil {
-		return itemWrites{}, err
+		var mismatch *phraseMismatchError
+		if !errors.As(err, &mismatch) {
+			return itemWrites{}, err
+		}
+		if cleanUsage(it.ResourceType, it.Usage) == "" {
+			return itemWrites{}, fmt.Errorf("%w; keep \"phrase\" exactly as given, this job may not change the phrase", err)
+		}
+		// The model changed "phrase" instead of proposing a "rewrite". A job
+		// with a usage may rewrite, so the changed phrase is that rewrite.
+		r, err = parseVocabularyItemResponse(raw, mismatch.got)
+		if err != nil {
+			return itemWrites{}, err
+		}
+		if r.Rewrite == nil {
+			r.Rewrite = &PhraseRewrite{Phrase: r.Phrase, Grammar: r.Grammar, Transcription: r.Transcription}
+		}
 	}
 	w := itemWrites{Translation: r.Translation, Notes: r.Notes, Example: usableExample(r.Example)}
 	if hasTranscription {

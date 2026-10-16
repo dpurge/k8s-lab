@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assistant.local/schemas/models.schema.json",
+  "title": "Assistant models",
+  "description": "The providers the assistant can call and the models on them, with the tags a task asks for and a priority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["providers", "models"],
+  "properties": {
+    "providers": {
+      "description": "Where models run. An Ollama endpoint may be on this machine or on another one in the network.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/provider" }
+    },
+    "models": {
+      "description": "The models a call can be routed to.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/model" }
+    },
+    "routing": {
+      "description": "How a model that keeps failing is set aside.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "breaker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "failures": {
+              "description": "Consecutive failures after which a model is unavailable. Default 3.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "cooldown_seconds": {
+              "description": "How long it stays unavailable. Default 60.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "rate_limited_cooldown_seconds": {
+              "description": "How long it stays unavailable after a rate limit (429). Default 30.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "ollama" } } }, "then": { "required": ["base_url"] } },
+        { "if": { "properties": { "type": { "const": "vertex" } } }, "then": { "required": ["project", "location"] } }
+      ],
+      "properties": {
+        "id": {
+          "description": "Name that models refer to.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "type": {
+          "description": "Kind of provider; more arrive as they are built.",
+          "enum": ["ollama", "vertex", "demo"]
+        },
+        "project": {
+          "description": "Google Cloud project that bills a vertex provider, e.g. my-project.",
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "description": "Region of a vertex provider, e.g. us-central1, or global.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "base_url": {
+          "description": "Where the provider answers, without credentials, e.g. http://localhost:11434.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "model", "tags", "priority"],
+      "properties": {
+        "id": {
+          "description": "Name of this entry in logs, records and metrics.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "provider": {
+          "description": "The id of the provider it runs on.",
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "description": "The provider's own name for the model, e.g. gemma4:12b.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "description": "What the model is good for. A task asks for tags; only models that have all of them are candidates.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" }
+        },
+        "priority": {
+          "description": "Higher is tried first.",
+          "type": "integer"
+        },
+        "options": {
+          "description": "Ollama options for this model.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "num_ctx": { "description": "Context window in tokens.", "type": "integer", "minimum": 1 },
+            "num_predict": { "description": "Most tokens in a reply.", "type": "integer", "minimum": 1 },
+            "think": { "description": "Let a thinking-capable model reason first; slow.", "type": "boolean" },
+            "first_token_timeout_seconds": { "description": "Wait for the first token, which covers loading the model.", "type": "integer", "minimum": 1 },
+            "idle_timeout_seconds": { "description": "Longest pause between tokens once they flow.", "type": "integer", "minimum": 1 },
+            "overall_timeout_seconds": { "description": "Longest a whole call may take.", "type": "integer", "minimum": 1 }
+          }
+        },
+        "price": {
+          "description": "US dollars per million tokens; both default to 0 (a local model costs nothing).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "input_per_mtok": { "type": "number", "minimum": 0 },
+            "output_per_mtok": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

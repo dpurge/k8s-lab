@@ -150,9 +150,18 @@ func checkRequiredAndPhrase(what string, phrase, translation *string, storedPhra
 		return fmt.Errorf("%s: missing \"translation\"", what)
 	}
 	if norm.NFC.String(trimmed(phrase)) != norm.NFC.String(strings.TrimSpace(storedPhrase)) {
-		return fmt.Errorf("%s: phrase %q does not match the item's phrase %q", what, trimmed(phrase), storedPhrase)
+		return &phraseMismatchError{what: what, got: trimmed(phrase), stored: storedPhrase}
 	}
 	return nil
+}
+
+// phraseMismatchError is a reply whose phrase is not the item's own. It is
+// typed so a vocabulary job that may rewrite the phrase can tell it from the
+// other reply errors and take the reply's phrase as a rewrite instead.
+type phraseMismatchError struct{ what, got, stored string }
+
+func (e *phraseMismatchError) Error() string {
+	return fmt.Sprintf("%s: phrase %q does not match the item's phrase %q", e.what, e.got, e.stored)
 }
 
 // stringOrEmpty returns v trimmed if it is a string and "" for anything else

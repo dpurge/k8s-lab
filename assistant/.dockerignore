@@ -1,0 +1,8 @@
+# Keeps secrets and dev-time tooling out of the build context.
+.env
+**/node_modules
+**/*_test.go
+**/*.test.js
+internal/server/static/components/package.json
+internal/server/static/components/package-lock.json
+internal/server/static/components/testenv.js

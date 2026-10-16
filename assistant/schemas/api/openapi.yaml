@@ -1,0 +1,896 @@
+openapi: 3.1.0
+info:
+  title: Assistant API
+  version: 0.1.0
+  description: >-
+    The assistant's task queue. Tasks name the workflow to run and the user it
+    runs for. Errors are always {"error": {"code", "message"}}. There is no
+    authentication yet; it will come from a shared external service.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Health of the service
+      description: 200 only when the database answers, otherwise 503.
+      responses:
+        "200":
+          description: The database answered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: The database did not answer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Metrics in the Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+  /admin:
+    get:
+      operationId: redirectAdmin
+      summary: Redirect to the admin interface
+      responses:
+        "301":
+          description: Moved to /admin/.
+  /admin/{path}:
+    get:
+      operationId: getAdminAsset
+      summary: A file of the admin interface
+      description: >-
+        The admin interface is a single-page app of static files embedded in the
+        server. /admin/ is its page. It calls only the /api/v1 operations below.
+        Responses carry a strict Content-Security-Policy.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: The file's path under /admin/; empty for the page itself.
+          allowReserved: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The file.
+          content:
+            text/html: { schema: { type: string } }
+            text/javascript: { schema: { type: string } }
+            text/css: { schema: { type: string } }
+        "404":
+          description: No such file.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      summary: List users, oldest first
+      responses:
+        "200":
+          description: Every user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: createUser
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewUser" }
+      responses:
+        "201":
+          description: The user was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "409":
+          description: Another user already has this telegram_id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks:
+    delete:
+      operationId: removeTasks
+      summary: Delete every task in one finished status
+      description: Running and waiting tasks are never removed in bulk.
+      parameters:
+        - name: status
+          in: query
+          required: true
+          schema: { enum: [succeeded, failed, cancelled] }
+      responses:
+        "200":
+          description: How many tasks were deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Removed" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+    get:
+      operationId: listTasks
+      summary: List tasks, newest first
+      parameters:
+        - name: status
+          in: query
+          description: Keep only tasks in this status.
+          schema: { $ref: "#/components/schemas/TaskStatus" }
+        - name: limit
+          in: query
+          description: Page size.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: offset
+          in: query
+          description: How many tasks to skip.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: One page of tasks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: createTask
+      summary: Queue a task
+      description: The task's source is set to "api" and its status to "pending".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewTask" }
+      responses:
+        "201":
+          description: The task was queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404":
+          description: There is no user with that user_id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks/{id}:
+    delete:
+      operationId: removeTask
+      summary: Delete a task and its trace
+      description: The model calls it made are kept without a task, so usage and cost do not change.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: The task was deleted. }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The task is running; cancel it first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+    get:
+      operationId: getTask
+      summary: Get one task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks/{id}/cancel:
+    post:
+      operationId: cancelTask
+      summary: Cancel a pending, waiting or running task
+      description: >-
+        A pending or waiting task is cancelled at once (200). A running task is
+        told to stop and ends as cancelled within moments (202).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The task, now cancelled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "202":
+          description: The running task was told to stop.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The task is not pending, waiting or running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks/{id}/retry:
+    post:
+      operationId: retryTask
+      summary: Queue a copy of a failed or cancelled task
+      description: Same user, workflow, source and payload; the original stays.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "201":
+          description: The new task, pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Only a failed or cancelled task can be retried.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks/{id}/messages:
+    post:
+      operationId: answerTask
+      summary: Answer a task whose run is waiting for the user
+      description: >-
+        Queues the task again with the answer; the worker resumes the run with
+        it. Answers at once, the run goes on in the background.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewMessage" }
+      responses:
+        "200":
+          description: The task, queued again as pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The task is not waiting for an answer, or has been answered already.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks/{id}/steps:
+    get:
+      operationId: listTaskSteps
+      summary: The trace of a task's workflow run, oldest first
+      description: One item per attempt of a step, including refused replies, with the model's raw reply cut at 8 KB.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The steps; empty if the task has no workflow run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StepList" }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/tasks/{id}/llm-calls:
+    get:
+      operationId: listTaskCalls
+      summary: List the model calls a task made, oldest first
+      description: One item per attempt, so a fallback shows the failed attempt and the one that answered.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The task's attempts; empty if it made none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallList" }
+        "404":
+          description: There is no task with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/usage:
+    get:
+      operationId: getUsage
+      summary: Tokens, cost and calls by user and model
+      description: Counts successful calls only; a failed attempt has no tokens and no cost. Highest cost first.
+      parameters:
+        - name: since
+          in: query
+          description: Count only calls that started at or after this time.
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: One item per user and model that was used.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsageList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      summary: List conversations, the most recently active first
+      parameters:
+        - name: user_id
+          in: query
+          description: Keep only this user's conversations.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The conversations, each with the state of its run and the last words.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationList" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: createConversation
+      summary: Start a conversation with a workflow
+      description: The workflow must be a YAML workflow, or ask. Nothing runs until the user writes a message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewConversation" }
+      responses:
+        "201":
+          description: The conversation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404":
+          description: There is no user with that user_id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/conversations/{id}:
+    get:
+      operationId: getConversation
+      summary: Get one conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The conversation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "404":
+          description: There is no conversation with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: removeConversation
+      summary: Delete a conversation and its messages
+      description: Its task is not touched.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: The conversation was deleted. }
+        "404":
+          description: There is no conversation with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/conversations/{id}/messages:
+    get:
+      operationId: listChatMessages
+      summary: What was said, in order
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: after
+          in: query
+          description: Only messages with a greater id, which is how a page asks for what is new.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: The messages.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatMessageList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404":
+          description: There is no conversation with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: sendChatMessage
+      summary: Say something in a conversation
+      description: >-
+        A message starting with / is a command (/help) and is answered at once.
+        Any other text is the answer to the question the run is waiting on, or
+        the first message of a new run. The assistant's reply comes later as
+        messages of its own. While a run is working a new message is refused (409).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewChatMessage" }
+      responses:
+        "201":
+          description: The stored message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatMessage" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404":
+          description: There is no conversation with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The assistant is still working on the previous message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: The message was stored but the run could not be started or answered; the conversation says why.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/workflows:
+    get:
+      operationId: listWorkflows
+      summary: The workflows a task can name
+      responses:
+        "200":
+          description: Built-in and YAML workflows, by id, each with a payload to start from.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowList" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /api/v1/models:
+    get:
+      operationId: listModels
+      summary: List the configured models and whether each is available now
+      description: Never includes the address of a provider.
+      responses:
+        "200":
+          description: The models, in the order of the models file.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelList" }
+        "500": { $ref: "#/components/responses/Internal" }
+components:
+  responses:
+    InvalidRequest:
+      description: The request is malformed or a field is missing or invalid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Internal:
+      description: Something went wrong on the server. The details are in its log.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { enum: [ok, unavailable] }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { enum: [invalid_request, not_found, conflict, internal] }
+            message: { type: string }
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, telegram_id, display_name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        telegram_id: { type: [integer, "null"] }
+        display_name: { type: string, minLength: 1 }
+        created_at: { type: string, format: date-time }
+    NewUser:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      properties:
+        display_name: { type: string, minLength: 1 }
+        telegram_id: { type: [integer, "null"] }
+    UserList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+    TaskStatus:
+      enum: [pending, running, waiting, succeeded, failed, cancelled]
+    TaskSource:
+      enum: [telegram, nats, scheduler, api]
+    Task:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - user_id
+        - workflow_id
+        - source
+        - status
+        - payload
+        - result
+        - error
+        - created_at
+        - started_at
+        - finished_at
+        - queue_seconds
+        - execution_seconds
+        - usage
+        - run
+        - ask
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        workflow_id: { type: string, minLength: 1 }
+        source: { $ref: "#/components/schemas/TaskSource" }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+        payload: { type: object }
+        result:
+          description: What the workflow returned; null until the task has finished.
+          type: [object, "null"]
+        error:
+          description: Why the task failed; null otherwise.
+          type: [string, "null"]
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        queue_seconds:
+          description: Time spent waiting for a worker; so far, if it has not started.
+          type: number
+          minimum: 0
+        execution_seconds:
+          description: Time spent running; so far, if it has not finished; null before it starts.
+          type: [number, "null"]
+          minimum: 0
+        usage: { $ref: "#/components/schemas/TaskUsage" }
+        run:
+          description: The workflow run's snapshot (state, run state, steps, tokens); null until a workflow has run, and always null in the list.
+          type: [object, "null"]
+        ask:
+          description: What a waiting run asked the user (the ask_user payload); null otherwise.
+          type: [object, "null"]
+    NewConversation:
+      type: object
+      additionalProperties: false
+      required: [user_id, workflow_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        workflow_id: { type: string, minLength: 1 }
+        title: { type: string }
+    Conversation:
+      type: object
+      additionalProperties: false
+      required: [id, user_id, workflow_id, title, task_id, created_at, task_status, task_error, last_text, last_at, messages]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        workflow_id: { type: string }
+        title: { type: string }
+        task_id:
+          description: The run the conversation is in; null before the first message or after the run was removed.
+          type: [string, "null"]
+          format: uuid
+        created_at: { type: string, format: date-time }
+        task_status:
+          description: The state of that run; null if there is none.
+          type: [string, "null"]
+        task_error: { type: [string, "null"] }
+        last_text:
+          description: The last message, cut to 140 characters; null if nothing was said.
+          type: [string, "null"]
+        last_at: { type: string, format: date-time }
+        messages: { type: integer, minimum: 0 }
+    ConversationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Conversation" }
+    NewChatMessage:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text: { type: string }
+    ChatMessage:
+      type: object
+      additionalProperties: false
+      required: [id, conversation_id, role, kind, text, task_id, created_at]
+      properties:
+        id: { type: integer }
+        conversation_id: { type: string, format: uuid }
+        role: { enum: [user, assistant] }
+        kind: { enum: [text, question, result, error, info] }
+        text: { type: string }
+        task_id: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+    ChatMessageList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ChatMessage" }
+    Workflow:
+      type: object
+      additionalProperties: false
+      required: [id, description, kind, payload_hint]
+      properties:
+        id: { type: string, minLength: 1 }
+        description: { type: string }
+        kind: { enum: [builtin, yaml] }
+        payload_hint:
+          description: A payload that works as a starting point.
+          type: string
+    WorkflowList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Workflow" }
+    Removed:
+      type: object
+      additionalProperties: false
+      required: [removed]
+      properties:
+        removed: { type: integer, minimum: 0 }
+    NewMessage:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message:
+          description: The user's answer, any JSON value except null.
+    Step:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, step, attempt, state, outcome, error, action, patch, tool, tool_result, reply, input_tokens, output_tokens, duration_ms, at]
+      properties:
+        id: { type: integer }
+        task_id: { type: string, format: uuid }
+        step: { type: integer, minimum: 0 }
+        attempt:
+          description: 1-based attempt within the step; 0 for a failure that had no model call.
+          type: integer
+          minimum: 0
+        state: { type: string }
+        outcome: { enum: [ok, retry, rejected, failed] }
+        error:
+          description: Why the reply was refused or the run failed; null when nothing went wrong.
+          type: [string, "null"]
+        action: { type: [object, "null"] }
+        patch: { type: [object, "null"] }
+        tool: { type: [string, "null"] }
+        tool_result: { type: [string, "null"] }
+        reply:
+          description: The model's raw reply, cut at 8 KB.
+          type: [string, "null"]
+        input_tokens: { type: integer, minimum: 0 }
+        output_tokens: { type: integer, minimum: 0 }
+        duration_ms: { type: integer, minimum: 0 }
+        at: { type: string, format: date-time }
+    StepList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Step" }
+    TaskUsage:
+      description: What the task's successful model calls used; zeros and no models if it made none.
+      type: object
+      additionalProperties: false
+      required: [calls, input_tokens, output_tokens, cost_usd, models]
+      properties:
+        calls: { type: integer, minimum: 0 }
+        input_tokens: { type: integer, minimum: 0 }
+        output_tokens: { type: integer, minimum: 0 }
+        cost_usd: { type: number, minimum: 0 }
+        models:
+          description: Ids of the models that answered, in the order they first did.
+          type: array
+          items: { type: string }
+    CallOutcome:
+      enum: [ok, error, timeout, rate_limited, canceled]
+    Call:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, user_id, model_id, provider_id, model_name, tags, input_tokens, output_tokens, cost_usd, started_at, duration_ms, outcome, error]
+      properties:
+        id: { type: string, format: uuid }
+        task_id: { type: [string, "null"], format: uuid }
+        user_id: { type: string, format: uuid }
+        model_id: { type: string }
+        provider_id: { type: string }
+        model_name:
+          description: The provider's own name for the model.
+          type: string
+        tags:
+          description: The tags the step asked for.
+          type: array
+          items: { type: string }
+        input_tokens: { type: integer, minimum: 0 }
+        output_tokens: { type: integer, minimum: 0 }
+        cost_usd: { type: number, minimum: 0 }
+        started_at: { type: string, format: date-time }
+        duration_ms: { type: integer, minimum: 0 }
+        outcome: { $ref: "#/components/schemas/CallOutcome" }
+        error:
+          description: The provider's error text; null for a successful call.
+          type: [string, "null"]
+    CallList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Call" }
+    UsageRow:
+      type: object
+      additionalProperties: false
+      required: [user_id, model_id, calls, input_tokens, output_tokens, cost_usd]
+      properties:
+        user_id: { type: string, format: uuid }
+        model_id: { type: string }
+        calls: { type: integer, minimum: 1 }
+        input_tokens: { type: integer, minimum: 0 }
+        output_tokens: { type: integer, minimum: 0 }
+        cost_usd: { type: number, minimum: 0 }
+    UsageList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/UsageRow" }
+    Model:
+      type: object
+      additionalProperties: false
+      required: [id, provider, tags, priority, available, unavailable_until]
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        priority: { type: integer }
+        available:
+          description: False while the circuit breaker holds the model, or its provider, out of service.
+          type: boolean
+        unavailable_until:
+          description: When it will be tried again; null if it is available.
+          type: [string, "null"]
+          format: date-time
+    ModelList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Model" }
+    NewTask:
+      type: object
+      additionalProperties: false
+      required: [user_id, workflow_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        workflow_id: { type: string, minLength: 1 }
+        payload:
+          description: Input for the workflow; defaults to {}.
+          type: object
+    TaskList:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Task" }
+        total:
+          description: How many tasks match the filter, across all pages.
+          type: integer
+          minimum: 0
+        limit: { type: integer, minimum: 1, maximum: 100 }
+        offset: { type: integer, minimum: 0 }

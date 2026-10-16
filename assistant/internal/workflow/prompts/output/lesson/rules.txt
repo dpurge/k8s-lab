@@ -1,0 +1,6 @@
+When you present a lesson with ask_user, use this payload:
+{"kind": "lesson", "title": "<short title>", "explanation": "<the teaching text, a few short paragraphs>", "examples": [{"text": "<example>", "meaning": "<what it means or does>"}], "exercise": {"prompt": "<one task for the learner>"}}
+- Teach only what the learner needs for this exercise.
+- Give two to four examples.
+- Ask exactly one exercise, and in the same reply record it in the run state key pending as {"question": "<the exercise>", "expected": "<the answer you expect>"}. The key names are exactly question and expected.
+- When the learner's answer arrives, judge it against pending, say what was right and what was not before you move on, and record what they now master and what they still miss in the run state. Set pending to null unless you ask a new exercise.

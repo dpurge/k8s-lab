@@ -178,3 +178,28 @@ func TestItemJobRewritesThePhraseAfterItsOtherWritesOnlyWhenItCarriesAUsage(t *t
 		t.Errorf("calls = %v, want no rewrite for a job without a usage", store.calls)
 	}
 }
+
+func TestDecideItemWritesTakesAChangedPhraseAsTheRewriteForAJobWithAUsage(t *testing.T) {
+	sections := LanguageSections{GrammarPrompt: "N = noun", TranscriptionPrompt: "latin"}
+	changed := `{"phrase":"مُلَاحَظَاتٌ","grammar":"N f pl","transcription":"mulāḥaẓāt","translation":"notatki"}`
+	it := withUsage(vocabPayload("مُلَاحَظَاتٍ"), "دوّن لنا ملاحظات")
+
+	got, err := decideItemWrites(it, changed, sections)
+	want := &PhraseRewrite{Phrase: "مُلَاحَظَاتٌ", Grammar: "N f pl", Transcription: "mulāḥaẓāt"}
+	if err != nil || !reflect.DeepEqual(got.Rewrite, want) || got.Translation != "notatki" {
+		t.Fatalf("changed phrase: writes = %+v (err %v), want rewrite %+v and the translation", got, err, want)
+	}
+
+	explicit := `{"phrase":"مُلَاحَظَاتٌ","translation":"notatki","rewrite":{"phrase":"مُلَاحَظَةٌ","grammar":"N f sg"}}`
+	got, err = decideItemWrites(it, explicit, sections)
+	if err != nil || got.Rewrite == nil || got.Rewrite.Phrase != "مُلَاحَظَةٌ" {
+		t.Fatalf("explicit rewrite beside a changed phrase: rewrite = %+v (err %v), want the explicit one", got.Rewrite, err)
+	}
+}
+
+func TestDecideItemWritesRejectsAChangedPhraseForAJobWithoutAUsageAndSaysWhy(t *testing.T) {
+	_, err := decideItemWrites(vocabPayload("Koffer"), `{"phrase":"der Koffer","translation":"walizka"}`, LanguageSections{})
+	if err == nil || !strings.Contains(err.Error(), `does not match the item's phrase "Koffer"`) || !strings.Contains(err.Error(), "may not change the phrase") {
+		t.Fatalf("err = %v, want the mismatch plus why this job may not change the phrase", err)
+	}
+}

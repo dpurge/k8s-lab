@@ -1,0 +1,128 @@
+as-chat-list {
+  display: block;
+}
+
+as-chat-list .as-chat-new {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.9rem;
+  margin-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+as-chat-list .as-chat-new h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+as-chat-list select,
+as-chat-list input {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+}
+
+as-chat-list .as-chat-new-start {
+  font: inherit;
+  align-self: flex-start;
+  background: var(--btn-bg);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.35rem 1.2rem;
+  cursor: pointer;
+}
+
+as-chat-list .as-chat-new-start:hover {
+  background: var(--btn-bg-hover);
+}
+
+as-chat-list .as-chat-new-start:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+as-chat-list .as-chat-new-error {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-chat-list .as-chat-new-error[hidden] {
+  display: none;
+}
+
+as-chat-list .as-chat-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+as-chat-list .as-chat-item-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.55rem 0.6rem;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+as-chat-list .as-chat-item-link:hover {
+  background: var(--surface-alt);
+}
+
+as-chat-list .as-chat-item.active .as-chat-item-link {
+  background: var(--surface-alt);
+  box-shadow: inset 3px 0 0 var(--link);
+}
+
+as-chat-list .as-chat-item-title {
+  font-weight: 600;
+}
+
+as-chat-list .as-chat-item-meta,
+as-chat-list .as-chat-item-last {
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+as-chat-list .as-chat-list-message {
+  color: var(--muted);
+}
+
+as-chat-list .as-chat-list-message.error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+as-chat-list .as-badge {
+  align-self: flex-start;
+  margin-top: 0.2rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid currentColor;
+}
+
+as-chat-list .as-status-pending,
+as-chat-list .as-status-running {
+  color: var(--link);
+}
+
+as-chat-list .as-status-waiting {
+  color: var(--warning);
+}
+
+as-chat-list .as-status-failed {
+  color: var(--danger);
+}
+
+as-chat-list .as-status-cancelled {
+  color: var(--muted);
+}

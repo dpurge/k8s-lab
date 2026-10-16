@@ -100,6 +100,11 @@ type PurposeConfig struct {
 	// gets when its reply fails validation and is sent back to the model for
 	// correction; <= 0 means the built-in default of 3 (see ai/retry.go).
 	MaxAttempts int
+	// MaxReplyTokens caps one reply's length in tokens (Ollama's
+	// num_predict); 0 means no cap. It bounds a model that loops: a reply that
+	// is cut off fails validation and is retried, instead of running until it
+	// fills the context window.
+	MaxReplyTokens int
 }
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
@@ -146,6 +151,7 @@ type purposeFileConfig struct {
 	TimeoutSeconds int    `yaml:"timeoutSeconds"`
 	Prompt         string `yaml:"prompt"`
 	MaxAttempts    int    `yaml:"maxAttempts"`
+	MaxReplyTokens int    `yaml:"maxReplyTokens"`
 }
 
 // namedPurpose is one purpose's file configuration with its key in the file.
@@ -183,62 +189,62 @@ func defaultFileConfig() fileConfig {
 	// copied verbatim from ai.go's former hardcoded switch so upgrading
 	// doesn't change any existing behavior.
 	f.Transcription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultTranscriptionPrompt,
 	}
 	f.Translation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultTranslationPrompt,
 	}
 	f.Title = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultTitlePrompt,
 	}
 	f.ProcessText = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultProcessTextPrompt,
 	}
 	f.ProcessDialog = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultProcessDialogPrompt,
 	}
 	f.GenerateVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultGenerateVocabularyPrompt,
 	}
 	f.GenerateModels = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultGenerateModelsPrompt,
 	}
 	// NumCtx left 0 (Ollama's default) to match the prompt-eval request.
 	f.VocabularyItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 512,
 		Prompt: DefaultVocabularyItemPrompt,
 	}
 	f.ModelsItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 512,
 		Prompt: DefaultModelsItemPrompt,
 	}
 	f.CheckVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultCheckVocabularyPrompt,
 	}
 	// Every purpose names its own provider and model, none falls back to another's:
 	// a stronger model for a review is set on that purpose alone.
 	f.ReviewVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewVocabularyPrompt,
 	}
 	f.ReviewModels = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewModelsPrompt,
 	}
 	f.ReviewTranscription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewTranscriptionPrompt,
 	}
 	f.ReviewTranslation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3,
+		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewTranslationPrompt,
 	}
 	return f

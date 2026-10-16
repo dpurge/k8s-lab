@@ -106,3 +106,33 @@
 2026-10-13T16:36:57Z [domain] phraseforge hidden vocabulary words are per user and per phrase (vocabulary_hidden_phrases); only the detail API and Copy markdown honor it, other Items callers see all.
 2026-10-13T16:36:57Z [gotcha] phraseforge vocabulary item positions are 0-based; a handler test that hides position 1 hides the second item.
 2026-10-13T16:36:57Z [gotcha] phraseforge admin-app.js passes some i18n keys as label: "..." and calls T() later; a key missing from adminAppI18nKeys (server/admin.go) shows raw.
+2026-10-16T17:06:47Z [gotcha] go-yaml/yaml (gopkg.in/yaml.v3) is archived upstream; assistant uses go.yaml.in/yaml/v3, the maintained API-compatible fork.
+2026-10-16T17:06:47Z [gotcha] jsonschema/v6 BasicOutput() hides error kinds behind "validation failed" for $ref; walk ValidationError.Causes to the leaves (assistant/internal/workflow errorLeaves).
+2026-10-16T17:06:47Z [convention] assistant tests that use internal/workflow/workflowtest go in package workflow_test: workflowtest imports workflow, so internal tests would form an import cycle.
+2026-10-16T17:06:47Z [convention] assistant golden transcripts regenerate with UPDATE_GOLDEN=1 go test ./internal/workflow -run TestLearnTopicGolden; a prompt change then shows as a reviewable diff.
+2026-10-16T17:06:47Z [decision] assistant state_schema required keys are enforced only when a run reaches an end state; types are checked after every patch (internal/workflow StateValidator.Validate).
+2026-10-16T17:29:37Z [convention] assistant prompts, vectors, eval cases and schemas are authored in prompt-eval and copied by sync-app.js; do not edit the copies in assistant/internal/workflow.
+2026-10-16T17:29:37Z [gotcha] prompt-eval package-lock.json is CRLF and npm rewrites it whole as LF; revert it and add the dependency line by hand in binary mode so the diff stays one line.
+2026-10-16T17:29:37Z [decision] assistant learn-topic keeps the open question in run state key pending, because a step never sees earlier steps and could not judge the user's answer otherwise.
+2026-10-16T17:38:21Z [env] gemma4:12b with think false and num_ctx 8192 answered assistant controller steps in 19-36 s on a 17 GB Apple laptop; the first call, loading the 8 GB model, took 27 s.
+2026-10-16T17:38:21Z [gotcha] gemma4:12b without constrained decoding returned malformed JSON on 1 of 3 assistant controller steps; send the reply schema as Ollama format and retry in the engine.
+2026-10-16T17:38:21Z [gotcha] gemma4:12b wrote pending.expected_answer instead of pending.expected and skipped recording pending on one quiz question; tighten the assistant prompt and case.
+2026-10-16T17:47:58Z [env] adding run_state_schema and three example replies to the assistant controller prompt added about 450-500 input tokens per step and 3-5 s per call on gemma4:12b.
+2026-10-16T17:47:58Z [gotcha] gemma4:12b broke JSON on the long assistant lesson reply with Arabic text in 2 of 2 runs and did not record pending; use constrained decoding.
+2026-10-16T18:32:30Z [gotcha] kubectl may be a kuberlr launcher; killing its pid leaves the real kubectl's port-forward running, so stop it with pkill -f on its command line (Taskfile test-assistant).
+2026-10-16T18:32:30Z [gotcha] Node import() caches CommonJS scripts by path; rerun a script that acts when loaded (assistant theme.js) in tests with new Function (components/testenv.js runScript).
+2026-10-16T18:32:30Z [gotcha] jsdom fires hashchange through the global setTimeout: start node:test mock.timers only after the address has settled, or awaiting a hash change never resolves.
+2026-10-16T18:32:30Z [gotcha] display:grid without grid-template-columns grows to the widest child's min-content (a wide table), so the page scrolls sideways; use minmax(0, 1fr).
+2026-10-16T18:32:30Z [convention] A custom element that loads data when connected needs its attributes set before it is appended, or it loads once with defaults (assistant static/app.js).
+2026-10-16T19:27:36Z [gotcha] assistant/Dockerfile copied only named root .go files, so a new one broke the image build at deploy time only; it now uses COPY *.go.
+2026-10-16T19:27:36Z [convention] assistant models.yaml is the assistant-models ConfigMap, built by the Taskfile from models.dev.yaml, not kept in assistant/k8s/ (kubectl applies the whole directory).
+2026-10-16T19:27:36Z [gotcha] A status bar fed by several components must keep an error until the component that raised it loads well, or a sibling's success hides it (assistant static/app.js).
+2026-10-16T19:27:36Z [convention] A fallback test must include a model that only one tag set can reach, or dropping the tags still passes (assistant internal/llm/ollama/engine_test.go).
+2026-10-16T19:27:36Z [gotcha] An 11-column admin table overflows a 1024px window; hide the least useful column and let headers wrap under 1200px (assistant as-task-list).
+2026-10-16T20:20:55Z [domain] A 12B local model skips ask_user and loops goto-self in learn-topic; gemini-2.5-flash-lite on Vertex asks, waits and resumes at about 1 s per step.
+2026-10-16T20:20:55Z [gotcha] go-task's shell has no umask builtin; create a secret file with install -m 600 /dev/null <file> before writing to it.
+2026-10-16T20:20:55Z [gotcha] After task deploy-assistant the ingress needs a few more seconds; poll /healthz before the first request or it gets no answer.
+2026-10-16T20:20:55Z [convention] assistant mounts the workflows ConfigMap beside, not inside, the models ConfigMap directory, to avoid nesting one mount inside another.
+2026-10-16T20:38:32Z [gotcha] A text input with a datalist hides every option that does not match what is typed; use a select fed by the server for a list the user must be able to browse.
+2026-10-16T20:38:32Z [gotcha] In Postgres ORDER BY a column position silently sorts the wrong column when the select list changes; order by a named alias (assistant chat store).
+2026-10-16T20:38:32Z [convention] A cancel stops a running task by cancelling its run context in the worker; the worker then records it as cancelled however the run ended (assistant tasks worker).

@@ -1,0 +1,122 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: assistant
+  namespace: app
+spec:
+  replicas: 1
+  # One worker, one running task: never two pods at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: assistant
+  template:
+    metadata:
+      labels:
+        app: assistant
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: assistant
+          image: k8s-lab-registry:5000/assistant:dev
+          # Always: the "dev" tag is mutable (rebuilt on every `task deploy-assistant`).
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASSISTANT_MODELS_FILE
+              value: /etc/assistant/models.yaml
+            - name: ASSISTANT_WORKFLOWS_DIR
+              value: /etc/assistant-workflows
+            - name: ASSISTANT_VERTEX_TOKEN_FILE
+              value: /etc/assistant-vertex/token
+            - name: ASSISTANT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: assistant-database
+                  key: ASSISTANT_DATABASE_URL
+          volumeMounts:
+            - name: models
+              mountPath: /etc/assistant
+              readOnly: true
+            - name: workflows
+              mountPath: /etc/assistant-workflows
+              readOnly: true
+            - name: vertex
+              mountPath: /etc/assistant-vertex
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          # Liveness does not look at the database: a database outage must not
+          # make Kubernetes restart a healthy process. Readiness does.
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: models
+          configMap:
+            name: assistant-models
+        - name: workflows
+          configMap:
+            name: assistant-workflows
+        # The access token for Vertex AI, written by `task refresh-assistant-vertex-token`.
+        # Optional so the pod starts without it; a call then fails with a clear message.
+        - name: vertex
+          secret:
+            secretName: assistant-vertex
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: assistant
+  namespace: app
+spec:
+  selector:
+    app: assistant
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: assistant
+  namespace: app
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: assistant.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: assistant
+                port:
+                  number: 8080

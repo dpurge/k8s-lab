@@ -1,0 +1,199 @@
+# assistant
+
+A generic background assistant: tasks name a workflow and a user, and an LLM
+walks the workflow's state machine, calling tools, until it reaches an end
+state. What exists today is the task queue with its API and admin interface,
+a worker that runs the built-in `noop` and `ask` workflows and the YAML
+workflows through the engine (parking a run that asks the user and resuming it
+with the answer), and the model router with Ollama, Vertex AI and a demo
+provider. Channels and memory come in later slices (see
+`specs/artifacts/assistant/roadmap.md`).
+
+## Task queue
+
+- **Tasks** (`tasks` table) name a workflow, a user and a source (`telegram`,
+  `nats`, `scheduler`, `api`). One worker takes the oldest pending task, runs it
+  and records `succeeded` or `failed` with a result or an error. Queue time and
+  execution time are derived from the timestamps. A task left running by a
+  process that died is failed at the next start.
+- **API** (`/api/v1`, described in `schemas/api/openapi.yaml`): `POST` and `GET`
+  `/users`, `POST` and `GET` `/tasks` (paged, newest first, `status` filter),
+  `GET /tasks/{id}` (with `usage`: calls, tokens, cost, models),
+  `GET /tasks/{id}/llm-calls`, `GET /usage?since=`, `GET /models`; also
+  `/healthz` and `/metrics`. Errors are always
+  `{"error": {"code", "message"}}`. There is no authentication yet.
+- **Admin interface** at `/admin/`: a single-page app of native Web Components
+  (`as-*`, in `internal/server/static/`), embedded in the binary. It shows the
+  queue with status filter and paging, counts waiting and running times up
+  live, shows each task's model, tokens and cost, and on a task's page its
+  payload, result, error and every model call it made. The Usage page shows
+  calls, tokens and cost by user and model for a period, and the configured
+  models with their availability.
+- **Metrics** for Prometheus: `assistant_tasks_total{source,workflow,status}`,
+  `assistant_task_queue_seconds`, `assistant_task_execution_seconds` and
+  `assistant_http_requests_total` / `_duration_seconds` by route template.
+- **Logs** are JSON on stdout; a task's start and finish are one line each with
+  its id, workflow, outcome and duration, never its payload or result.
+- **Schemas** (`schemas/`) are the contracts: `db/schema.sql` (the only DDL),
+  `api/openapi.yaml`, `workflow.schema.json`. Tests hold the code to them.
+
+## Run it
+
+```sh
+cp .env.example .env     # set ASSISTANT_DATABASE_URL
+go run . migrate         # apply the schema
+go run .                 # serve on :8080, admin at http://localhost:8080/admin/
+```
+
+In the dev cluster: `task deploy-assistant` (from the repository root) builds
+the image, creates the `assistant` database and its Secret, the `assistant-models`
+ConfigMap (from `models.dev.yaml`; the Ollama on the laptop), applies the schema
+and deploys to `http://assistant.localhost:8080/admin/`. Try it:
+
+```sh
+curl -H 'Host: assistant.localhost' localhost:8080/api/v1/users \
+  -d '{"display_name":"Ada"}'
+curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
+  -d '{"user_id":"<id from above>","workflow_id":"noop","payload":{"sleep_ms":2000}}'
+```
+
+## Chat and tidying the queue
+
+- **Chat** (`#/chat` in the admin, `/api/v1/conversations`): a user can have
+  several conversations, each bound to one workflow (a YAML workflow, or `ask`).
+  The first message starts a run (a task with source `telegram`); while the run
+  waits for an answer the next message is the answer; once it has finished,
+  failed or been cancelled the next message starts a new run; while it works a
+  new message is refused (409). The assistant's side is the run speaking: its
+  questions, its result, and its failures (in red). `/help` lists the commands
+  and the workflows; an unknown command says so. The channel is behind an
+  interface (`internal/chat`), a mock now and Telegram later.
+- **Tidying**: cancel a pending or waiting task, or stop a running one
+  (`POST /tasks/{id}/cancel`), retry a failed or cancelled one as a new task
+  (`POST /tasks/{id}/retry`), remove one (`DELETE /tasks/{id}`, not a running
+  one) or all of one finished status (`DELETE /tasks?status=failed`). A removed
+  task takes its trace with it, but its model calls stay, so usage and cost do
+  not change. Removing a task a conversation is in leaves the conversation
+  usable. The task page has the buttons; the list has "Remove all" for a
+  finished status filter.
+- `GET /api/v1/workflows` lists what a task or conversation can name, and the
+  forms are filled from it.
+
+## Running workflows
+
+- A task whose `workflow_id` is not a built-in runs the YAML workflow of that
+  id (`workflows/*.yaml`, a ConfigMap in the cluster, read from
+  `ASSISTANT_WORKFLOWS_DIR`; startup fails with file and line if one is
+  invalid). The payload is `{"message", "state"?, "language"?}`; the run id is
+  the task id. The tools are stand-ins (`internal/tools`) until memory, RAG and
+  web search exist; each says in its result that it is a stub.
+- When a run asks the user (`ask_user`) the task becomes `waiting`, keeping its
+  run and question, and the queue goes on. `POST /api/v1/tasks/{id}/messages`
+  `{"message": ...}` queues it again; the worker resumes the run with the
+  answer. A finished or failed task keeps its final run.
+- `GET /api/v1/tasks/{id}/steps` is the trace: one row per attempt of a step
+  with the model's raw reply (cut at 8 KB), the action, the tool, tokens and the
+  error of a refused reply. It holds replies on purpose and is never logged.
+- The admin task page shows a failure as an alert at the top, the question and
+  an answer box for a waiting run, the run state, the trace (a step that went
+  wrong is shown open, in red) and the model calls. The task list has a "New
+  task" form.
+- `hello` (the demo model) and `hello-live` (a real chat model) are tiny
+  workflows to try all of this by hand: they ask for a name, then greet.
+
+## Model router (`internal/llm`)
+
+- `models.yaml` (format in `schemas/models.schema.json`, sample in
+  `models.example.yaml`, dev cluster's in `models.dev.yaml`) lists providers
+  (an Ollama endpoint each: localhost or another machine) and models with tags,
+  a priority, Ollama options and a price per million tokens. The path is
+  `ASSISTANT_MODELS_FILE` (default `/etc/assistant/models.yaml`); startup fails
+  naming the variable and the file if it is missing or invalid. Check a file with
+  `go run . models validate models.yaml`.
+- A call names tags (a workflow, or one of its states, lists `model_tags`; a
+  state's list replaces the workflow's). It goes to the available model with all
+  the tags and the highest priority, then falls down the list on failure.
+- A circuit breaker sets a model aside after `failures` consecutive failures for
+  `cooldown_seconds` (a 429 for its own cooldown), with no pings. A connection
+  failure holds every model of that provider, since the machine is the fault.
+  A client error (4xx) does not count against the model.
+- Every attempt is a row of `llm_calls` with the task and user, tokens, cost,
+  duration and outcome; a fallback leaves the failed row and the successful one.
+  The cost is attributed to the task's user. Metrics:
+  `assistant_llm_calls_total`, `_tokens_total{user,...}`, `_cost_usd_total`,
+  `_call_duration_seconds` and `assistant_llm_model_available{model}`.
+  No prompt or reply is logged or stored.
+- Providers: `ollama`; `vertex` (Gemini on Vertex AI, REST `generateContent`),
+  which authenticates with an OAuth access token read from the file in
+  `ASSISTANT_VERTEX_TOKEN_FILE` on every call (dev: `task
+  refresh-assistant-vertex-token` writes it from your gcloud account into a
+  Secret, valid about an hour; production needs a service account, not yet
+  built); and `demo`, a deterministic stand-in that acts out `hello` instantly,
+  to try the interface without a real model. OpenAI-compatible and Anthropic are
+  roadmap items; a provider is one `Provider` method.
+- The built-in workflow `ask` makes one call: payload `{"prompt", "system"?,
+  "tags"?}`, result `{"text", "model_id"}`.
+
+```sh
+curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
+  -d '{"user_id":"<id>","workflow_id":"ask","payload":{"prompt":"Say ready","tags":["chat"]}}'
+```
+
+## Workflow engine (`internal/workflow`)
+
+- A workflow is a YAML file (`workflows/`, format in
+  `schemas/workflow.schema.json`): states, the tools and next states each
+  state allows, a JSON Schema for the run state, and limits.
+- At each step the model sees only the workflow, the current state, the run
+  state with its schema and the latest observation, never a history, and answers
+  `{"state_patch": {...}, "action": {...}}`. The runtime validates the reply,
+  merges the patch into the run state, and carries the action out
+  (`tool`, `goto` or `ask_user`). Invalid replies are retried with the reason.
+- `ask_user` suspends the run. A run is plain JSON (`Run`, `RestoreRun`), so
+  it can be stored and resumed later, by another process.
+- Prompts are a template with `{{language}}`, `{{output}}`, `{{languageRules}}`
+  and `{{outputRules}}`; snippets live in `internal/workflow/prompts/lang/<code>/`
+  and `internal/workflow/prompts/output/<kind>/`.
+- The prompts are not edited here. They are developed and evaluated in the
+  `prompt-eval` repository (`prompt/assistant/`, suite `assistant-step/`) and
+  copied in with `npm run sync-assistant` there. The files under
+  `internal/workflow/prompts/` and `internal/workflow/testdata/prompt-eval/`
+  are copies; `npm run check-sync-assistant` in `prompt-eval` verifies them.
+
+## Checking a workflow file
+
+```sh
+go run . workflow validate --tools memory_search,rag_search workflows/learn-topic.yaml
+```
+
+Exit code 0 means valid, 1 means problems (printed as `file:line: path:
+message`), 2 means bad usage. Without `--tools` the tool names are not checked.
+
+## Tests
+
+No test calls a real LLM: every model reply is scripted.
+
+```sh
+task test-assistant            # from the repository root; vet + tests with the dev cluster's Postgres
+task test-assistant-frontend   # the as-* component tests (Node + jsdom)
+go test ./...                  # from this directory
+```
+
+Database tests use a schema of their own inside the database named by
+`ASSISTANT_TEST_DATABASE_URL` and are skipped, with a visible reason, when it is
+not set. `task test-assistant` sets it from the dev cluster (database
+`assistant_test`, created if missing). Providers are tested against a fake
+Ollama HTTP server, the router against a scripted provider with a fake clock.
+
+`internal/workflow/testdata/prompt-eval/` holds the render vectors, the
+evaluation cases and the reply schemas synced from `prompt-eval`. Go tests
+check that each case is exactly the request the engine builds, that each
+schema is the one the engine builds, and that each example reply is accepted.
+
+`internal/workflow/testdata/learn_topic.golden.json` is a recorded run of the
+`learn-topic` workflow. The test replays it and fails if the engine's
+requests change. After an intended change, regenerate it and review the diff:
+
+```sh
+UPDATE_GOLDEN=1 go test ./internal/workflow -run TestLearnTopicGolden
+```

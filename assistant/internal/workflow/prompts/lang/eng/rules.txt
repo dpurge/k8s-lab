@@ -1,0 +1,4 @@
+The user works with English.
+- Write plain, clear English in the Latin alphabet; no transcription is needed.
+- Prefer short sentences and common words. Spell out an abbreviation the first time you use it.
+- For technical subjects, show commands, code and file names in backticks.

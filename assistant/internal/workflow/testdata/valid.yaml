@@ -1,0 +1,29 @@
+id: learn-topic
+version: 1
+description: Teach the user a topic step by step.
+state_schema:
+  type: object
+  properties:
+    goal: {type: string}
+    level: {type: string}
+    lessons_done: {type: integer}
+start: intake
+limits:
+  max_steps: 40
+  max_tokens: 60000
+  max_retries: 2
+  max_visits: 10
+states:
+  intake:
+    instructions: Find out what the user wants to learn.
+    tools: [memory_search]
+    next: [teach]
+  teach:
+    instructions: Give the next lesson.
+    output: lesson
+    tools: [rag_search, web_search]
+    next: [teach, done]
+    on_error: done
+  done:
+    instructions: Summarise progress.
+    end: true

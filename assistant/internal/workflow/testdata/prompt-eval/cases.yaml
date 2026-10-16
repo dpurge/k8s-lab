@@ -1,0 +1,361 @@
+# Evaluation cases for one step of the assistant's workflow engine, built from
+# workflows/learn-topic.yaml. Each case is the input the engine would send for
+# one step, the reply schema of that step's state (schemas/<state>.json) and
+# what a good reply does. `example` is a reply that must pass, so a case that
+# no reply can satisfy is caught by the tests, without any model.
+#
+# The workflow, run_state_schema and state blocks below are what the engine builds from the
+# workflow file; a Go test in the assistant fails when they drift from it.
+workflow: &wf
+  description: 'Teach the user a topic they want to learn, such as a language or a technology: find out
+    their goal, fetch a learning program, assess their level with a short series of questions, then give
+    lessons and exercises while keeping an up-to-date picture of their level, what they know and where their
+    gaps are, until the goal is reached.'
+  id: learn-topic
+run_state_schema: &rss
+  additionalProperties: false
+  properties:
+    assessment:
+      additionalProperties: false
+      properties:
+        asked:
+          minimum: 0
+          type: integer
+        correct:
+          minimum: 0
+          type: integer
+      type: object
+    gaps:
+      items:
+        type: string
+      type: array
+    goal:
+      description: What the user wants to achieve, in their words.
+      type: string
+    lessons_done:
+      minimum: 0
+      type: integer
+    level:
+      enum:
+      - unknown
+      - beginner
+      - elementary
+      - intermediate
+      - advanced
+    mastered:
+      items:
+        type: string
+      type: array
+    pending:
+      additionalProperties: false
+      description: What the user was last asked and what a right answer looks like. You will not see the
+        question again, so record it here when you ask; judge the user's answer against it when it arrives,
+        then set pending to null.
+      properties:
+        expected:
+          type: string
+        question:
+          type: string
+      type: object
+    program:
+      description: Titles of the units of the learning program, in order.
+      items:
+        type: string
+      type: array
+    unit_index:
+      description: Index in program of the unit being taught.
+      minimum: 0
+      type: integer
+  required:
+  - goal
+  - level
+  type: object
+states:
+  intake: &s_intake
+    instructions: Find out what the user wants to learn and what they want to achieve. Recall what is already
+      known about them with memory_search. If the goal is not clear, ask. When it is clear, record it in goal,
+      set level to unknown, and go to plan.
+    name: intake
+    next:
+    - plan
+    tools:
+    - args_schema:
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+        required:
+        - query
+        type: object
+      name: memory_search
+  plan: &s_plan
+    instructions: Fetch the learning program for the goal with rag_search; use web_search only if the knowledge
+      base has none. Record the unit titles in program and set unit_index to 0, then go to assess.
+    name: plan
+    next:
+    - assess
+    tools:
+    - args_schema:
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+        required:
+        - query
+        type: object
+      name: rag_search
+    - args_schema:
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+        required:
+        - query
+        type: object
+      name: web_search
+  assess: &s_assess
+    instructions: Find out the user's level. Fetch the assessment with rag_search, then ask the questions
+      one at a time with ask_user and record each one in pending, with the answer you expect. When an answer
+      arrives, judge it against pending and update asked and correct in assessment. When you can judge the
+      level, set level, list what they already master in mastered and what they miss in gaps, set pending
+      to null, and go to teach.
+    name: assess
+    next:
+    - assess
+    - teach
+    tools:
+    - args_schema:
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+        required:
+        - query
+        type: object
+      name: rag_search
+  teach: &s_teach
+    instructions: Teach the unit at unit_index. Fetch the lesson and exercises with rag_search and present
+      them with ask_user, recording the exercise in pending with the answer you expect. When the user's answer
+      arrives, judge it against pending, then set pending to null. After each lesson update lessons_done,
+      mastered and gaps, and save anything worth remembering about the user with memory_add. Move to the next
+      unit by raising unit_index. Go to assess if the level needs re-checking, and to done when the goal is
+      reached.
+    name: teach
+    next:
+    - teach
+    - assess
+    - done
+    tools:
+    - args_schema:
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+        required:
+        - query
+        type: object
+      name: rag_search
+    - args_schema:
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+        required:
+        - query
+        type: object
+      name: web_search
+    - args_schema:
+        additionalProperties: false
+        properties:
+          text:
+            type: string
+        required:
+        - text
+        type: object
+      name: memory_add
+
+cases:
+  - id: intake-empty
+    description: A new learner asks to learn Arabic; nothing is known yet.
+    select: { language: arb, output: "" }
+    input:
+      workflow: *wf
+      state: *s_intake
+      run_state_schema: *rss
+      run_state: {}
+      observation: I want to learn Arabic.
+    expect:
+      - { path: action.type, in: [tool, ask_user] }
+      - anyOf:
+          - [{ path: action.type, equals: tool }, { path: action.tool, equals: memory_search }]
+          - [{ path: action.type, equals: ask_user }, { path: action.payload, notEmpty: true }]
+    example: '{"state_patch":{},"action":{"type":"tool","tool":"memory_search","args":{"query":"learner Arabic goal level"}}}'
+
+  - id: intake-remembered
+    description: The memory search found the learner's goal and level; no need to ask again.
+    select: { language: arb, output: "" }
+    input:
+      workflow: *wf
+      state: *s_intake
+      run_state_schema: *rss
+      run_state: {}
+      observation:
+        memories:
+          - "The learner wants to read Arabic news. Level: only knows the alphabet."
+    expect:
+      - { path: state_patch.goal, notEmpty: true }
+      - { path: state_patch.level, equals: unknown }
+      - { path: action.type, equals: goto }
+      - { path: action.state, equals: plan }
+    example: '{"state_patch":{"goal":"read Arabic news","level":"unknown"},"action":{"type":"goto","state":"plan"}}'
+
+  - id: plan-tool-error
+    description: The knowledge base is down; the model must not invent a program.
+    select: { language: arb, output: "" }
+    input:
+      workflow: *wf
+      state: *s_plan
+      run_state_schema: *rss
+      run_state: { goal: read Arabic news, level: unknown }
+      observation: { error: index offline }
+    expect:
+      - { path: action.type, equals: tool }
+      - { path: action.tool, in: [web_search, rag_search] }
+      - { path: state_patch.program, exists: false }
+    example: '{"state_patch":{},"action":{"type":"tool","tool":"web_search","args":{"query":"Arabic learning program reading news beginner"}}}'
+
+  - id: assess-correct-answer
+    description: The learner answers the first placement question correctly.
+    select: { language: arb, output: quiz }
+    input:
+      workflow: *wf
+      state: *s_assess
+      run_state_schema: *rss
+      run_state:
+        goal: read Arabic news
+        level: unknown
+        program: [Alphabet and sounds, Basic grammar, Reading simple news]
+        unit_index: 0
+        assessment: { asked: 1, correct: 0 }
+        pending: { question: "Q1: write the letter alif", expected: "ا" }
+      observation: "ا"
+    expect:
+      - { path: state_patch.assessment.correct, equals: 1 }
+      - { path: action.type, in: [ask_user, goto] }
+    example: '{"state_patch":{"assessment":{"asked":2,"correct":1},"pending":{"question":"Q2: what does kitab mean?","expected":"book"}},"action":{"type":"ask_user","payload":{"kind":"quiz","number":2,"question":"Q2: what does kitab mean?"}}}'
+
+  - id: assess-wrong-answer
+    description: The learner answers the first placement question wrongly; the count of correct answers must not rise.
+    select: { language: arb, output: quiz }
+    input:
+      workflow: *wf
+      state: *s_assess
+      run_state_schema: *rss
+      run_state:
+        goal: read Arabic news
+        level: unknown
+        program: [Alphabet and sounds, Basic grammar, Reading simple news]
+        unit_index: 0
+        assessment: { asked: 1, correct: 0 }
+        pending: { question: "Q1: write the letter alif", expected: "ا" }
+      observation: "ب"
+    expect:
+      - anyOf:
+          - [{ path: state_patch.assessment.correct, exists: false }]
+          - [{ path: state_patch.assessment.correct, equals: 0 }]
+      - { path: action.type, in: [ask_user, goto] }
+    example: '{"state_patch":{"assessment":{"asked":2,"correct":0},"pending":{"question":"Q2: what does kitab mean?","expected":"book"}},"action":{"type":"ask_user","payload":{"kind":"quiz","number":2,"question":"Q2: what does kitab mean?"}}}'
+
+  - id: assess-last-answer
+    description: Five questions were asked and four answered correctly; the level can now be judged.
+    select: { language: arb, output: quiz }
+    input:
+      workflow: *wf
+      state: *s_assess
+      run_state_schema: *rss
+      run_state:
+        goal: read Arabic news
+        level: unknown
+        program: [Alphabet and sounds, Basic grammar, Reading simple news]
+        unit_index: 0
+        assessment: { asked: 5, correct: 3 }
+        pending: { question: "Q5: what is the plural of kitab?", expected: "kutub" }
+      observation: kutub
+    expect:
+      - { path: state_patch.assessment.correct, equals: 4 }
+      - anyOf:
+          # either the level can be judged now ...
+          - - { path: action.type, equals: goto }
+            - { path: action.state, equals: teach }
+            - { path: state_patch.level, in: [beginner, elementary, intermediate, advanced] }
+            - { path: state_patch.pending, equals: null }
+          # ... or another question is asked and recorded in pending
+          - - { path: action.type, equals: ask_user }
+            - { path: state_patch.pending.question, notEmpty: true }
+            - { path: state_patch.pending.expected, notEmpty: true }
+    example: '{"state_patch":{"level":"elementary","assessment":{"correct":4},"mastered":["alphabet"],"gaps":["verb conjugation"],"pending":null},"action":{"type":"goto","state":"teach"}}'
+
+  - id: teach-lesson-fetched
+    description: The lesson for the current unit was fetched; present it with one exercise.
+    select: { language: arb, output: lesson }
+    input:
+      workflow: *wf
+      state: *s_teach
+      run_state_schema: *rss
+      run_state:
+        goal: read Arabic news
+        level: beginner
+        program: [Alphabet and sounds, Basic grammar, Reading simple news]
+        unit_index: 1
+        mastered: [alphabet]
+        gaps: [verb conjugation]
+      observation:
+        documents:
+          - "Basic grammar, lesson 1: nouns have gender; the definite article is al- (ال). kitab = book, al-kitab = the book."
+    expect:
+      - { path: action.type, equals: ask_user }
+      - { path: action.payload.kind, equals: lesson }
+      - { path: action.payload.explanation, notEmpty: true }
+      - { path: action.payload.examples, minItems: 2 }
+      - { path: action.payload.exercise.prompt, notEmpty: true }
+      - { path: state_patch.pending.expected, notEmpty: true }
+    example: '{"state_patch":{"pending":{"question":"Translate: the book","expected":"الكتاب"}},"action":{"type":"ask_user","payload":{"kind":"lesson","title":"Nouns and the definite article","explanation":"Arabic nouns have a gender. The definite article is ال (al-).","examples":[{"text":"كِتَاب (kitāb)","meaning":"a book"},{"text":"الكِتَاب (al-kitāb)","meaning":"the book"}],"exercise":{"prompt":"Translate: the book"}}}}'
+
+  - id: teach-wrong-answer
+    description: The learner answers the exercise wrongly; the gap must be recorded.
+    select: { language: arb, output: lesson }
+    input:
+      workflow: *wf
+      state: *s_teach
+      run_state_schema: *rss
+      run_state:
+        goal: read Arabic news
+        level: beginner
+        program: [Alphabet and sounds, Basic grammar, Reading simple news]
+        unit_index: 1
+        mastered: [alphabet]
+        gaps: [verb conjugation]
+        pending: { question: "Translate: the book", expected: "الكتاب" }
+      observation: "كتاب"
+    expect:
+      - { path: state_patch.gaps, contains: definite article }
+      - { path: action.type, in: [ask_user, tool] }
+    example: '{"state_patch":{"gaps":["verb conjugation","definite article"],"pending":null},"action":{"type":"ask_user","payload":{"kind":"lesson","title":"The definite article again","explanation":"Add ال (al-) before the noun to say the book.","examples":[{"text":"الكِتَاب","meaning":"the book"},{"text":"البَيْت","meaning":"the house"}],"exercise":{"prompt":"Translate: the house"}}}}'
+
+  - id: intake-after-refused-reply
+    description: The previous reply named a tool this state does not have; the retry note says so.
+    select: { language: arb, output: "" }
+    input:
+      workflow: *wf
+      state: *s_intake
+      run_state_schema: *rss
+      run_state: {}
+      observation: I want to learn Arabic.
+      retry:
+        reply: '{"state_patch":{},"action":{"type":"tool","tool":"delete_all","args":{}}}'
+        error: 'tool "delete_all" is not available in state "intake"; available tools: memory_search'
+    expect:
+      - anyOf:
+          - [{ path: action.type, equals: tool }, { path: action.tool, equals: memory_search }]
+          - [{ path: action.type, equals: ask_user }]
+    example: '{"state_patch":{},"action":{"type":"tool","tool":"memory_search","args":{"query":"learner Arabic"}}}'

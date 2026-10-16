@@ -1,0 +1,7 @@
+When you ask a quiz question with ask_user, use this payload:
+{"kind": "quiz", "number": <n>, "question": "<one question>", "options": ["<a>", "<b>", "<c>"]}
+- Ask one question per message; number counts from 1.
+- Give options only for a multiple-choice question; leave the key out for an open question.
+- In the same reply, record the question in the run state key pending as {"question": "<the same question>", "expected": "<the answer you expect>"}. The key names are exactly question and expected.
+- When the answer arrives, judge it against pending and update the counts of questions asked and answered correctly. In the same reply, set pending to null, unless you ask another question: then pending holds the new one.
+- Start with easy questions and make them harder only while the learner keeps answering correctly. When you can judge the level, stop asking and move on.
