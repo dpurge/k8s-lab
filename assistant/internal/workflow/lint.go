@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"assistant/internal/yamlschema"
+	"k8s-lab/shared/yamlschema"
 )
 
 // Lint checks a loaded workflow for mistakes the file format cannot express:

@@ -48,6 +48,10 @@ type Config struct {
 	// verified with stream: true on Ollama 0.34.1). Empty omits it. No
 	// effect on the openAI path; callers must still validate the reply.
 	Format json.RawMessage
+	// Headers are extra HTTP headers set on every request the client makes,
+	// streaming or not, after its own (Content-Type, Authorization). Nil sends
+	// none: the behavior of every caller that does not set it.
+	Headers map[string]string
 }
 type Message struct {
 	Role, Content, ToolName string
@@ -367,6 +371,9 @@ func (c *Client) do(ctx context.Context, hc *http.Client, url string, in any) (*
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+	for name, value := range c.cfg.Headers {
+		req.Header.Set(name, value)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {

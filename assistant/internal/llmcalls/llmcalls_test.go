@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"k8s-lab/shared/retention"
+
 	"assistant/internal/dbtest"
 	"assistant/internal/llmcalls"
 	"assistant/internal/tasks"
@@ -272,4 +274,38 @@ func grep(body, prefix string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+func countCalls(t *testing.T, f fixture) int {
+	t.Helper()
+	var n int
+	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM llm_calls").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestTheRetentionRuleDeletesOldCallsAndKeepsTheirTaskAndUser(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	for _, age := range []time.Duration{100 * 24 * time.Hour, 91 * 24 * time.Hour, 89 * 24 * time.Hour, time.Hour} {
+		if err := f.store.Insert(ctx, f.call("m", "ok", 1, 1, 0, -age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cutoff := base.Add(-90 * 24 * time.Hour)
+	deleted, err := retention.DeleteOlderThan(ctx, f.pool, llmcalls.RetentionRule(0), cutoff, retention.WithBatchSize(1), retention.WithBatchPause(0))
+	if err != nil || deleted != 2 {
+		t.Fatalf("DeleteOlderThan = %d, %v; want 2, nil", deleted, err)
+	}
+	if n := countCalls(t, f); n != 2 {
+		t.Errorf("%d calls left, want the 2 newer ones", n)
+	}
+	var tasksLeft, usersLeft int
+	if err := f.pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM tasks), (SELECT count(*) FROM users)").Scan(&tasksLeft, &usersLeft); err != nil {
+		t.Fatal(err)
+	}
+	if tasksLeft != 1 || usersLeft != 2 {
+		t.Errorf("tasks = %d, users = %d; a purge of calls must not touch them (want 1, 2)", tasksLeft, usersLeft)
+	}
 }

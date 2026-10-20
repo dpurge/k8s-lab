@@ -50,6 +50,14 @@ test("a model the breaker holds out says so and when it returns", async () => {
   assert.equal(el.querySelector("td.as-model-available"), null);
 });
 
+test("a model whose provider lacks a credential says so and shows no return time", async () => {
+  const { el } = await mount({}, tasksApi({ models: [modelInfo({ available: false, unavailable_until: null, unavailable_reason: "missing_credentials" })] }));
+  const td = el.querySelector("td.as-model-unavailable");
+  assert.equal(td.textContent, "no credentials");
+  assert.equal(td.querySelector(".as-model-until"), null);
+  assert.equal(td.querySelector(".as-badge").className, "as-badge as-model-down");
+});
+
 test("an available model shows no return time", async () => {
   const { el } = await mount();
   assert.equal(el.querySelector(".as-model-until"), null);

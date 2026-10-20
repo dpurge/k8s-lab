@@ -171,13 +171,53 @@ func TestWorkflowsDirDefaultsAndCanBeSet(t *testing.T) {
 	}
 }
 
-func TestVertexTokenFileIsOptionalAndTrimmed(t *testing.T) {
-	cfg, err := Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL}))
-	if err != nil || cfg.VertexTokenFile != "" {
-		t.Errorf("unset: %q %v", cfg.VertexTokenFile, err)
+// A Vertex token now comes from the provider's api_key_from in models.yaml, so
+// no environment variable names it any more.
+func TestTheRemovedVertexTokenFileVariableIsNotRead(t *testing.T) {
+	var asked []string
+	lookup := func(name string) (string, bool) {
+		asked = append(asked, name)
+		if name == EnvDatabaseURL {
+			return validURL, true
+		}
+		return "", false
 	}
-	cfg, _ = Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvVertexTokenFile: " /etc/t/token\n"}))
-	if cfg.VertexTokenFile != "/etc/t/token" {
-		t.Errorf("set: %q", cfg.VertexTokenFile)
+	if _, err := Load(lookup); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range asked {
+		if strings.Contains(name, "VERTEX") {
+			t.Errorf("Load reads %s", name)
+		}
+	}
+}
+
+func TestLoadKeepsLLMCallsForNinetyDaysByDefault(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"unset": {EnvDatabaseURL: validURL},
+		"empty": {EnvDatabaseURL: validURL, EnvLLMCallsRetentionDays: "  "},
+	} {
+		cfg, err := Load(lookupFrom(env))
+		if err != nil || cfg.LLMCallsRetentionDays != 90 {
+			t.Errorf("%s: got %d, %v; want 90, nil", name, cfg.LLMCallsRetentionDays, err)
+		}
+	}
+}
+
+func TestLoadReadsTheLLMCallsRetentionAndZeroKeepsForever(t *testing.T) {
+	for value, want := range map[string]int{"7": 7, " 365 ": 365, "0": 0, "36500": 36500} {
+		cfg, err := Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvLLMCallsRetentionDays: value}))
+		if err != nil || cfg.LLMCallsRetentionDays != want {
+			t.Errorf("%q: got %d, %v; want %d, nil", value, cfg.LLMCallsRetentionDays, err, want)
+		}
+	}
+}
+
+func TestLoadRejectsANegativeOrNonNumericLLMCallsRetention(t *testing.T) {
+	for _, value := range []string{"-1", "abc", "1.5", "30d", "36501", "99999999999"} {
+		_, err := Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvLLMCallsRetentionDays: value}))
+		if err == nil || !strings.Contains(err.Error(), "ASSISTANT_LLM_CALLS_RETENTION_DAYS") {
+			t.Errorf("%q: err = %v, want it to name ASSISTANT_LLM_CALLS_RETENTION_DAYS", value, err)
+		}
 	}
 }

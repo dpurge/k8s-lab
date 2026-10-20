@@ -627,7 +627,7 @@ func (s *Service) runOne(ctx context.Context) bool {
 	}
 
 	start := time.Now()
-	result, runErr := fn(checkpoint.With(jobCtx, jobCheckpoint{db: s.db, id: j.ID}), j.ID, j.Payload)
+	result, runErr := fn(WithJobID(checkpoint.With(jobCtx, jobCheckpoint{db: s.db, id: j.ID}), j.ID), j.ID, j.Payload)
 	outcome := "success"
 	switch {
 	case errors.Is(runErr, ErrSkipped):

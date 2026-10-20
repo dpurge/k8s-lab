@@ -112,7 +112,10 @@
       const ordered = items.map((m, i) => [m, i]).sort((a, b) => b[0].priority - a[0].priority || a[1] - b[1]).map(([m]) => m);
       for (const m of ordered) {
         const available = el("td", m.available ? "as-model-available" : "as-model-unavailable");
-        available.appendChild(el("span", `as-badge ${m.available ? "as-model-up" : "as-model-down"}`, m.available ? "available" : "held out"));
+        const noCredentials = !m.available && m.unavailable_reason === "missing_credentials";
+        const badge = el("span", `as-badge ${m.available ? "as-model-up" : "as-model-down"}`, m.available ? "available" : noCredentials ? "no credentials" : "held out");
+        if (noCredentials) badge.title = "The provider needs a credential that is not set";
+        available.appendChild(badge);
         if (!m.available && m.unavailable_until) {
           const until = el("span", "as-model-until", ` until ${f.time(m.unavailable_until)}`);
           until.title = m.unavailable_until;

@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s-lab/shared/llm"
+	"k8s-lab/shared/modelcfg"
+	"k8s-lab/shared/router"
 
 	"phraseforge/internal/config"
 	"phraseforge/internal/jobs"
@@ -111,9 +113,16 @@ type Prompt struct {
 	Kind           string `json:"kind"`
 	SourceLanguage string `json:"source_language"`
 	TargetLanguage string `json:"target_language"`
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
 	Think          bool   `json:"think"`
+	// ThinkOverride is the row's think as a per-call override of the model's
+	// think option; nil when no llm_prompts row exists for the prompt, so that
+	// the model's own option applies.
+	ThinkOverride *bool `json:"-"`
+	// ModelTags are the tags a model needs to serve the prompt's calls. On a
+	// stored row, nil (omitted in JSON) means "inherit the purpose's
+	// model_tags"; in the Prompt that prompt() returns they are the effective
+	// tags.
+	ModelTags []string `json:"model_tags,omitempty"`
 	// Prompt is the system prompt in effect for the kind. It is never stored
 	// per row: language rules live only in language_llm_sections, the text only
 	// in the purpose default.
@@ -212,6 +221,11 @@ type Service struct {
 	// textReviews backs HandleReviewResource (see SetTextReviewStore).
 	textReviews TextReviewStore
 
+	// router sends every LLM call to a model chosen by tags, and models is the
+	// configuration it was built from (see SetRouter). Both are nil until set.
+	router *router.Router
+	models *modelcfg.Config
+
 	// sleep waits out the backoff between retries of a transient LLM failure;
 	// nil means defaultSleep. Tests swap it so they never really wait.
 	sleep sleepFunc
@@ -228,8 +242,16 @@ func New(db *pgxpool.Pool, cfg config.Config, texts, dialogs TextWriteback, tran
 	}
 }
 
+// SetRouter gives the service the router every LLM call goes through, and the
+// models configuration it was built from (for Models and KnownTags). Without a router a
+// call fails with an error saying so.
+func (s *Service) SetRouter(r *router.Router, models *modelcfg.Config) {
+	s.router = r
+	s.models = models
+}
+
 func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
-	rows, err := s.db.Query(ctx, `SELECT kind, source_language, target_language, coalesce(provider, ''), coalesce(model, ''), think, timeout_seconds FROM llm_prompts ORDER BY kind, source_language, target_language`)
+	rows, err := s.db.Query(ctx, `SELECT kind, source_language, target_language, model_tags, think, timeout_seconds FROM llm_prompts ORDER BY kind, source_language, target_language`)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +259,7 @@ func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
 	var out []Prompt
 	for rows.Next() {
 		var p Prompt
-		if err := rows.Scan(&p.Kind, &p.SourceLanguage, &p.TargetLanguage, &p.Provider, &p.Model, &p.Think, &p.TimeoutSeconds); err != nil {
+		if err := rows.Scan(&p.Kind, &p.SourceLanguage, &p.TargetLanguage, &p.ModelTags, &p.Think, &p.TimeoutSeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -245,7 +267,7 @@ func (s *Service) ListPrompts(ctx context.Context) ([]Prompt, error) {
 	return out, rows.Err()
 }
 func (s *Service) SetPrompt(ctx context.Context, p Prompt) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO llm_prompts(kind,source_language,target_language,provider,model,think,timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(kind,source_language,target_language) DO UPDATE SET provider=excluded.provider, model=excluded.model, think=excluded.think, timeout_seconds=excluded.timeout_seconds, updated_at=now()`, p.Kind, p.SourceLanguage, p.TargetLanguage, strings.TrimSpace(p.Provider), strings.TrimSpace(p.Model), p.Think, p.TimeoutSeconds)
+	_, err := s.db.Exec(ctx, `INSERT INTO llm_prompts(kind,source_language,target_language,model_tags,think,timeout_seconds) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(kind,source_language,target_language) DO UPDATE SET model_tags=excluded.model_tags, think=excluded.think, timeout_seconds=excluded.timeout_seconds, updated_at=now()`, p.Kind, p.SourceLanguage, p.TargetLanguage, StoredModelTags(p.ModelTags), p.Think, p.TimeoutSeconds)
 	return err
 }
 
@@ -295,20 +317,18 @@ func (s *Service) purposeDefault(kind string) config.PurposeConfig {
 
 func (s *Service) prompt(ctx context.Context, kind, source, target string) Prompt {
 	def := s.purposeDefault(kind)
-	p := Prompt{Kind: kind, SourceLanguage: source, TargetLanguage: target, Provider: def.Provider, Model: def.Model, Think: def.Think}
-	var provider, model string
+	p := Prompt{Kind: kind, SourceLanguage: source, TargetLanguage: target, ModelTags: def.ModelTags}
+	var tags []string
 	var think bool
 	var timeoutSeconds *int
-	err := s.db.QueryRow(ctx, `SELECT coalesce(provider, ''), coalesce(model, ''), think, timeout_seconds FROM llm_prompts WHERE kind=$1 AND source_language=$2 AND target_language=$3`, kind, source, target).Scan(&provider, &model, &think, &timeoutSeconds)
+	err := s.db.QueryRow(ctx, `SELECT model_tags, think, timeout_seconds FROM llm_prompts WHERE kind=$1 AND source_language=$2 AND target_language=$3`, kind, source, target).Scan(&tags, &think, &timeoutSeconds)
 	switch {
 	case err == nil:
-		if strings.TrimSpace(provider) != "" {
-			p.Provider = provider
-		}
-		if strings.TrimSpace(model) != "" {
-			p.Model = model
+		if len(tags) > 0 {
+			p.ModelTags = tags
 		}
 		p.Think = think
+		p.ThinkOverride = &think
 		p.TimeoutSeconds = timeoutSeconds
 	case errors.Is(err, pgx.ErrNoRows):
 		// No admin-configured override for this (kind, source, target) —
@@ -320,7 +340,7 @@ func (s *Service) prompt(ctx context.Context, kind, source, target string) Promp
 		log.Printf("ai: lookup llm_prompts override for kind=%s source=%s target=%s: %v", kind, source, target, err)
 	}
 	// The prompt text always comes from the purpose default: a row overrides
-	// only provider, model, think and timeout, so language rules have one home
+	// only model tags, think and timeout, so language rules have one home
 	// (language_llm_sections).
 	p.Prompt = def.Prompt
 	return p
@@ -350,10 +370,10 @@ const userMessageTemplate = "Source language: {{source_language}}\nTarget langua
 
 // generateDefault is kind's config default as Generate calls it: with the
 // context window explicit, so the window the chunks were sized for is the
-// window the call runs under (see defaultNumCtx).
+// window the call runs under (see config.DefaultNumCtx).
 func (s *Service) generateDefault(kind string) config.PurposeConfig {
 	def := s.purposeDefault(kind)
-	def.NumCtx = effectiveNumCtx(def.NumCtx)
+	def.NumCtx = config.EffectiveNumCtx(def.NumCtx)
 	return def
 }
 
@@ -390,38 +410,36 @@ func (s *Service) callWithRetry(ctx context.Context, kind string, prompt Prompt,
 		nil, messages)
 }
 
-// callLLM sends messages with prompt's resolved provider/model/think and
-// timeouts (def supplies NumCtx and the purpose timeout), constraining the
-// reply to format's JSON schema when non-nil, and logs one telemetry line.
+// callLLM sends messages through the router to a model with prompt's tags
+// (def supplies NumCtx, the reply cap and the purpose timeout), constraining
+// the reply to format's JSON schema when non-nil, and logs one telemetry line.
 // attempt and maxAttempts (1-based) are only reported in that line.
 // Shared by Generate and HandleItemTranslation.
 func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def config.PurposeConfig, messages []llm.Message, format json.RawMessage, attempt, maxAttempts int) (string, error) {
-	provider, ok := s.cfg.Providers[prompt.Provider]
-	if !ok {
-		return "", fmt.Errorf("llm provider %q is not in the configured provider registry", prompt.Provider)
+	if s.router == nil {
+		return "", errors.New("llm router is not configured: the service has no models (load models.yaml and call SetRouter)")
+	}
+	schema, err := replySchema(format)
+	if err != nil {
+		return "", err
 	}
 	timeoutSeconds := resolveTimeoutSeconds(prompt.TimeoutSeconds, def.TimeoutSeconds)
-	clientCfg := llm.Config{
-		Provider: prompt.Provider,
-		BaseURL:  provider.BaseURL,
-		APIKey:   provider.APIKey,
-		Model:    prompt.Model,
-		NumCtx:   def.NumCtx,
+	req := router.Request{
+		Messages: routerMessages(messages),
+		Schema:   schema,
+		Tags:     prompt.ModelTags,
 		// Cuts a looping reply short; the retry then asks again.
-		NumPredict: def.MaxReplyTokens,
-		Think:      prompt.Think,
-		Timeout:    time.Duration(timeoutSeconds) * time.Second,
-
-		FirstTokenTimeout: time.Duration(provider.FirstTokenTimeoutSeconds) * time.Second,
-		IdleTimeout:       time.Duration(provider.IdleTimeoutSeconds) * time.Second,
-		Format:            format,
+		MaxTokens: def.MaxReplyTokens,
+		Think:     prompt.ThinkOverride,
+		Timeout:   time.Duration(timeoutSeconds) * time.Second,
+		NumCtx:    def.NumCtx,
 	}
 	start := time.Now()
-	resp, err := llm.New(clientCfg).Chat(ctx, messages, nil)
-	out := resp.Content
+	resp, err := s.router.Complete(withCallInfo(ctx, callInfo{kind: kind, source: prompt.SourceLanguage, target: prompt.TargetLanguage}), req)
+	out := resp.Text
 	outcome, limit := "success", ""
 	if err == nil {
-		if overflow := contextOverflow(resp, def.NumCtx); overflow != nil {
+		if overflow := s.overflowOf(resp, def.NumCtx); overflow != nil {
 			out, err, outcome = "", overflow, "context_overflow"
 		}
 	} else {
@@ -432,8 +450,29 @@ func (s *Service) callLLM(ctx context.Context, kind string, prompt Prompt, def c
 		}
 	}
 	// Telemetry only — never log content or the response text.
-	slog.Info("llm call", "kind", kind, "provider", prompt.Provider, "model", prompt.Model, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit, "attempt", attempt, "max_attempts", maxAttempts, "prompt_tokens", resp.PromptTokens, "reply_tokens", resp.ReplyTokens, "num_ctx", def.NumCtx)
+	slog.Info("llm call", "kind", kind, "model_id", resp.ModelID, "timeout_seconds", timeoutSeconds, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome, "limit", limit, "attempt", attempt, "max_attempts", maxAttempts, "prompt_tokens", resp.InputTokens, "reply_tokens", resp.OutputTokens, "num_ctx", def.NumCtx)
 	return out, err
+}
+
+// replySchema decodes the JSON Schema a caller constrains the reply to; nil for
+// no constraint.
+func replySchema(format json.RawMessage) (map[string]any, error) {
+	if len(format) == 0 {
+		return nil, nil
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(format, &schema); err != nil {
+		return nil, fmt.Errorf("reply schema is not a JSON object: %w", err)
+	}
+	return schema, nil
+}
+
+func routerMessages(messages []llm.Message) []router.Message {
+	out := make([]router.Message, len(messages))
+	for i, m := range messages {
+		out[i] = router.Message{Role: m.Role, Content: m.Content}
+	}
+	return out
 }
 
 // generatePayload is the jobs.Service payload shape for KindLLMGenerate —

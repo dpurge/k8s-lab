@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s-lab/shared/llm"
+	"k8s-lab/shared/router"
 )
 
 // ContextOverflowError reports a call whose prompt plus reply used the whole
@@ -24,16 +24,47 @@ func (e *ContextOverflowError) Error() string {
 
 // contextOverflow returns a *ContextOverflowError when r's reported token
 // counts reach numCtx. It reports nothing when the window is unknown (numCtx
-// <= 0) or the provider reported no counts (an OpenAI-compatible provider),
-// since neither can be judged.
-func contextOverflow(r llm.Response, numCtx int) error {
-	if numCtx <= 0 || r.PromptTokens+r.ReplyTokens == 0 {
+// <= 0) or no counts were reported, since neither can be judged. It only says
+// something true about an Ollama answer: numCtx is the window Ollama was asked
+// to use, and Ollama alone cuts silently at it. Every provider reports tokens
+// now, but a hosted model has its own, far larger window, so Service.overflowOf
+// applies this to Ollama answers only.
+func contextOverflow(r router.Response, numCtx int) error {
+	if numCtx <= 0 || r.InputTokens+r.OutputTokens == 0 {
 		return nil
 	}
-	if r.PromptTokens+r.ReplyTokens < numCtx {
+	if r.InputTokens+r.OutputTokens < numCtx {
 		return nil
 	}
-	return &ContextOverflowError{PromptTokens: r.PromptTokens, ReplyTokens: r.ReplyTokens, NumCtx: numCtx}
+	return &ContextOverflowError{PromptTokens: r.InputTokens, ReplyTokens: r.OutputTokens, NumCtx: numCtx}
+}
+
+// overflowOf is contextOverflow for the answer resp, applied only when the model
+// that answered is on a provider of type ollama according to the models
+// configuration; an answer of any other provider, or of a model the
+// configuration does not list, is never an overflow. Without it a hosted reply
+// whose token counts reach the purpose's small numCtx would be halved
+// recursively, each time at the price of a paid call.
+func (s *Service) overflowOf(resp router.Response, numCtx int) error {
+	if !s.isOllamaModel(resp.ModelID) {
+		return nil
+	}
+	return contextOverflow(resp, numCtx)
+}
+
+// isOllamaModel says whether modelID is a model on an ollama provider; false
+// for an unknown id or before SetRouter.
+func (s *Service) isOllamaModel(modelID string) bool {
+	if s.models == nil {
+		return false
+	}
+	for _, m := range s.models.Models {
+		if m.ID == modelID {
+			provider, ok := s.models.Provider(m.Provider)
+			return ok && provider.Type == "ollama"
+		}
+	}
+	return false
 }
 
 // maxSplitDepth bounds how often one chunk may be halved after overflowing:

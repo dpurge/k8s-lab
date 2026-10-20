@@ -9,7 +9,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"k8s-lab/shared/retention"
 )
+
+// RuleName is the name of the retention rule of llm_calls in logs and metrics.
+const RuleName = "llm_calls"
+
+// RetentionRule is the rule that keeps calls for keep (0 keeps them forever).
+// Only llm_calls is purged: it has no dependents, it references tasks and users
+// and never the other way round.
+func RetentionRule(keep time.Duration) retention.Rule {
+	return retention.Rule{Name: RuleName, Table: "llm_calls", TimeColumn: "started_at", Retention: keep}
+}
 
 // Call is one attempt to call a model.
 type Call struct {

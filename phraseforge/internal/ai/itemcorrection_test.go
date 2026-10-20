@@ -67,8 +67,8 @@ func newFakeOllama(t *testing.T, replies []string) *fakeOllama {
 	return f
 }
 
-func correctionService(baseURL string) *Service {
-	return &Service{cfg: config.Config{Providers: map[string]config.ProviderConfig{"ollama": {BaseURL: baseURL}}}}
+func correctionService(t *testing.T, baseURL string) *Service {
+	return useFakeOllama(t, &Service{}, baseURL)
 }
 
 func TestCallItemWithCorrectionFixesMismatchedPhrase(t *testing.T) {
@@ -76,9 +76,9 @@ func TestCallItemWithCorrectionFixesMismatchedPhrase(t *testing.T) {
 		`{"phrase":"Koffer","translation":"walizka"}`,
 		`{"phrase":"der Koffer","translation":"walizka"}`,
 	})
-	s := correctionService(fake.URL)
+	s := correctionService(t, fake.URL)
 	p := vocabPayload("der Koffer")
-	prompt := Prompt{Provider: "ollama", Model: "test-model"}
+	prompt := Prompt{}
 	msgs := []llm.Message{{Role: "user", Content: "translate der Koffer"}}
 
 	raw, err := s.callItemWithCorrection(context.Background(), p, prompt, config.PurposeConfig{MaxAttempts: 3}, VocabularyItemSchema, msgs, deuSections)
@@ -99,8 +99,8 @@ func TestCallItemWithCorrectionFixesMismatchedPhrase(t *testing.T) {
 func TestCallItemWithCorrectionGivesUpAfterBudget(t *testing.T) {
 	bad := `{"phrase":"Koffer","translation":"walizka"}`
 	fake := newFakeOllama(t, []string{bad, bad, bad, bad})
-	s := correctionService(fake.URL)
-	prompt := Prompt{Provider: "ollama", Model: "test-model"}
+	s := correctionService(t, fake.URL)
+	prompt := Prompt{}
 
 	_, err := s.callItemWithCorrection(context.Background(), vocabPayload("der Koffer"), prompt, config.PurposeConfig{MaxAttempts: 3}, VocabularyItemSchema,
 		[]llm.Message{{Role: "user", Content: "translate"}}, deuSections)
@@ -112,8 +112,8 @@ func TestCallItemWithCorrectionGivesUpAfterBudget(t *testing.T) {
 	}
 }
 
-func retryingService(baseURL string, rec *sleepRecorder) *Service {
-	s := correctionService(baseURL)
+func retryingService(t *testing.T, baseURL string, rec *sleepRecorder) *Service {
+	s := correctionService(t, baseURL)
 	s.sleep = rec.sleep
 	return s
 }
@@ -121,9 +121,9 @@ func retryingService(baseURL string, rec *sleepRecorder) *Service {
 func TestCallWithRetryRecoversFromServerError(t *testing.T) {
 	fake := newFakeOllama(t, []string{replyServerError, "bonjour"})
 	rec := &sleepRecorder{}
-	s := retryingService(fake.URL, rec)
+	s := retryingService(t, fake.URL, rec)
 
-	got, err := s.callWithRetry(context.Background(), "translation", Prompt{Provider: "ollama", Model: "test-model"}, config.PurposeConfig{MaxAttempts: 3},
+	got, err := s.callWithRetry(context.Background(), "translation", Prompt{}, config.PurposeConfig{MaxAttempts: 3},
 		[]llm.Message{{Role: "user", Content: "translate"}})
 	if err != nil || got != "bonjour" {
 		t.Fatalf("got (%q, %v), want (bonjour, nil)", got, err)
@@ -136,9 +136,9 @@ func TestCallWithRetryRecoversFromServerError(t *testing.T) {
 func TestCallWithRetryGivesUpAfterBudget(t *testing.T) {
 	fake := newFakeOllama(t, []string{replyServerError})
 	rec := &sleepRecorder{}
-	s := retryingService(fake.URL, rec)
+	s := retryingService(t, fake.URL, rec)
 
-	_, err := s.callWithRetry(context.Background(), "translation", Prompt{Provider: "ollama", Model: "test-model"}, config.PurposeConfig{MaxAttempts: 3},
+	_, err := s.callWithRetry(context.Background(), "translation", Prompt{}, config.PurposeConfig{MaxAttempts: 3},
 		[]llm.Message{{Role: "user", Content: "translate"}})
 	if err == nil || !strings.HasPrefix(err.Error(), "after 3 attempts: ") || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("err = %v, want 'after 3 attempts: ...' naming the 500", err)
@@ -151,9 +151,9 @@ func TestCallWithRetryGivesUpAfterBudget(t *testing.T) {
 func TestCallWithRetryDoesNotRetryClientErrors(t *testing.T) {
 	fake := newFakeOllama(t, []string{replyBadRequest})
 	rec := &sleepRecorder{}
-	s := retryingService(fake.URL, rec)
+	s := retryingService(t, fake.URL, rec)
 
-	_, err := s.callWithRetry(context.Background(), "translation", Prompt{Provider: "ollama", Model: "test-model"}, config.PurposeConfig{MaxAttempts: 3},
+	_, err := s.callWithRetry(context.Background(), "translation", Prompt{}, config.PurposeConfig{MaxAttempts: 3},
 		[]llm.Message{{Role: "user", Content: "translate"}})
 	if err == nil || len(fake.msgCount) != 1 || len(rec.waits) != 0 {
 		t.Errorf("err = %v, requests = %d, waits = %v, want a single request and no wait", err, len(fake.msgCount), rec.waits)
@@ -169,9 +169,9 @@ func TestItemCallSharesBudgetAcrossServerErrorAndBadPhrase(t *testing.T) {
 		`{"phrase":"der Koffer","translation":"walizka"}`,
 	})
 	rec := &sleepRecorder{}
-	s := retryingService(fake.URL, rec)
+	s := retryingService(t, fake.URL, rec)
 
-	_, err := s.callItemWithCorrection(context.Background(), vocabPayload("der Koffer"), Prompt{Provider: "ollama", Model: "test-model"},
+	_, err := s.callItemWithCorrection(context.Background(), vocabPayload("der Koffer"), Prompt{},
 		config.PurposeConfig{MaxAttempts: 3}, VocabularyItemSchema, []llm.Message{{Role: "user", Content: "translate der Koffer"}}, deuSections)
 	if err != nil {
 		t.Fatalf("err = %v, want success on the third attempt", err)
@@ -201,10 +201,10 @@ func TestCallItemWithCorrectionRetriesAContextOverflowAndCapsTheReply(t *testing
 		fmt.Fprintf(w, `{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1400,"eval_count":%d}`+"\n", replyTokens)
 	}))
 	t.Cleanup(server.Close)
-	s := retryingService(server.URL, &sleepRecorder{})
+	s := retryingService(t, server.URL, &sleepRecorder{})
 	cfg := config.PurposeConfig{MaxAttempts: 3, NumCtx: 4096, MaxReplyTokens: 512}
 
-	raw, err := s.callItemWithCorrection(context.Background(), vocabPayload("der Koffer"), Prompt{Provider: "ollama", Model: "test-model"}, cfg, VocabularyItemSchema,
+	raw, err := s.callItemWithCorrection(context.Background(), vocabPayload("der Koffer"), Prompt{}, cfg, VocabularyItemSchema,
 		[]llm.Message{{Role: "user", Content: "translate"}}, deuSections)
 	if err != nil || !strings.Contains(raw, "walizka") {
 		t.Fatalf("got (%q, %v), want the second attempt's reply", raw, err)

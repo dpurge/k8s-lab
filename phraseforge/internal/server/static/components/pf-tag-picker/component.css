@@ -1,0 +1,18 @@
+/* Options wrap onto further lines instead of widening the form. */
+pf-tag-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+}
+
+pf-tag-picker .pf-tag-picker-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+pf-tag-picker input {
+  width: auto;
+  margin: 0;
+}

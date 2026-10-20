@@ -4,7 +4,7 @@ metadata:
   name: phraseforge-config
   namespace: app
 data:
-  # Every purpose's provider/model/timeoutSeconds/maxAttempts/maxReplyTokens/prompt is declared
+  # Every purpose's model_tags/timeoutSeconds/maxAttempts/maxReplyTokens/prompt is declared
   # explicitly here (matching config.go's defaultFileConfig() values
   # verbatim) rather than left to the Go binary's own compiled-in
   # defaults — that's the whole point of llm-purpose-timeout-and-prompt-
@@ -15,26 +15,25 @@ data:
   # this is the purpose-wide default every override falls back to.
   config.yaml: |
     bindAddr: 0.0.0.0:8090
-    providers:
-      ollama:
-        baseURL: http://host.docker.internal:11434
-        # Streaming no-progress limits: wait for first output (model load +
-        # prompt eval), then max gap between outputs.
-        firstTokenTimeoutSeconds: 300
-        idleTimeoutSeconds: 60
-      openrouter:
-        baseURL: https://openrouter.ai/api/v1
     ingest:
       # Largest raw content (bytes) one ingest request may carry. Content is
       # processed in chunks that fit each purpose's context window, so a
       # long page costs one LLM call per chunk (minutes each on a CPU-only
       # node, one job at a time). Lower it if ingests hog the queue.
       maxContentBytes: 204800
+    llm_calls:
+      # Days to keep the model-call history (table llm_calls); older rows are purged every 6 hours. 0 keeps it forever.
+      retention_days: 30
+    jobs:
+      # Days to keep finished jobs (table jobs); older rows are purged every 6 hours.
+      # Pending and running jobs are never purged. 0 keeps them forever.
+      # Jobs that finished with status done:
+      retention_days_done: 7
+      # Jobs that finished with status failed or cancelled (kept longer so they can be inspected or retried):
+      retention_days_failed: 30
     transcription:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 4096
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -59,28 +58,22 @@ data:
         Input: 私は毎日学校に行きます。
         Output: Watashi wa mainichi gakkō ni ikimasu.
     translation:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 4096
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
       prompt: "Translate the source language content to the target language. Return only the translation, preserving line breaks and structure. Do not add explanations."
     title:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
       prompt: "You write a short, specific title for the given text. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble."
     processText:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -128,10 +121,8 @@ data:
 
         Tiene más de cien mil libros.
     processDialog:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -161,10 +152,8 @@ data:
         B: Gern. Mit Milch?
         A: Ja, bitte.
     generateVocabulary:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -202,10 +191,8 @@ data:
         neu {Adj} | ein neues Buch
         das Buch {N n} | ein neues Buch
     generateModels:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -246,10 +233,8 @@ data:
     # Keep these prompts equal to prompt-eval's prompt/phraseforge/default/system files
     # (config_test.go checks it).
     vocabularyItem:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 4096
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 512
@@ -306,10 +291,8 @@ data:
 
         Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
     modelsItem:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 4096
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 512
@@ -335,10 +318,8 @@ data:
 
         Translate from {{sourceLanguage}} to {{targetLanguage}}: {{phrase}}
     checkVocabulary:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -373,14 +354,12 @@ data:
         {{candidates}}
         Answer:
     # reviewVocabulary reviews one vocabulary item and proposes corrections. It
-    # has its own provider and model, like every purpose: set both (for example
-    # provider: openrouter and a more capable model) to review with a stronger
-    # model; no other purpose is affected.
+    # has its own model_tags, like every purpose: give it a tag of its own (for
+    # example reviewer, carried by a more capable model in models.yaml) to
+    # review with a stronger model; no other purpose is affected.
     reviewVocabulary:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -435,12 +414,10 @@ data:
         {{examples}}
         Answer:
     # reviewModels reviews one models item and proposes corrections, with its own
-    # provider and model.
+    # model_tags.
     reviewModels:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 8192
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -476,13 +453,11 @@ data:
         translations:
         {{translations}}
         Answer:
-    # reviewTranscription reviews the transcription of one text or dialog, with its own provider and
-    # model.
+    # reviewTranscription reviews the transcription of one text or dialog, with its own
+    # model_tags.
     reviewTranscription:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 16384
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -512,13 +487,11 @@ data:
         {{vocabulary}}
 
         Answer:
-    # reviewTranslation reviews the translations of one text or dialog, with its own provider and
-    # model.
+    # reviewTranslation reviews the translations of one text or dialog, with its own
+    # model_tags.
     reviewTranslation:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [default]
       numCtx: 16384
-      think: false
       timeoutSeconds: 1800
       maxAttempts: 3
       maxReplyTokens: 0
@@ -547,3 +520,26 @@ data:
         {{vocabulary}}
 
         Answer:
+  models.yaml: |
+    # The providers and models PhraseForge can call (PHRASEFORGE_MODELS_FILE,
+    # default /etc/phraseforge/models.yaml). A purpose in config.yaml lists
+    # model_tags; a call goes to the highest-priority available model that has all
+    # of them, and falls back to a lower one when it fails.
+    providers:
+      - id: ollama
+        type: ollama
+        base_url: http://host.docker.internal:11434
+        api_key_from: ""
+    models:
+      - id: gemma4-12b
+        provider: ollama
+        model: gemma4:12b
+        tags: [default]
+        priority: 10
+        options:
+          # The most this model is run with; a purpose's numCtx must not exceed it.
+          num_ctx: 16384
+          # Streaming no-progress limits: wait for the first output (model load +
+          # prompt eval), then the longest gap between outputs.
+          first_token_timeout_seconds: 300
+          idle_timeout_seconds: 60

@@ -5,8 +5,8 @@ import (
 	"os"
 	"sync"
 
-	"assistant/internal/yamlschema"
 	"assistant/schemas"
+	"k8s-lab/shared/yamlschema"
 )
 
 // Finding is one problem in a workflow file, located by key path and line.

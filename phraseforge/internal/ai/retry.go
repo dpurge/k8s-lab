@@ -2,11 +2,13 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"k8s-lab/shared/llm"
+	"k8s-lab/shared/router"
 )
 
 // defaultMaxAttempts is the budget used when a purpose's configured
@@ -27,6 +29,12 @@ func effectiveMaxAttempts(configured int) int {
 // longer, such as a first-token timeout, is not retried at all.
 var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
 
+// maxRecoveryWait caps how long runWithCorrection waits for the breaker to
+// release a model (router.NoModelError.RetryAfter). The wait holds a job's
+// worker, so a provider held for longer than this fails the call after the
+// attempts are used up, as it would without the breaker.
+const maxRecoveryWait = 2 * time.Minute
+
 // backoffAfter returns the wait after the given number of failed attempts.
 func backoffAfter(failedAttempts int) time.Duration {
 	i := failedAttempts - 1
@@ -34,6 +42,20 @@ func backoffAfter(failedAttempts int) time.Duration {
 		i = len(retryBackoff) - 1
 	}
 	return retryBackoff[i]
+}
+
+// waitBefore is the wait before the attempt after the given number of failed
+// ones: the backoff, or when err says that every matching model is held by the
+// breaker, until the first is released if that is later; at most
+// maxRecoveryWait. The time to the release comes from the router's own clock
+// (NoModelError.RetryAfter), never from the wall clock.
+func waitBefore(failedAttempts int, err error) time.Duration {
+	wait := backoffAfter(failedAttempts)
+	var noModel *router.NoModelError
+	if errors.As(err, &noModel) && noModel.RetryAfter > wait {
+		wait = noModel.RetryAfter
+	}
+	return min(wait, maxRecoveryWait)
 }
 
 // sleepFunc waits d or until ctx ends, whichever is first, returning ctx's
@@ -61,8 +83,10 @@ const correctionTemplate = "Your previous reply was rejected: {{error}}\nReturn 
 // defaultMaxAttempts) — one budget shared by two kinds of retry:
 //   - a reply validate rejects goes back to the model, with the exact
 //     rejection reason, as two more chat turns (no wait);
-//   - a transient call error (llm.IsRetryable) repeats the same messages
-//     after a backoff, which a cancelled ctx cuts short.
+//   - a transient call error (see isRetryable) repeats the same messages
+//     after a backoff, which a cancelled ctx cuts short. When every model is
+//     held by the router's breaker, the wait is until the first is released,
+//     if later than the backoff, up to maxRecoveryWait.
 //
 // Any other call error is returned as-is. An exhausted budget returns the
 // last error wrapped as "after N attempts". msgs is never modified.
@@ -83,12 +107,12 @@ func runWithCorrection(
 		}
 		raw, err := call(ctx, history)
 		if err != nil {
-			if !llm.IsRetryable(err) {
+			if !isRetryable(err) {
 				return "", err
 			}
 			lastErr = err
 			if attempt < maxAttempts {
-				if err := sleep(ctx, backoffAfter(attempt)); err != nil {
+				if err := sleep(ctx, waitBefore(attempt, err)); err != nil {
 					return "", err
 				}
 			}

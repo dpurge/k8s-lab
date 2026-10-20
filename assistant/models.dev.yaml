@@ -3,15 +3,20 @@
 # assistant-models ConfigMap by `task deploy-assistant`; check it with
 #   go run . models validate models.dev.yaml
 providers:
-  - id: laptop
+  - id: ollama-cpu
     type: ollama
     base_url: http://host.docker.internal:11434
-  # Gemini on Vertex AI, billed to this project; authenticated with the token
-  # that `task refresh-assistant-vertex-token` writes.
+    api_key_from: ""
+  # Gemini on Vertex AI, billed to this project; authenticated with the access
+  # token that `task refresh-assistant-vertex-token` writes into the
+  # assistant-vertex Secret, which the Deployment mounts at this path. The file
+  # is read on every call, so a refreshed token needs no restart; until it
+  # exists this provider is skipped (reason missing_credentials).
   - id: gcp
     type: vertex
     project: np-te-core-ai
     location: us-central1
+    api_key_from: file:/etc/assistant-vertex/token
   # Answers the hello workflow from inside the assistant, with no load, to try the
   # interface by hand. It refuses every other workflow.
   - id: demo
@@ -19,7 +24,7 @@ providers:
 
 models:
   - id: gemma-laptop
-    provider: laptop
+    provider: ollama-cpu
     model: gemma4:12b
     tags: [chat, review, cheap]
     priority: 10
@@ -35,11 +40,13 @@ models:
 
   # The cheapest quick Gemini the project lists. Prices are left out until they
   # are copied from the Vertex AI price list, so its cost shows as $0.
+  # Its priority is below gemma-laptop's on purpose: testing in the dev cluster
+  # goes to ollama-cpu, and Vertex is only the fallback when that model fails.
   - id: gemini-flash-lite
     provider: gcp
     model: gemini-2.5-flash-lite
     tags: [chat, review, cheap]
-    priority: 20
+    priority: 5
     options:
       num_predict: 2048
       overall_timeout_seconds: 120

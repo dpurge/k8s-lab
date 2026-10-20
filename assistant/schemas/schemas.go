@@ -18,8 +18,3 @@ var DB string
 //
 //go:embed api/openapi.yaml
 var OpenAPI []byte
-
-// Models is the JSON Schema of models.yaml.
-//
-//go:embed models.schema.json
-var Models []byte

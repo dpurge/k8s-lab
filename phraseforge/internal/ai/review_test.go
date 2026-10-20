@@ -59,9 +59,9 @@ func TestRenderReviewPromptFillsEveryPlaceholderInOnePass(t *testing.T) {
 	}
 }
 
-func TestEveryReviewPurposeUsesItsOwnProviderAndModel(t *testing.T) {
+func TestEveryReviewPurposeUsesItsOwnModelTags(t *testing.T) {
 	own := func(name string) config.PurposeConfig {
-		return config.PurposeConfig{Provider: "provider-" + name, Model: "model-" + name, NumCtx: 8192, MaxAttempts: 3}
+		return config.PurposeConfig{ModelTags: []string{"tag-" + name}, NumCtx: 8192, MaxAttempts: 3}
 	}
 	s := &Service{cfg: config.Config{
 		VocabularyItem:      own("item"),
@@ -74,7 +74,7 @@ func TestEveryReviewPurposeUsesItsOwnProviderAndModel(t *testing.T) {
 		KindReviewVocabulary: "vocabulary", KindReviewModels: "models",
 		KindReviewTranscription: "transcription", KindReviewTranslation: "translation",
 	} {
-		if got := s.purposeDefault(kind); got != own(name) {
+		if got := s.purposeDefault(kind); !reflect.DeepEqual(got, own(name)) {
 			t.Errorf("%s: got %+v, want its own setting %+v", kind, got, own(name))
 		}
 	}
@@ -95,8 +95,8 @@ func TestEveryReviewPurposeUsesItsOwnProviderAndModel(t *testing.T) {
 		case KindReviewTranslation:
 			blank.cfg.ReviewTranslation = config.PurposeConfig{}
 		}
-		if got := blank.purposeDefault(kind); got.Provider != "" || got.Model != "" {
-			t.Errorf("%s left blank: got provider %q model %q, want it blank (no fallback)", kind, got.Provider, got.Model)
+		if got := blank.purposeDefault(kind); len(got.ModelTags) != 0 {
+			t.Errorf("%s left blank: got tags %v, want it blank (no fallback)", kind, got.ModelTags)
 		}
 	}
 }
@@ -243,10 +243,9 @@ func reviewService(t *testing.T, replies ...string) (*Service, *fakeOllama) {
 	pool := newAIDB(t)
 	ollama := newFakeOllama(t, replies)
 	cfg := config.Config{
-		Providers:        map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		ReviewVocabulary: config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "Review {{phrase}} ({{sourceLanguage}})\nDICT {{dictionaryPrompt}}\n{{translations}}\n{{examples}}", MaxAttempts: 3},
+		ReviewVocabulary: config.PurposeConfig{Prompt: "Review {{phrase}} ({{sourceLanguage}})\nDICT {{dictionaryPrompt}}\n{{translations}}\n{{examples}}", MaxAttempts: 3},
 	}
-	svc := New(pool, cfg, nil, nil, nil, nil)
+	svc := useFakeOllama(t, New(pool, cfg, nil, nil, nil, nil), ollama.URL)
 	if err := svc.SetLanguageSections(context.Background(), reviewSections); err != nil {
 		t.Fatal(err)
 	}

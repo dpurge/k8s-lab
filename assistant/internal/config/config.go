@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"k8s-lab/shared/retention"
 )
 
 // Names of the environment variables the assistant reads.
@@ -19,10 +21,13 @@ const (
 	EnvModelsFile  = "ASSISTANT_MODELS_FILE"
 	// EnvWorkflowsDir names the directory of workflow YAML files.
 	EnvWorkflowsDir = "ASSISTANT_WORKFLOWS_DIR"
-	// EnvVertexTokenFile names the file holding the access token for Vertex AI.
-	// It is a secret: it is read per call, never logged and never in a message.
-	EnvVertexTokenFile = "ASSISTANT_VERTEX_TOKEN_FILE"
+	// EnvLLMCallsRetentionDays is how many days the model-call history is kept.
+	EnvLLMCallsRetentionDays = "ASSISTANT_LLM_CALLS_RETENTION_DAYS"
 )
+
+// DefaultLLMCallsRetentionDays is how long llm_calls rows are kept when
+// EnvLLMCallsRetentionDays is not set.
+const DefaultLLMCallsRetentionDays = 90
 
 // DefaultWorkflowsDir is where the workflow files are mounted in the cluster.
 const DefaultWorkflowsDir = "/etc/assistant-workflows"
@@ -41,9 +46,10 @@ type Config struct {
 	// WorkflowsDir is the directory of workflow YAML files (a ConfigMap in the
 	// cluster). It holds no secrets.
 	WorkflowsDir string
-	// VertexTokenFile is the path of the file with the Vertex AI access token.
-	// Only the path is configuration; empty means no vertex provider may be used.
-	VertexTokenFile string
+	// LLMCallsRetentionDays is how long llm_calls rows are kept; older rows are
+	// purged automatically, so usage and call history cover only this period.
+	// 0 keeps them forever. Tasks and their steps are not purged.
+	LLMCallsRetentionDays int
 }
 
 // Lookup reads one environment variable, like os.LookupEnv.
@@ -79,8 +85,14 @@ func Load(lookup Lookup) (Config, error) {
 		cfg.WorkflowsDir = strings.TrimSpace(v)
 	}
 
-	if v, ok := lookup(EnvVertexTokenFile); ok {
-		cfg.VertexTokenFile = strings.TrimSpace(v)
+	cfg.LLMCallsRetentionDays = DefaultLLMCallsRetentionDays
+	if v, ok := lookup(EnvLLMCallsRetentionDays); ok && strings.TrimSpace(v) != "" {
+		days, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || days < 0 || days > retention.MaxDays {
+			problems = append(problems, fmt.Errorf("%s must be a whole number of days from 0 (keep forever) to %d, got %q", EnvLLMCallsRetentionDays, retention.MaxDays, strings.TrimSpace(v)))
+		} else {
+			cfg.LLMCallsRetentionDays = days
+		}
 	}
 
 	if len(problems) > 0 {

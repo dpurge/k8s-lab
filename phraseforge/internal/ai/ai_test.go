@@ -13,11 +13,11 @@ import (
 // package has always had.
 func TestPurposeDefault(t *testing.T) {
 	cfg := config.Config{
-		Transcription: config.PurposeConfig{Model: "transcription-model"},
-		Translation:   config.PurposeConfig{Model: "translation-model"},
-		Title:         config.PurposeConfig{Model: "title-model"},
-		ProcessText:   config.PurposeConfig{Model: "process-text-model"},
-		ProcessDialog: config.PurposeConfig{Model: "process-dialog-model"},
+		Transcription: config.PurposeConfig{Prompt: "transcription-model"},
+		Translation:   config.PurposeConfig{Prompt: "translation-model"},
+		Title:         config.PurposeConfig{Prompt: "title-model"},
+		ProcessText:   config.PurposeConfig{Prompt: "process-text-model"},
+		ProcessDialog: config.PurposeConfig{Prompt: "process-dialog-model"},
 	}
 	svc := &Service{cfg: cfg}
 
@@ -33,8 +33,8 @@ func TestPurposeDefault(t *testing.T) {
 		{"something_unrecognized", "translation-model"},
 	}
 	for _, c := range cases {
-		if got := svc.purposeDefault(c.kind).Model; got != c.want {
-			t.Errorf("purposeDefault(%q).Model = %q, want %q", c.kind, got, c.want)
+		if got := svc.purposeDefault(c.kind).Prompt; got != c.want {
+			t.Errorf("purposeDefault(%q).Prompt = %q, want %q", c.kind, got, c.want)
 		}
 	}
 }

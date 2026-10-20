@@ -92,7 +92,9 @@
       this._message = el("p", "as-usage-message");
       this._message.setAttribute("role", "status");
       this._select = select;
-      this.append(controls, wrap, this._message);
+      // The history is purged after ASSISTANT_LLM_CALLS_RETENTION_DAYS (default 90).
+      const note = el("p", "as-usage-note", "Covers only the retained call history (90 days by default).");
+      this.append(controls, wrap, this._message, note);
       select.value = this.period;
     }
 

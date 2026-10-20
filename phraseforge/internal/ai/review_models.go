@@ -12,7 +12,7 @@ import (
 
 // KindReviewModels is the purpose of the call that reviews one models item (its
 // phrase, transcription and translations) and proposes corrections. It has its
-// own prompt, provider and model.
+// own prompt and model tags.
 const KindReviewModels = "review_models"
 
 // KindReviewModelsItem is the job kind that reviews one models item and stores

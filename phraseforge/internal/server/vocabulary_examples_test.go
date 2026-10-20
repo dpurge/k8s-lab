@@ -18,9 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
 
-	"phraseforge/internal/ai"
 	"phraseforge/internal/auth"
-	"phraseforge/internal/config"
 	"phraseforge/internal/dialogs"
 	"phraseforge/internal/jobs"
 	"phraseforge/internal/resreview"
@@ -99,9 +97,8 @@ func newVocabAPI(t *testing.T) *vocabAPI {
 
 	// ai and jobs are real but nothing runs a worker: an import only enqueues
 	// its backfill rows, so no model is ever called.
-	aiCfg := config.Config{Providers: map[string]config.ProviderConfig{"ollama": {}}}
 	f.srv = &Server{db: pool, vocab: vocabulary.New(pool), roles: roles.New(pool), tags: tags.New(pool),
-		ai: ai.New(pool, aiCfg, nil, nil, nil, nil), jobs: jobs.New(pool),
+		ai: testAI(t, pool), jobs: jobs.New(pool),
 		texts: texts.New(pool), dialogs: dialogs.New(pool), resReviews: resreview.New(pool)}
 	if f.listID, err = f.srv.vocab.Create(ctx, f.adminID, "Test", "arb", "arab"); err != nil {
 		t.Fatal(err)

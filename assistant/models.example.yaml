@@ -1,42 +1,102 @@
 # Example models.yaml. Copy it, edit it, check it with:
 #   go run . models validate models.yaml
 # The assistant reads it from ASSISTANT_MODELS_FILE (default /etc/assistant/models.yaml);
-# in the cluster it is a ConfigMap.
+# in the cluster it is a ConfigMap. Values marked PLACEHOLDER are not real:
+# replace them before use.
+#
+# Workflows pick models by model_tags: a call goes to the highest priority
+# model that has every tag it asks for and is available, and falls back to
+# lower ones. A higher number is tried first.
 
 providers:
-  # Ollama on the machine the assistant runs on. From a process on that machine
-  # use localhost; from a pod in the dev cluster, host.docker.internal reaches
-  # the laptop.
-  - id: laptop
+  # Ollama on the machine the assistant runs on (the CPU). From a process on that
+  # machine use localhost; from a pod in the dev cluster, host.docker.internal
+  # reaches the laptop.
+  - id: ollama-cpu
     type: ollama
     base_url: http://host.docker.internal:11434
-  # Ollama on another machine in the network.
-  - id: gpu-box
+    # Compulsory on every provider (its value may be empty): "" means no
+    # credential, env:NAME reads the environment variable NAME, and
+    # file:/absolute/path reads the file (a mounted Secret, a refreshed token). A
+    # file is re-read on every call, so a change needs no restart; an
+    # environment variable needs a restart to change. Never put the key
+    # itself in this file. A credential is optional for ollama and openai;
+    # anthropic and vertex are skipped, never fatal, until they have one.
+    api_key_from: ""
+  # Ollama on a GPU machine in the network. It is usually offline: it is used
+  # when it is available and the models below fall back to the CPU otherwise.
+  # PLACEHOLDER address. If it sits behind a proxy that wants a key, use
+  # env:SOME_NAME here.
+  - id: ollama-gpu
     type: ollama
-    base_url: http://gpu-box.lan:11434
+    base_url: http://gpu-host.lan:11434
+    api_key_from: ""
+  # Any OpenAI-compatible API (OpenAI, OpenRouter, a local server).
+  - id: openrouter
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key_from: env:OPENROUTER_API_KEY
+  # Gemini on Vertex AI; the file holds an OAuth access token. PLACEHOLDER
+  # project and location.
+  - id: gcp
+    type: vertex
+    project: my-project
+    location: us-central1
+    api_key_from: file:/etc/assistant-vertex/token
+  # Answers the hello workflow from inside the assistant, with no load, to try
+  # the interface by hand. It refuses every other workflow.
+  - id: demo
+    type: demo
+  # The Anthropic Messages API (base_url is optional); add it like the others:
+  # - id: claude
+  #   type: anthropic
+  #   api_key_from: file:/etc/assistant/anthropic-key
 
 models:
-  # A call goes to the highest priority model that has every tag it asks for and
-  # is available, and falls back to lower ones. A higher number is tried first.
+  # The GPU model: tried first (priority 100) whenever the machine is up.
   - id: gemma-gpu
-    provider: gpu-box
-    model: gemma4:12b
-    tags: [chat, review]
-    priority: 20
-    options: { num_ctx: 16384, think: false }
+    provider: ollama-gpu
+    model: gemma4:27b # PLACEHOLDER: a model pulled on the GPU machine
+    tags: [default, chat, review]
+    priority: 100
+    options: { num_ctx: 32768, think: false }
+  # The CPU model: the fallback (priority 10), always on the local machine.
   - id: gemma-laptop
-    provider: laptop
+    provider: ollama-cpu
     model: gemma4:12b
-    tags: [chat, review, cheap]
+    tags: [default, chat, review, cheap]
     priority: 10
     options: { num_ctx: 8192, think: false, num_predict: 2048 }
     # Prices are US dollars per million tokens; omitted means 0, right for a local model.
     price: { input_per_mtok: 0, output_per_mtok: 0 }
   - id: embed-laptop
-    provider: laptop
+    provider: ollama-cpu
     model: bge-m3
     tags: [embed]
     priority: 10
+  # Gemini: selected by the chat, review and cheap tags, between the GPU and the CPU.
+  - id: gemini-flash-lite
+    provider: gcp
+    model: gemini-2.5-flash-lite
+    tags: [chat, review, cheap]
+    priority: 20
+    options: { num_predict: 2048, overall_timeout_seconds: 120 }
+  # A third-party model that costs money and receives the prompts. It has no
+  # default, chat or review tag, so no workflow reaches it by those: a workflow
+  # uses it only by listing model_tags: [openrouter]. PLACEHOLDER model name and
+  # prices (copy them from the provider's price list).
+  - id: openrouter-reference
+    provider: openrouter
+    model: vendor/model-name
+    tags: [openrouter]
+    priority: 50
+    price: { input_per_mtok: 0, output_per_mtok: 0 }
+    options: { overall_timeout_seconds: 300 }
+  - id: demo-hello
+    provider: demo
+    model: hello
+    tags: [demo]
+    priority: 1
 
 routing:
   breaker:

@@ -10,7 +10,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"assistant/internal/yamlschema"
+	"k8s-lab/shared/yamlschema"
 )
 
 // ActionType is what the model asks the runtime to do next.

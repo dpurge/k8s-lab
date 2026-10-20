@@ -14,7 +14,7 @@ The planned `assistant` is a generic background agent: tasks arrive from Telegra
 This slice makes the smallest real version of that foundation. It makes no LLM calls and talks to no channel except REST, so the queue, timings and admin view can be seen working before the model router (next slice) is built.
 
 Decisions confirmed by the user (2026-10-16):
-- Slice 1 has no authentication. It runs only in the dev cluster, reachable through the local ingress. Authentication is planned as an external microservice shared by other apps, and comes before any deployment to `jdpct101`.
+- Slice 1 has no authentication. It runs only in the dev cluster, reachable through the local ingress. Authentication is planned as an external microservice shared by other apps, and comes before any deployment to the production cluster.
 - The admin interface is a JavaScript single-page app built from native Web Components, consistent with the other applications. It is not server-rendered HTML.
 - Tests are extensive, and none of them ever calls a real LLM: any LLM interaction in the suite uses mocked responses, and the whole suite runs with no LLM reachable.
 
@@ -99,7 +99,7 @@ Ordered plan (each step ends with build and tests green):
 - Authentication and authorization (to come from a shared external service).
 - Server-rendered admin pages.
 - Cancelling or retrying tasks from the admin page.
-- Release workflow in GitHub Actions and deployment to `jdpct101`.
+- Release workflow in GitHub Actions and deployment to the production cluster.
 - Per-user metric labels (cardinality) and cost metrics.
 
 ## Implementation Notes

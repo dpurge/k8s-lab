@@ -30,6 +30,7 @@ type Metrics struct {
 	llmCost         *prometheus.CounterVec
 	llmDuration     *prometheus.HistogramVec
 	llmRecordErrors prometheus.Counter
+	llmPurged       prometheus.Counter
 	traceErrors     prometheus.Counter
 	chatErrors      prometheus.Counter
 	availability    *availabilityCollector
@@ -89,6 +90,10 @@ func New() *Metrics {
 		Name: "assistant_llm_record_errors_total",
 		Help: "Model calls that could not be recorded in the database.",
 	})
+	m.llmPurged = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "assistant_llm_calls_purged_total",
+		Help: "Model call records deleted by the retention purge.",
+	})
 	m.traceErrors = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "assistant_trace_record_errors_total",
 		Help: "Workflow trace rows that could not be written to the database.",
@@ -102,7 +107,7 @@ func New() *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.httpRequests, m.httpDuration, m.tasks, m.queueSeconds, m.execSeconds,
-		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.traceErrors, m.chatErrors, m.availability,
+		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.traceErrors, m.chatErrors, m.availability,
 	)
 	return m
 }
@@ -145,6 +150,10 @@ func (m *Metrics) ObserveLLM(user, provider, model, outcome string, inputTokens,
 
 // RecordError counts a model call that could not be written to the database.
 func (m *Metrics) RecordError() { m.llmRecordErrors.Inc() }
+
+// Purged counts the rows a retention rule deleted. The only rule is the
+// llm_calls one, so the rule name is not a label.
+func (m *Metrics) Purged(_ string, rows int64) { m.llmPurged.Add(float64(rows)) }
 
 // TraceRecordError counts a workflow trace row that could not be written.
 func (m *Metrics) TraceRecordError() { m.traceErrors.Inc() }

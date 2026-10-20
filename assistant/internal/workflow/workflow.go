@@ -6,7 +6,7 @@ package workflow
 import (
 	"go.yaml.in/yaml/v3"
 
-	"assistant/internal/yamlschema"
+	"k8s-lab/shared/yamlschema"
 )
 
 // Workflow is a loaded workflow definition.

@@ -23,6 +23,7 @@ import (
 	"phraseforge/internal/i18n"
 	"phraseforge/internal/ime"
 	"phraseforge/internal/jobs"
+	"phraseforge/internal/llmcalls"
 	"phraseforge/internal/models"
 	"phraseforge/internal/pagination"
 	"phraseforge/internal/resreview"
@@ -83,19 +84,28 @@ type Server struct {
 	ai           *ai.Service
 	jobs         *jobs.Service
 	resReviews   *resreview.Store
+	llmCalls     *llmcalls.Store
 
 	// ingestMaxContentBytes is the ingest content cap from config; zero means
 	// defaultIngestMaxContentBytes (see ingestMaxBytes).
 	ingestMaxContentBytes int
+
+	// metricsHandler serves GET /metrics when set (see SetMetricsHandler).
+	metricsHandler http.Handler
 }
 
 func New(db *pgxpool.Pool, authSvc *auth.Service, textStore *texts.Store, dialogStore *dialogs.Store, vocabStore *vocabulary.Store, modelsStore *models.Store, rolesSvc *roles.Service, tagsSvc *tags.Store, translationsSvc *translations.Store, aiSvc *ai.Service, jobsSvc *jobs.Service) *Server {
-	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc, jobs: jobsSvc, resReviews: resreview.New(db)}
+	return &Server{db: db, auth: authSvc, texts: textStore, dialogs: dialogStore, vocab: vocabStore, models: modelsStore, roles: rolesSvc, tags: tagsSvc, translations: translationsSvc, ai: aiSvc, jobs: jobsSvc, resReviews: resreview.New(db), llmCalls: llmcalls.NewStore(db)}
 }
 
 // SetIngestMaxContentBytes sets the ingest content cap (config's
 // ingest.maxContentBytes); call it before serving. Non-positive keeps the default.
 func (s *Server) SetIngestMaxContentBytes(n int) { s.ingestMaxContentBytes = n }
+
+// SetMetricsHandler mounts h at GET /metrics, outside the login: it is read by
+// Prometheus, which has no session, and holds only counts, never content. Call
+// it before Router.
+func (s *Server) SetMetricsHandler(h http.Handler) { s.metricsHandler = h }
 
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
@@ -112,6 +122,10 @@ func (s *Server) Router() http.Handler {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+
+	if s.metricsHandler != nil {
+		r.Method(http.MethodGet, "/metrics", s.metricsHandler)
+	}
 
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -272,6 +286,10 @@ func (s *Server) Router() http.Handler {
 
 			r.Route("/api/v1/admin", func(r chi.Router) {
 				r.Get("/", s.apiGetAdminBootstrap)
+				r.Get("/models", s.apiListAdminModels)
+				r.Get("/llm-aggregates", s.apiAdminLLMAggregates)
+				r.Get("/llm-calls", s.apiAdminLLMCalls)
+				r.Delete("/llm-calls", s.apiAdminPurgeLLMCalls)
 				r.Post("/grants", s.apiCreateAdminGrant)
 				r.Delete("/grants/{id}", s.apiRevokeAdminGrant)
 				r.Post("/ime", s.apiSetAdminIME)

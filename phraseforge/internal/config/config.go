@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"k8s-lab/shared/retention"
 )
 
 // Config holds everything the server needs to start.
@@ -17,11 +17,6 @@ type Config struct {
 	PGDatabase string
 	PGUser     string
 	PGPassword string
-
-	// Providers maps a provider key (e.g. "ollama", "openrouter") to its
-	// connection details. Transcription/Translation.Provider and the
-	// llm_prompts.provider column both reference these keys by name.
-	Providers map[string]ProviderConfig
 
 	Transcription      PurposeConfig
 	Translation        PurposeConfig
@@ -47,8 +42,8 @@ type Config struct {
 	// ReviewTranscription and ReviewTranslation review the transcription and the
 	// translations of one text or dialog.
 	//
-	// Each review has its own prompt, provider and model: a stronger model for
-	// reviews is set on every review purpose, none falls back to another's.
+	// Each review has its own prompt and model tags: a stronger model for
+	// reviews is selected on every review purpose, none falls back to another's.
 	ReviewTranscription PurposeConfig
 	ReviewTranslation   PurposeConfig
 
@@ -57,34 +52,32 @@ type Config struct {
 	// hold relies on the content being processed in chunks.
 	IngestMaxContentBytes int
 
+	// LLMCallsRetentionDays is how long llm_calls rows are kept (yaml
+	// llm_calls.retention_days); older rows are purged automatically. 0 keeps
+	// them forever.
+	LLMCallsRetentionDays int
+
+	// JobsRetentionDaysDone and JobsRetentionDaysFailed are how long finished
+	// jobs are kept (yaml jobs.retention_days_done for status done, jobs.retention_days_failed
+	// for failed and cancelled ones); older rows are purged automatically. 0
+	// keeps them forever. Pending and running jobs are never purged.
+	JobsRetentionDaysDone   int
+	JobsRetentionDaysFailed int
+
 	// SessionKey signs the login session cookie. Must be set in production;
 	// a fixed dev default is used only so `go run` works with zero setup.
 	SessionKey string
-}
-
-// ProviderConfig holds one LLM provider's connection details. APIKey is
-// never read from the mounted file — only from that provider's own env var
-// (OLLAMA_API_KEY, OPENROUTER_API_KEY) — and never stored in the database.
-type ProviderConfig struct {
-	BaseURL string
-	APIKey  string
-	// FirstTokenTimeoutSeconds and IdleTimeoutSeconds bound a streamed
-	// call's wait for its first output (model load + prompt eval) and the
-	// gap between outputs afterwards. They belong to the provider, not the
-	// purpose, because they reflect how fast that host runs a model. 0
-	// means shared/llm's own default. Only the Ollama path streams.
-	FirstTokenTimeoutSeconds int
-	IdleTimeoutSeconds       int
 }
 
 // PurposeConfig is a per-purpose (transcription/translation) LLM default,
 // used when no admin-configured llm_prompts row exists for a given
 // (kind, source_language, target_language).
 type PurposeConfig struct {
-	Provider string
-	Model    string
-	NumCtx   int
-	Think    bool
+	// ModelTags are the tags a model must all have to serve this purpose; the
+	// router picks the highest-priority available model that has them. Models
+	// and their tags are configured in models.yaml (see EnvModelsFile).
+	ModelTags []string
+	NumCtx    int
 	// TimeoutSeconds is this purpose's default LLM call timeout — 0 means
 	// "no purpose-level override", falling through to shared/llm's own
 	// built-in default. An admin llm_prompts.timeout_seconds override (see
@@ -108,25 +101,23 @@ type PurposeConfig struct {
 }
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
-// (PGUser/PGPassword, the provider API keys) and Postgres connection fields
+// (PGUser/PGPassword; the provider API keys live in the environment variables
+// models.yaml names) and Postgres connection fields
 // (PGHost/PGPort/PGDatabase) are deliberately absent here — they stay
 // plain/Secret-sourced env vars, never read from this file, so `migrate`
 // works before the ConfigMap exists (it's a pre-install/pre-upgrade hook).
 type fileConfig struct {
-	BindAddr  string `yaml:"bindAddr"`
-	Providers struct {
-		Ollama struct {
-			BaseURL                  string `yaml:"baseURL"`
-			FirstTokenTimeoutSeconds int    `yaml:"firstTokenTimeoutSeconds"`
-			IdleTimeoutSeconds       int    `yaml:"idleTimeoutSeconds"`
-		} `yaml:"ollama"`
-		OpenRouter struct {
-			BaseURL string `yaml:"baseURL"`
-		} `yaml:"openrouter"`
-	} `yaml:"providers"`
-	Ingest struct {
+	BindAddr string `yaml:"bindAddr"`
+	Ingest   struct {
 		MaxContentBytes int `yaml:"maxContentBytes"`
 	} `yaml:"ingest"`
+	LLMCalls struct {
+		RetentionDays int `yaml:"retention_days"`
+	} `yaml:"llm_calls"`
+	Jobs struct {
+		RetentionDaysDone   int `yaml:"retention_days_done"`
+		RetentionDaysFailed int `yaml:"retention_days_failed"`
+	} `yaml:"jobs"`
 	Transcription       purposeFileConfig `yaml:"transcription"`
 	Translation         purposeFileConfig `yaml:"translation"`
 	Title               purposeFileConfig `yaml:"title"`
@@ -144,14 +135,12 @@ type fileConfig struct {
 }
 
 type purposeFileConfig struct {
-	Provider       string `yaml:"provider"`
-	Model          string `yaml:"model"`
-	NumCtx         int    `yaml:"numCtx"`
-	Think          bool   `yaml:"think"`
-	TimeoutSeconds int    `yaml:"timeoutSeconds"`
-	Prompt         string `yaml:"prompt"`
-	MaxAttempts    int    `yaml:"maxAttempts"`
-	MaxReplyTokens int    `yaml:"maxReplyTokens"`
+	ModelTags      []string `yaml:"model_tags"`
+	NumCtx         int      `yaml:"numCtx"`
+	TimeoutSeconds int      `yaml:"timeoutSeconds"`
+	Prompt         string   `yaml:"prompt"`
+	MaxAttempts    int      `yaml:"maxAttempts"`
+	MaxReplyTokens int      `yaml:"maxReplyTokens"`
 }
 
 // namedPurpose is one purpose's file configuration with its key in the file.
@@ -176,11 +165,10 @@ func (f fileConfig) purposes() []namedPurpose {
 func defaultFileConfig() fileConfig {
 	var f fileConfig
 	f.BindAddr = "0.0.0.0:8090"
-	f.Providers.Ollama.BaseURL = "http://host.docker.internal:11434"
-	f.Providers.Ollama.FirstTokenTimeoutSeconds = 300
-	f.Providers.Ollama.IdleTimeoutSeconds = 60
-	f.Providers.OpenRouter.BaseURL = "https://openrouter.ai/api/v1"
 	f.Ingest.MaxContentBytes = 24 * 1024
+	f.LLMCalls.RetentionDays = 30
+	f.Jobs.RetentionDaysDone = 7
+	f.Jobs.RetentionDaysFailed = 30
 	// TimeoutSeconds is only an overall backstop (1800s for every purpose):
 	// streamed Ollama calls are primarily bounded by the provider's
 	// first-token/idle limits, since a CPU-only node legitimately needs
@@ -189,62 +177,62 @@ func defaultFileConfig() fileConfig {
 	// copied verbatim from ai.go's former hardcoded switch so upgrading
 	// doesn't change any existing behavior.
 	f.Transcription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 4096, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultTranscriptionPrompt,
 	}
 	f.Translation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 4096, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultTranslationPrompt,
 	}
 	f.Title = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultTitlePrompt,
 	}
 	f.ProcessText = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultProcessTextPrompt,
 	}
 	f.ProcessDialog = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultProcessDialogPrompt,
 	}
 	f.GenerateVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultGenerateVocabularyPrompt,
 	}
 	f.GenerateModels = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultGenerateModelsPrompt,
 	}
 	// NumCtx left 0 (Ollama's default) to match the prompt-eval request.
 	f.VocabularyItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 512,
+		ModelTags: defaultModelTags(), NumCtx: 4096, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 512,
 		Prompt: DefaultVocabularyItemPrompt,
 	}
 	f.ModelsItem = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 4096, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 512,
+		ModelTags: defaultModelTags(), NumCtx: 4096, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 512,
 		Prompt: DefaultModelsItemPrompt,
 	}
 	f.CheckVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultCheckVocabularyPrompt,
 	}
-	// Every purpose names its own provider and model, none falls back to another's:
-	// a stronger model for a review is set on that purpose alone.
+	// Every purpose names its own model tags, none falls back to another's:
+	// a stronger model for a review is selected by tags on that purpose alone.
 	f.ReviewVocabulary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewVocabularyPrompt,
 	}
 	f.ReviewModels = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 8192, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewModelsPrompt,
 	}
 	f.ReviewTranscription = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 16384, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewTranscriptionPrompt,
 	}
 	f.ReviewTranslation = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 16384, Think: false, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
+		ModelTags: defaultModelTags(), NumCtx: 16384, TimeoutSeconds: 1800, MaxAttempts: 3, MaxReplyTokens: 0,
 		Prompt: DefaultReviewTranslationPrompt,
 	}
 	return f
@@ -265,23 +253,39 @@ func Load() (Config, error) {
 	fc := defaultFileConfig()
 	path := env("CONFIG_FILE", "/etc/phraseforge/config.yaml")
 	data, err := os.ReadFile(path)
+	var findings []string
 	switch {
 	case os.IsNotExist(err):
 		// use defaults
 	case err != nil:
 		return Config{}, fmt.Errorf("read config file %s: %w", path, err)
 	default:
-		if err := yaml.Unmarshal(data, &fc); err != nil {
+		unknown, err := decodeStrict(data, &fc)
+		if err != nil {
 			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
+		legacy, err := legacyKeyFindings(data)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
+		}
+		// The specific rename and legacy messages say more than "unknown key".
+		findings = append(findings, legacy...)
+		findings = append(findings, unknown...)
 	}
 	for _, p := range fc.purposes() {
-		if strings.TrimSpace(p.config.Provider) == "" || strings.TrimSpace(p.config.Model) == "" {
-			return Config{}, fmt.Errorf("config file %s: %s.provider and %s.model must both be set; a purpose does not fall back to another's", path, p.name, p.name)
-		}
+		findings = append(findings, modelTagFindings(p.name, p.config.ModelTags)...)
 	}
 	if fc.Ingest.MaxContentBytes <= 0 {
-		return Config{}, fmt.Errorf("config file %s: ingest.maxContentBytes must be greater than 0, got %d", path, fc.Ingest.MaxContentBytes)
+		findings = append(findings, fmt.Sprintf("ingest.maxContentBytes must be greater than 0, got %d", fc.Ingest.MaxContentBytes))
+	}
+	findings = append(findings, retentionFindings("llm_calls.retention_days", fc.LLMCalls.RetentionDays)...)
+	findings = append(findings, retentionFindings("jobs.retention_days_done", fc.Jobs.RetentionDaysDone)...)
+	findings = append(findings, retentionFindings("jobs.retention_days_failed", fc.Jobs.RetentionDaysFailed)...)
+	if len(findings) > 0 {
+		for i, f := range findings {
+			findings[i] = path + ": " + f
+		}
+		return Config{}, fmt.Errorf("config file has %d problem(s):\n  - %s", len(findings), strings.Join(findings, "\n  - "))
 	}
 
 	return Config{
@@ -292,15 +296,6 @@ func Load() (Config, error) {
 		PGDatabase: env("PGDATABASE", "phraseforge"),
 		PGUser:     env("PGUSER", "phraseforge"),
 		PGPassword: env("PGPASSWORD", ""),
-
-		Providers: map[string]ProviderConfig{
-			"ollama": {
-				BaseURL: fc.Providers.Ollama.BaseURL, APIKey: env("OLLAMA_API_KEY", ""),
-				FirstTokenTimeoutSeconds: fc.Providers.Ollama.FirstTokenTimeoutSeconds,
-				IdleTimeoutSeconds:       fc.Providers.Ollama.IdleTimeoutSeconds,
-			},
-			"openrouter": {BaseURL: fc.Providers.OpenRouter.BaseURL, APIKey: env("OPENROUTER_API_KEY", "")},
-		},
 
 		Transcription:       PurposeConfig(fc.Transcription),
 		Translation:         PurposeConfig(fc.Translation),
@@ -318,7 +313,55 @@ func Load() (Config, error) {
 		ReviewTranslation:   PurposeConfig(fc.ReviewTranslation),
 
 		IngestMaxContentBytes: fc.Ingest.MaxContentBytes,
+		LLMCallsRetentionDays: fc.LLMCalls.RetentionDays,
+
+		JobsRetentionDaysDone:   fc.Jobs.RetentionDaysDone,
+		JobsRetentionDaysFailed: fc.Jobs.RetentionDaysFailed,
 
 		SessionKey: env("SESSION_KEY", "dev-only-insecure-key-change-me"),
 	}, nil
+}
+
+// retentionFindings reports a retention in days outside 0 (keep forever) to
+// retention.MaxDays, naming key; a larger value would overflow time.Duration
+// when turned into a cutoff.
+func retentionFindings(key string, days int) []string {
+	if days < 0 || days > retention.MaxDays {
+		return []string{fmt.Sprintf("%s must be from 0 (keep forever) to %d days, got %d", key, retention.MaxDays, days)}
+	}
+	return nil
+}
+
+// NamedPurpose is one purpose's configuration with its key in the config file.
+type NamedPurpose struct {
+	Name    string
+	Purpose PurposeConfig
+}
+
+// Purposes lists every purpose under its key in the config file.
+func (c Config) Purposes() []NamedPurpose {
+	return []NamedPurpose{
+		{"transcription", c.Transcription}, {"translation", c.Translation}, {"title", c.Title},
+		{"processText", c.ProcessText}, {"processDialog", c.ProcessDialog},
+		{"generateVocabulary", c.GenerateVocabulary}, {"generateModels", c.GenerateModels},
+		{"vocabularyItem", c.VocabularyItem}, {"modelsItem", c.ModelsItem},
+		{"checkVocabulary", c.CheckVocabulary}, {"reviewVocabulary", c.ReviewVocabulary},
+		{"reviewModels", c.ReviewModels}, {"reviewTranscription", c.ReviewTranscription},
+		{"reviewTranslation", c.ReviewTranslation},
+	}
+}
+
+// DefaultNumCtx is the window used for a purpose whose NumCtx is 0. It is
+// Ollama's own default for the CPU-only prod node and the dev machine (both
+// report context_length 4096), and is sent explicitly with the call, so the
+// chunk size and the call agree on the window instead of the call quietly
+// running under whatever the server defaults to.
+const DefaultNumCtx = 4096
+
+// EffectiveNumCtx is n, or DefaultNumCtx when n is unset (zero or negative).
+func EffectiveNumCtx(n int) int {
+	if n <= 0 {
+		return DefaultNumCtx
+	}
+	return n
 }

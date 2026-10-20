@@ -187,3 +187,26 @@ func TestCompleteRecordsASkippedJobAsCancelledWithItsReason(t *testing.T) {
 		}
 	}
 }
+
+func TestAHandlerSeesItsJobIDInItsContext(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	var seen string
+	svc.Register("jobid_db_test", func(ctx context.Context, id string, _ json.RawMessage) (json.RawMessage, error) {
+		seen, _ = JobID(ctx)
+		return nil, nil
+	})
+	id, err := svc.Enqueue(context.Background(), "jobid_db_test", PriorityBackground, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM jobs WHERE kind='jobid_db_test'")
+	})
+	if !svc.runOne(context.Background()) {
+		t.Fatal("runOne found no job to run")
+	}
+	if seen != id {
+		t.Errorf("handler saw job id %q, want %q", seen, id)
+	}
+}

@@ -68,6 +68,9 @@ type modelResponse struct {
 	Priority         int        `json:"priority"`
 	Available        bool       `json:"available"`
 	UnavailableUntil *time.Time `json:"unavailable_until"`
+	// UnavailableReason is "cooldown" or "missing_credentials"; left out while
+	// the model is available. It never says where a credential comes from.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 type modelList struct {
@@ -80,8 +83,11 @@ func (d Deps) listModels(w http.ResponseWriter, r *http.Request) {
 	for _, s := range status {
 		m := modelResponse{ID: s.ID, Provider: s.Provider, Tags: s.Tags, Priority: s.Priority, Available: s.Available}
 		if !s.Available {
-			until := s.Until
-			m.UnavailableUntil = &until
+			m.UnavailableReason = s.Reason
+			if !s.Until.IsZero() {
+				until := s.Until
+				m.UnavailableUntil = &until
+			}
 		}
 		out.Items = append(out.Items, m)
 	}

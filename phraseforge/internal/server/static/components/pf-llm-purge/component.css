@@ -1,0 +1,9 @@
+pf-llm-purge { display: block; }
+pf-llm-purge .pf-llm-title { margin: 0 0 0.75rem; font-size: 1.2rem; }
+pf-llm-purge .pf-llm-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+pf-llm-purge select { width: auto; min-width: 9rem; margin: 0; padding: 0.45rem 0.75rem; font-size: 0.95rem; }
+pf-llm-purge .btn { padding: 0.35rem 0.9rem; font-size: 0.9rem; }
+pf-llm-purge .pf-llm-confirmation { margin-top: 0.75rem; padding: 0.75rem 1rem; border: 1px solid var(--danger); border-radius: 0.4rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+pf-llm-purge .pf-llm-confirm-text { margin: 0; flex: 1 1 18rem; }
+pf-llm-purge .pf-llm-result { margin: 0.75rem 0 0; }
+pf-llm-purge .pf-llm-hint { margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--muted); }

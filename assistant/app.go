@@ -14,16 +14,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"assistant/internal/callctx"
 	"assistant/internal/chat"
 	"assistant/internal/config"
 	"assistant/internal/db"
 	"assistant/internal/llm"
 	"assistant/internal/llm/demo"
-	"assistant/internal/llm/ollama"
-	"assistant/internal/llm/vertex"
 	"assistant/internal/llmcalls"
 	"assistant/internal/metrics"
-	"assistant/internal/models"
 	"assistant/internal/server"
 	"assistant/internal/tasks"
 	"assistant/internal/tasksteps"
@@ -31,6 +29,12 @@ import (
 	"assistant/internal/users"
 	"assistant/internal/workflow"
 	"assistant/internal/workflows"
+	"k8s-lab/shared/modelcfg"
+	"k8s-lab/shared/retention"
+	"k8s-lab/shared/router/anthropic"
+	"k8s-lab/shared/router/ollama"
+	"k8s-lab/shared/router/openai"
+	"k8s-lab/shared/router/vertex"
 )
 
 const (
@@ -83,30 +87,29 @@ type app struct {
 	handler http.Handler
 	worker  *tasks.Worker
 	tasks   *tasks.Store
+	pool    *pgxpool.Pool
+	metrics *metrics.Metrics
 	log     *slog.Logger
 }
 
 // modelSetup is the model configuration and the providers that serve it,
 // keyed by provider type. Tests pass scripted providers.
 type modelSetup struct {
-	config    *models.Config
+	config    *modelcfg.Config
 	providers map[string]llm.Provider
 }
 
 // loadModels reads the models file; its error names the setting and the file
-// so a misconfigured deployment is fixed at once.
-func loadModels(path, vertexTokenFile string) (modelSetup, error) {
-	cfg, err := models.Load(path)
+// so a misconfigured deployment is fixed at once. A credential that is missing
+// is not an error: the router skips that provider until the credential
+// appears, and says so in its log.
+func loadModels(path string) (modelSetup, error) {
+	cfg, err := modelcfg.Load(path)
 	if err != nil {
 		return modelSetup{}, fmt.Errorf("%s (%s): %w", config.EnvModelsFile, path, err)
 	}
-	for _, p := range cfg.Providers {
-		if p.Type == "vertex" && vertexTokenFile == "" {
-			return modelSetup{}, fmt.Errorf("%s (%s): provider %q is a vertex provider, which needs %s to name the file with its access token", config.EnvModelsFile, path, p.ID, config.EnvVertexTokenFile)
-		}
-	}
 	return modelSetup{config: cfg, providers: map[string]llm.Provider{
-		"ollama": ollama.New(), "demo": demo.New(), "vertex": vertex.New(vertexTokenFile),
+		"ollama": ollama.New(), "demo": demo.New(), "vertex": vertex.New(), "openai": openai.New(), "anthropic": anthropic.New(),
 	}}, nil
 }
 
@@ -131,6 +134,20 @@ func loadWorkflows(dir string, reg *workflow.Registry) (map[string]*workflow.Wor
 	return wfs, nil
 }
 
+// callLogAttrs adds who a model call is for to the router's log lines: ids
+// only, never a name or an email.
+func callLogAttrs(ctx context.Context) []slog.Attr {
+	info, ok := callctx.From(ctx)
+	if !ok {
+		return nil
+	}
+	attrs := []slog.Attr{slog.String("user_id", info.UserID)}
+	if info.TaskID != "" {
+		attrs = append(attrs, slog.String("task_id", info.TaskID))
+	}
+	return attrs
+}
+
 // newApp wires the stores, the model router, the workflow engine, the worker
 // and the HTTP handler together. The clock is how the noop workflow waits;
 // tests pass a fake. wfs are the YAML workflows tasks can name.
@@ -140,7 +157,8 @@ func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup m
 	callStore := llmcalls.NewStore(pool)
 
 	recorder := llmcalls.NewRecorder(setup.config, callStore, m, log)
-	router, err := llm.NewRouter(setup.config, setup.providers, llm.WithObserver(recorder), llm.RequireAttribution())
+	router, err := llm.NewRouter(setup.config, setup.providers, llm.WithObserver(recorder), llm.RequireAttribution(),
+		llm.WithLogger(log), llm.WithLogAttrs(callLogAttrs), llm.WithAvailability(llm.CredentialAvailability(os.Getenv, os.ReadFile)))
 	if err != nil {
 		return nil, fmt.Errorf("models: %w", err)
 	}
@@ -178,10 +196,20 @@ func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup m
 		handler: server.NewRouter(server.Deps{
 			DB: pool, Users: users.NewStore(pool), Tasks: taskStore, Calls: callStore, Steps: stepStore, Worker: worker, Workflows: runner, Chat: conversations, Models: router, Metrics: m, Log: log,
 		}),
-		worker: worker,
-		tasks:  taskStore,
-		log:    log,
+		worker:  worker,
+		tasks:   taskStore,
+		pool:    pool,
+		metrics: m,
+		log:     log,
 	}, nil
+}
+
+// newPurger returns the loop that deletes model calls older than keep days
+// (0 keeps them forever). tasks and task_steps are deliberately not purged.
+func (a *app) newPurger(keepDays int) (*retention.Purger, error) {
+	keep := time.Duration(keepDays) * 24 * time.Hour
+	return retention.NewPurger(a.pool, []retention.Rule{llmcalls.RetentionRule(keep)},
+		retention.WithOnPurged(a.metrics.Purged), retention.WithLogger(a.log))
 }
 
 // recoverCrashed fails the tasks a previous process left running. It must run
@@ -217,7 +245,7 @@ func serve() int {
 	}
 	defer pool.Close()
 
-	setup, err := loadModels(cfg.ModelsFile, cfg.VertexTokenFile)
+	setup, err := loadModels(cfg.ModelsFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuration error:\n%v\n", err)
 		return 1
@@ -248,6 +276,17 @@ func serve() int {
 	go func() {
 		defer workerDone.Done()
 		a.worker.Run(ctx)
+	}()
+
+	purger, err := a.newPurger(cfg.LLMCallsRetentionDays)
+	if err != nil {
+		log.Error("startup", "error", err)
+		return 1
+	}
+	workerDone.Add(1)
+	go func() {
+		defer workerDone.Done()
+		purger.Run(ctx)
 	}()
 
 	srv := &http.Server{Addr: httpAddr, Handler: a.handler, ReadHeaderTimeout: 5 * time.Second}

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"assistant/internal/llm"
-	"assistant/internal/models"
 	"assistant/internal/workflow"
+	"k8s-lab/shared/modelcfg"
 )
 
 func step(t *testing.T, workflowID, state string, runState map[string]any, observation any) (workflow.Response, error) {
@@ -18,7 +18,7 @@ func step(t *testing.T, workflowID, state string, runState map[string]any, obser
 		"workflow": map[string]any{"id": workflowID}, "state": map[string]any{"name": state},
 		"run_state": runState, "observation": observation,
 	})
-	return New().Complete(context.Background(), models.Provider{}, models.Model{}, workflow.Request{Input: string(input)})
+	return New().Complete(context.Background(), modelcfg.Provider{}, modelcfg.Model{}, workflow.Request{Input: string(input)})
 }
 
 func TestTheFirstMessageWhateverItIsMakesItAskForTheNameAndNoteThatItAsked(t *testing.T) {
@@ -74,7 +74,7 @@ func TestItRefusesAnyOtherWorkflowAndStateWithAClearError(t *testing.T) {
 }
 
 func TestInputThatIsNotAStepIsRefused(t *testing.T) {
-	_, err := New().Complete(context.Background(), models.Provider{}, models.Model{}, workflow.Request{Input: "hello there"})
+	_, err := New().Complete(context.Background(), modelcfg.Provider{}, modelcfg.Model{}, workflow.Request{Input: "hello there"})
 	var f *llm.Failure
 	if !errors.As(err, &f) || f.Kind != llm.FailClient {
 		t.Errorf("err = %v", err)

@@ -54,10 +54,36 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD # reused as a signing key; dedicated secret can follow later
+            # Provider API keys: optional. They come from the Secret phraseforge-llm-keys,
+            # which `task` does not create (see the README, "Where to configure API keys");
+            # without it these variables are unset. A provider reads one through
+            # api_key_from: env:NAME in models.yaml; with the variable empty, anthropic and
+            # vertex are disabled (logged), ollama and openai send no credential. A key never
+            # goes in a manifest.
             - name: OLLAMA_API_KEY
-              value: "" # Ollama needs none
+              valueFrom:
+                secretKeyRef:
+                  name: phraseforge-llm-keys
+                  key: OLLAMA_API_KEY
+                  optional: true
             - name: OPENROUTER_API_KEY
-              value: "" # TODO: set a real key via a Secret before using OpenRouter in production
+              valueFrom:
+                secretKeyRef:
+                  name: phraseforge-llm-keys
+                  key: OPENROUTER_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: phraseforge-llm-keys
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: phraseforge-llm-keys
+                  key: OPENAI_API_KEY
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /etc/phraseforge

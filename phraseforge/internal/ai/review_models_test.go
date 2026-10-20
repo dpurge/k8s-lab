@@ -97,10 +97,9 @@ func modelsReviewService(t *testing.T, replies ...string) (*Service, *fakeOllama
 	pool := newAIDB(t)
 	ollama := newFakeOllama(t, replies)
 	cfg := config.Config{
-		Providers:    map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		ReviewModels: config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "M {{phrase}} ({{sourceLanguage}})\n{{transcription}}\n{{translations}}\n{{transcriptionPrompt}}", MaxAttempts: 3},
+		ReviewModels: config.PurposeConfig{Prompt: "M {{phrase}} ({{sourceLanguage}})\n{{transcription}}\n{{translations}}\n{{transcriptionPrompt}}", MaxAttempts: 3},
 	}
-	svc := New(pool, cfg, nil, nil, nil, nil)
+	svc := useFakeOllama(t, New(pool, cfg, nil, nil, nil, nil), ollama.URL)
 	if err := svc.SetLanguageSections(context.Background(), LanguageSections{Language: "deu", TranscriptionPrompt: "rules"}); err != nil {
 		t.Fatal(err)
 	}

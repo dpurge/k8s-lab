@@ -330,7 +330,7 @@ paths:
     get:
       operationId: listTaskCalls
       summary: List the model calls a task made, oldest first
-      description: One item per attempt, so a fallback shows the failed attempt and the one that answered.
+      description: One item per attempt, so a fallback shows the failed attempt and the one that answered. Calls are kept for a limited period (90 days by default, ASSISTANT_LLM_CALLS_RETENTION_DAYS), so the history of an older task may be empty or incomplete.
       parameters:
         - name: id
           in: path
@@ -352,7 +352,7 @@ paths:
     get:
       operationId: getUsage
       summary: Tokens, cost and calls by user and model
-      description: Counts successful calls only; a failed attempt has no tokens and no cost. Highest cost first.
+      description: Counts successful calls only; a failed attempt has no tokens and no cost. Highest cost first. Covers only the retained period of the call history (90 days by default, ASSISTANT_LLM_CALLS_RETENTION_DAYS), so a since earlier than that returns no more than the retained calls.
       parameters:
         - name: since
           in: query
@@ -524,7 +524,7 @@ paths:
     get:
       operationId: listModels
       summary: List the configured models and whether each is available now
-      description: Never includes the address of a provider.
+      description: Never includes the address of a provider, nor the name or location of a credential.
       responses:
         "200":
           description: The models, in the order of the models file.
@@ -859,9 +859,12 @@ components:
           description: False while the circuit breaker holds the model, or its provider, out of service.
           type: boolean
         unavailable_until:
-          description: When it will be tried again; null if it is available.
+          description: When it will be tried again; null if it is available, or if it waits for a credential rather than for a cooldown.
           type: [string, "null"]
           format: date-time
+        unavailable_reason:
+          description: Why it is not available; left out while it is available. cooldown means the circuit breaker holds it, missing_credentials that its provider needs a credential that is not present. Never says where the credential comes from.
+          enum: [cooldown, missing_credentials]
     ModelList:
       type: object
       additionalProperties: false

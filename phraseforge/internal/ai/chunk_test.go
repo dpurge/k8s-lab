@@ -133,14 +133,6 @@ func TestGenerateDefaultMakesNumCtxExplicit(t *testing.T) {
 	}
 }
 
-func TestEffectiveNumCtx(t *testing.T) {
-	for in, want := range map[int]int{0: 4096, -5: 4096, 2048: 2048, 8192: 8192} {
-		if got := effectiveNumCtx(in); got != want {
-			t.Errorf("effectiveNumCtx(%d) = %d, want %d", in, got, want)
-		}
-	}
-}
-
 func TestChunksForSplitsLongTextForItemGeneration(t *testing.T) {
 	s := &Service{cfg: config.Config{GenerateVocabulary: config.PurposeConfig{NumCtx: 8192}}}
 	short := strings.Repeat("ا", 3618)

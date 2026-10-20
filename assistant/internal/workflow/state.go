@@ -10,8 +10,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"assistant/internal/yamlschema"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+	"k8s-lab/shared/yamlschema"
 )
 
 // Status is where a run is in its life.

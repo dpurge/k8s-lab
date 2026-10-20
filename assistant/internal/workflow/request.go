@@ -4,32 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"k8s-lab/shared/router"
 )
 
-// Request is what the engine sends the model for one step.
-type Request struct {
-	// System is the rendered system prompt.
-	System string
-	// Input is the step input as JSON: the workflow, the current state, the
-	// run state, the latest observation. It never holds earlier steps.
-	Input string
-	// Schema is the JSON Schema of the reply the engine will accept in this
-	// state. A client may use it for constrained decoding.
-	Schema map[string]any
-	// Tags are what the step needs from a model; a router sends the call to a
-	// model that has all of them. Empty means any model.
-	Tags []string
-}
+// Request is what the engine sends the model for one step. It is the router's
+// request type, so the engine's LLM can be a router without conversion.
+type Request = router.Request
 
 // Response is the model's reply with the tokens it cost.
-type Response struct {
-	Text         string
-	InputTokens  int
-	OutputTokens int
-	// ModelID is the configured id of the model that answered, set by a
-	// router; empty from a client that has no such notion.
-	ModelID string
-}
+type Response = router.Response
 
 // LLM is the only way the engine talks to a model. Real clients live outside
 // this package; tests use a scripted fake.

@@ -170,3 +170,8 @@ test("loading marks the element busy until it is done", async () => {
   await flush();
   assert.equal(el.hasAttribute("aria-busy"), false);
 });
+
+test("a note says the usage covers only the retained call history", async () => {
+  const { el } = await mount();
+  assert.match(el.querySelector(".as-usage-note").textContent, /retained call history/);
+});

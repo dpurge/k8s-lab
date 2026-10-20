@@ -63,3 +63,9 @@ as-usage .as-usage-message {
 as-usage .as-usage-message.error {
   color: var(--danger);
 }
+
+as-usage .as-usage-note {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 0.75rem 0;
+}

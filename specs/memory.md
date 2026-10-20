@@ -72,7 +72,7 @@
 2026-09-25T20:35:30Z [gotcha] Each phraseforge SPA section has its own *AppI18nKeys whitelist (server.go/dialogs.go/etc.) — a new key must be added to every section using it, or it renders literally.
 2026-09-25T21:28:36Z [decision] Vocab/Models item transcription+translation backfill now auto-enqueues on Generate; llm_generate split into generate_title/transcription/translation kinds.
 2026-09-30T16:04:38Z [gotcha] Ollama aborts an in-progress model load when the client disconnects mid-load ("aborting load"); a too-short timeout makes every retry restart the load.
-2026-09-30T16:04:38Z [env] Prod jdpct101 Ollama is CPU-only (6 CPU limit): gemma4:12b cold load ~27s, generation ~4 tok/s; a 942-char translation took ~300s.
+2026-09-30T16:04:38Z [env] The production cluster's Ollama is CPU-only (6 CPU limit): gemma4:12b cold load ~27s, generation ~4 tok/s; a 942-char translation took ~300s.
 2026-09-30T17:26:06Z [domain] promptfoo 0.123.1 sends a plain-text prompt file to ollama:chat as ONE user message (nunjucks, autoescape off); format only if provider config sets it.
 2026-09-30T17:26:06Z [gotcha] phraseforge's language table has no English row; use i18n.Locale.PromptName for a site locale's English name in prompts, not an ISO1 lookup.
 2026-10-05T13:36:49Z [gotcha] gemma4:12b can answer generate_vocabulary with `phrase [tag] [translit]` for Arabic; the strict parser in phraseforge/internal/generate/parse.go rejects those lines.
@@ -136,3 +136,9 @@
 2026-10-16T20:38:32Z [gotcha] A text input with a datalist hides every option that does not match what is typed; use a select fed by the server for a list the user must be able to browse.
 2026-10-16T20:38:32Z [gotcha] In Postgres ORDER BY a column position silently sorts the wrong column when the select list changes; order by a named alias (assistant chat store).
 2026-10-16T20:38:32Z [convention] A cancel stops a running task by cancelling its run context in the worker; the worker then records it as cancelled however the run ended (assistant tasks worker).
+2026-10-20T20:28:34Z [gotcha] An ExternalSecret entry cannot be optional: a missing remote property fails the whole sync, database credentials too; optional provider keys sit behind a values flag.
+2026-10-20T20:28:35Z [gotcha] task deploy-assistant needs ASSISTANT_VERTEX_ACCOUNT and a gcloud login: it fails at the Vertex token step after the models ConfigMap is applied, before the rollout.
+2026-10-20T20:28:36Z [gotcha] Yaml decoding ignores unknown keys silently: reject a renamed key with its replacement and decode config.yaml strictly, or a stale key quietly falls back to defaults.
+2026-10-20T20:28:37Z [gotcha] After a long stop task start-k8s can fail once while the k3d server restarts; wait for k3s and re-run it, never recreate the cluster (dev databases would be lost).
+2026-10-20T20:28:38Z [convention] api_key_from "" suits ollama and openai; anthropic and vertex without a credential are skipped with a warning; env: needs a restart, file: is re-read per call.
+2026-10-20T20:28:39Z [gotcha] The router migration drops llm_prompts.provider and model (now model_tags); values cannot be converted, so count the rows read-only before migrating a real database.

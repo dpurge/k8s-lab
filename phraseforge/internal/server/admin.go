@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -34,7 +33,7 @@ var adminAppI18nKeys = []string{
 	"admin.llm_kind_title", "admin.llm_kind_process_text", "admin.llm_kind_process_dialog",
 	"admin.llm_kind_generate_vocabulary", "admin.llm_kind_generate_models", "admin.llm_kind_vocabulary_item", "admin.llm_kind_models_item", "admin.llm_kind_check_vocabulary", "admin.llm_kind_review_vocabulary", "admin.llm_kind_review_transcription", "admin.llm_kind_review_translation", "admin.llm_kind_review_models",
 	"admin.llm_source_language", "admin.llm_target_language", "admin.llm_target_not_applicable",
-	"admin.llm_provider", "admin.llm_model", "admin.llm_model_placeholder", "admin.llm_model_default",
+	"admin.llm_model_tags", "admin.llm_model_tags_default", "admin.llm_model_tags_hint", "admin.llm_model_tags_none",
 	"admin.llm_think", "admin.llm_timeout_seconds", "admin.llm_timeout_default", "admin.llm_timeout_placeholder",
 	"admin.llm_prompt", "admin.llm_save",
 	"admin.llm_configs_heading", "admin.llm_delete_confirm", "admin.llm_no_configs",
@@ -42,6 +41,23 @@ var adminAppI18nKeys = []string{
 	"admin.sections_save", "admin.sections_configs_heading", "admin.sections_delete_confirm", "admin.sections_no_configs",
 	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_languages", "admin.tab_config",
 	"admin.snippet_field", "admin.snippet_text", "admin.llm_placeholders_hint",
+	"admin.llm_models_heading", "admin.llm_models_refresh", "admin.llm_col_model", "admin.llm_col_provider",
+	"admin.llm_col_priority", "admin.llm_col_availability", "admin.llm_available", "admin.llm_unavailable",
+	"admin.llm_reason_cooldown", "admin.llm_reason_no_credentials",
+	"admin.llm_models_none", "admin.llm_perf_heading", "admin.llm_perf_period", "admin.llm_perf_group",
+	"admin.llm_perf_hint", "admin.llm_perf_none", "admin.llm_window_1h", "admin.llm_window_24h",
+	"admin.llm_window_7d", "admin.llm_window_30d", "admin.llm_window_all", "admin.llm_group_model",
+	"admin.llm_group_kind_model", "admin.llm_col_purpose", "admin.llm_col_calls", "admin.llm_col_success",
+	"admin.llm_col_tokens_per_second", "admin.llm_col_cost", "admin.llm_short_calls", "admin.llm_short_success",
+	"admin.llm_short_time", "admin.llm_short_tokens", "admin.llm_short_tokens_per_second", "admin.llm_short_cost",
+	"admin.llm_col_time_stats", "admin.llm_attempt_request", "admin.llm_outcome_ok",
+	"admin.llm_outcome_error", "admin.llm_outcome_timeout", "admin.llm_outcome_rate_limited", "admin.llm_outcome_canceled",
+	"admin.llm_attempts_heading", "admin.llm_attempts_filter_all", "admin.llm_attempts_none", "admin.llm_col_time",
+	"admin.llm_col_outcome", "admin.llm_col_duration", "admin.llm_col_tokens", "admin.llm_col_http",
+	"admin.llm_purge_heading", "admin.llm_purge_label",
+	"admin.llm_purge_option_7", "admin.llm_purge_option_30", "admin.llm_purge_option_90", "admin.llm_purge_option_all",
+	"admin.llm_purge_button", "admin.llm_purge_confirm_days", "admin.llm_purge_confirm_all", "admin.llm_purge_confirm_button",
+	"admin.llm_purge_cancel", "admin.llm_purge_done", "admin.llm_purge_hint",
 	"texts.edit", "texts.delete", "vocabulary.cancel_edit",
 }
 
@@ -80,10 +96,15 @@ type apiAdminBootstrap struct {
 	// LanguageSections backs the Languages tab's per-language grammar/
 	// transcription snippet editor (phraseforge-structured-item-translation).
 	LanguageSections []ai.LanguageSections `json:"languageSections"`
-	// Providers lists the configured LLM provider registry's keys (e.g.
-	// "ollama", "openrouter"), sorted — the admin UI's LLM tab uses this to
-	// populate the per-prompt provider dropdown.
-	Providers []string `json:"providers"`
+	// Models lists the configured models with their tags and availability,
+	// for the LLM tab's overview of which tags exist where.
+	Models []ai.ModelInfo `json:"models"`
+	// Tags lists every tag some model has, sorted — the choices of a prompt's
+	// model tags.
+	Tags []string `json:"tags"`
+	// LLMDefaultModelTags maps each kind to the tags its calls need when a
+	// prompt row sets none.
+	LLMDefaultModelTags map[string][]string `json:"llm_default_model_tags"`
 	// LLMKinds lists every kind the LLM-prompt editor may target, straight
 	// from ai.ValidKinds — the single authoritative source shared with this
 	// file's own validators below, so the UI's kind <select> can never drift
@@ -145,13 +166,37 @@ func (s *Server) apiGetAdminBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, apiAdminBootstrap{
 		Users: apiUsers, Grants: apiGrants, IMEConfigs: imeConfigs, LLMPrompts: llmPrompts,
-		LanguageSections: languageSections,
-		Providers:        s.ai.Providers(),
-		LLMKinds:         ai.ValidKinds,
-		LLMDefaults:      s.ai.DefaultPrompts(),
-		LLMPlaceholders:  placeholders,
-		SnippetDefaults:  map[string]string{"grammar": config.DefaultGrammarSnippet, "transcription": config.DefaultTranscriptionSnippet, "dictionary": config.DefaultDictionarySnippet},
+		LanguageSections:    languageSections,
+		Models:              modelsOrEmpty(s.ai),
+		Tags:                tagsOrEmpty(s.ai),
+		LLMDefaultModelTags: s.ai.DefaultModelTags(),
+		LLMKinds:            ai.ValidKinds,
+		LLMDefaults:         s.ai.DefaultPrompts(),
+		LLMPlaceholders:     placeholders,
+		SnippetDefaults:     map[string]string{"grammar": config.DefaultGrammarSnippet, "transcription": config.DefaultTranscriptionSnippet, "dictionary": config.DefaultDictionarySnippet},
 	})
+}
+
+// modelsOrEmpty and tagsOrEmpty keep the JSON an array (not null) when no
+// models are configured.
+func modelsOrEmpty(svc *ai.Service) []ai.ModelInfo {
+	if models := svc.Models(); models != nil {
+		return models
+	}
+	return []ai.ModelInfo{}
+}
+
+func tagsOrEmpty(svc *ai.Service) []string {
+	if tags := svc.KnownTags(); tags != nil {
+		return tags
+	}
+	return []string{}
+}
+
+// apiListAdminModels lists the configured models. It is gated like the rest
+// of /api/v1/admin and never carries a base URL, key or key variable name.
+func (s *Server) apiListAdminModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"models": modelsOrEmpty(s.ai)})
 }
 
 type apiAdminGrantRequest struct {
@@ -244,9 +289,9 @@ type apiAdminLLMPromptRequest struct {
 	Kind           string `json:"kind"`
 	SourceLanguage string `json:"sourceLanguage"`
 	TargetLanguage string `json:"targetLanguage"`
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
-	Think          bool   `json:"think"`
+	// ModelTags omitted or empty means "inherit the purpose's model_tags".
+	ModelTags []string `json:"model_tags,omitempty"`
+	Think     bool     `json:"think"`
 	// TimeoutSeconds nil means "inherit the purpose default" — see
 	// ai.Prompt.TimeoutSeconds's own doc comment.
 	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
@@ -261,16 +306,55 @@ func validTimeoutSeconds(t *int) bool {
 	return t == nil || (*t > 0 && *t <= 3600)
 }
 
+// removedPromptKeys returns the keys of an llm_prompts object that
+// model_tags replaced, in a fixed order, so a request or file still carrying
+// them is rejected rather than having them silently dropped.
+func removedPromptKeys(object map[string]json.RawMessage) []string {
+	var found []string
+	for _, key := range []string{"provider", "model"} {
+		if _, ok := object[key]; ok {
+			found = append(found, key)
+		}
+	}
+	return found
+}
+
+// removedPromptKeysMessage says which removed keys were found and what
+// replaced them; tagsKey is the replacement's name in the rejected payload.
+func removedPromptKeysMessage(found []string, tagsKey string) string {
+	return `"` + strings.Join(found, `" and "`) + `" were replaced by ` + tagsKey + ": choose models by tags from models.yaml"
+}
+
 // apiSetAdminLLMPrompt is handleAdminLLMPrompt's exact logic.
 func (s *Server) apiSetAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if found := removedPromptKeys(object); len(found) > 0 {
+		writeErr(w, http.StatusBadRequest, "validation_error", removedPromptKeysMessage(found, "model_tags"))
+		return
+	}
+	// The decoder would drop the old spelling silently and the prompt would
+	// inherit the purpose's tags instead of the ones the caller chose.
+	if _, ok := object["modelTags"]; ok {
+		writeErr(w, http.StatusBadRequest, "validation_error", `"modelTags" was renamed to model_tags`)
+		return
+	}
 	var req apiAdminLLMPromptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
 	p := ai.Prompt{
 		Kind: req.Kind, SourceLanguage: req.SourceLanguage, TargetLanguage: req.TargetLanguage,
-		Provider: req.Provider, Model: req.Model, Think: req.Think,
+		ModelTags: req.ModelTags, Think: req.Think,
 		TimeoutSeconds: req.TimeoutSeconds,
 	}
 	if p.Kind == "" || p.SourceLanguage == "" || p.TargetLanguage == "" {
@@ -281,8 +365,8 @@ func (s *Server) apiSetAdminLLMPrompt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation_error", "kind must be one of "+strings.Join(ai.ValidKinds, ", "))
 		return
 	}
-	if !slices.Contains(s.ai.Providers(), p.Provider) {
-		writeErr(w, http.StatusBadRequest, "validation_error", "provider must be one of the configured providers")
+	if err := s.ai.ValidateModelTags(p.Kind, p.ModelTags); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 	if !validTimeoutSeconds(p.TimeoutSeconds) {
@@ -411,6 +495,19 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation_error", "configuration JSON is required")
 		return
 	}
+	var rawPrompts struct {
+		LLMPrompts []map[string]json.RawMessage `json:"llm_prompts"`
+	}
+	if err := json.Unmarshal(data, &rawPrompts); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", "invalid configuration JSON: "+err.Error())
+		return
+	}
+	for _, object := range rawPrompts.LLMPrompts {
+		if found := removedPromptKeys(object); len(found) > 0 {
+			writeErr(w, http.StatusBadRequest, "validation_error", "llm_prompts: "+removedPromptKeysMessage(found, "model_tags"))
+			return
+		}
+	}
 	var cfg adminConfigExport
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_json", "invalid configuration JSON: "+err.Error())
@@ -435,8 +532,8 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM setting requires source_language and target_language")
 			return
 		}
-		if !slices.Contains(s.ai.Providers(), p.Provider) {
-			writeErr(w, http.StatusBadRequest, "validation_error", "each LLM prompt's provider must be one of the configured providers")
+		if err := s.ai.ValidateModelTags(p.Kind, p.ModelTags); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation_error", "LLM prompt "+p.Kind+"/"+p.SourceLanguage+"/"+p.TargetLanguage+": "+err.Error())
 			return
 		}
 		if !validTimeoutSeconds(p.TimeoutSeconds) {
@@ -489,7 +586,7 @@ func (s *Server) apiImportAdminConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, p := range cfg.LLMPrompts {
-		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, provider, model, think, timeout_seconds) VALUES($1,$2,$3,$4,$5,$6,$7)`, p.Kind, p.SourceLanguage, p.TargetLanguage, p.Provider, strings.TrimSpace(p.Model), p.Think, p.TimeoutSeconds); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO llm_prompts(kind, source_language, target_language, model_tags, think, timeout_seconds) VALUES($1,$2,$3,$4,$5,$6)`, p.Kind, p.SourceLanguage, p.TargetLanguage, ai.StoredModelTags(p.ModelTags), p.Think, p.TimeoutSeconds); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}

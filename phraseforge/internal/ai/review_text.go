@@ -14,7 +14,7 @@ import (
 
 // The text and dialog reviews are two purposes, each with its own model,
 // prompt and reply schema: one reviews the transcription, one the translations.
-// Each has its own provider and model setting.
+// Each has its own model tags.
 const (
 	KindReviewTranscription = "review_transcription"
 	KindReviewTranslation   = "review_translation"

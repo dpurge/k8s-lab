@@ -111,9 +111,9 @@ func TestChunkedCallsReachTheModelOneChunkAtATime(t *testing.T) {
 		t.Fatalf("test setup: got %d chunks %q, want 2", len(chunks), chunks)
 	}
 	fake := newFakeOllama(t, []string{"T1", "T2"})
-	s := retryingService(fake.URL, &sleepRecorder{})
+	s := retryingService(t, fake.URL, &sleepRecorder{})
 	gen := func(ctx context.Context, chunk string) (string, error) {
-		return s.callWithRetry(ctx, "translation", Prompt{Provider: "ollama", Model: "test-model"}, config.PurposeConfig{MaxAttempts: 3},
+		return s.callWithRetry(ctx, "translation", Prompt{}, config.PurposeConfig{MaxAttempts: 3},
 			[]llm.Message{{Role: "user", Content: chunk}})
 	}
 

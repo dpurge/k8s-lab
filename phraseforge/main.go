@@ -13,8 +13,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"time"
+
+	"k8s-lab/shared/modelcfg"
+	"k8s-lab/shared/retention"
+	"k8s-lab/shared/router"
+	"k8s-lab/shared/router/anthropic"
+	"k8s-lab/shared/router/ollama"
+	"k8s-lab/shared/router/openai"
+	"k8s-lab/shared/router/vertex"
 
 	"phraseforge/internal/ai"
 	"phraseforge/internal/auth"
@@ -24,6 +34,8 @@ import (
 	"phraseforge/internal/generate"
 	"phraseforge/internal/ingest"
 	"phraseforge/internal/jobs"
+	"phraseforge/internal/llmcalls"
+	"phraseforge/internal/metrics"
 	"phraseforge/internal/models"
 	"phraseforge/internal/resreview"
 	"phraseforge/internal/roles"
@@ -192,12 +204,62 @@ func skipOnStaleItem(err error) error {
 	}
 }
 
+// newRouter builds the router every LLM call goes through over models, handing
+// every attempt to observer. Only the server needs it: `migrate` runs before the
+// ConfigMap with models.yaml exists.
+func newRouter(models *modelcfg.Config, observer router.Observer) (*router.Router, error) {
+	providers := map[string]router.Provider{
+		"ollama":    ollama.New(),
+		"openai":    openai.New(),
+		"anthropic": anthropic.New(),
+		"vertex":    vertex.New(),
+	}
+	// A provider without the credential it needs is skipped, not fatal: the key
+	// may appear later (a mounted Secret), and other providers can serve.
+	r, err := router.NewRouter(models, providers, router.WithLogger(slog.Default()), router.WithLogAttrs(ai.LogAttrs), router.WithObserver(observer),
+		router.WithAvailability(router.CredentialAvailability(os.Getenv, os.ReadFile)))
+	if err != nil {
+		return nil, fmt.Errorf("models file: %w", err)
+	}
+	return r, nil
+}
+
+// retentionRules are the tables serve keeps from growing forever: the model-call
+// history and the finished jobs, each for the configured number of days.
+func retentionRules(cfg config.Config) []retention.Rule {
+	const day = 24 * time.Hour
+	rules := []retention.Rule{llmcalls.RetentionRule(time.Duration(cfg.LLMCallsRetentionDays) * day)}
+	return append(rules, jobs.RetentionRules(
+		time.Duration(cfg.JobsRetentionDaysDone)*day, time.Duration(cfg.JobsRetentionDaysFailed)*day)...)
+}
+
 func runServe(ctx context.Context, cfg config.Config) {
+	// models.yaml is checked first, so a bad file is reported before anything
+	// else is started; the router is built once the pool exists for its recorder.
+	modelsConfig, err := config.LoadModels(cfg)
+	if err != nil {
+		log.Fatalf("load models: %v", err)
+	}
 	pool, err := db.Connect(ctx, cfg)
 	if err != nil {
 		log.Fatalf("connect to database: %v", err)
 	}
 	defer pool.Close()
+
+	llmMetrics := metrics.New()
+	callStore := llmcalls.NewStore(pool)
+	llmRouter, err := newRouter(modelsConfig, llmcalls.NewRecorder(modelsConfig, callStore, llmMetrics, slog.Default()))
+	if err != nil {
+		log.Fatalf("load models: %v", err)
+	}
+	llmMetrics.SetModelAvailability(func() []metrics.ModelAvailability {
+		status := llmRouter.Status()
+		out := make([]metrics.ModelAvailability, len(status))
+		for i, s := range status {
+			out[i] = metrics.ModelAvailability{Model: s.ID, Available: s.Available}
+		}
+		return out
+	})
 
 	authSvc := auth.New(pool, cfg.SessionKey)
 	// Dev/first-run convenience: bootstrap an admin user if the table is empty,
@@ -216,6 +278,7 @@ func runServe(ctx context.Context, cfg config.Config) {
 	translationsSvc := translations.New(pool)
 	itemsSvc := &itemStore{vocab: vocabStore, models: modelsStore}
 	aiSvc := ai.New(pool, cfg, textStore, dialogStore, translationsSvc, itemsSvc)
+	aiSvc.SetRouter(llmRouter, modelsConfig)
 	aiSvc.SetReviewStore(&reviewStore{vocab: vocabStore})
 	aiSvc.SetModelsReviewStore(&modelsReviewStore{models: modelsStore})
 	aiSvc.SetTextReviewStore(resreview.New(pool))
@@ -267,10 +330,16 @@ func runServe(ctx context.Context, cfg config.Config) {
 	jobsSvc.Register(generate.KindGenerateModelsFromDialog, generateSvc.HandleGenerateModels)
 
 	go jobsSvc.Run(ctx)
+	purger, err := retention.NewPurger(pool, retentionRules(cfg), retention.WithOnPurged(llmMetrics.Purged))
+	if err != nil {
+		log.Fatalf("retention rules: %v", err)
+	}
+	go purger.Run(ctx)
 
 	srv := server.New(pool, authSvc, textStore, dialogStore, vocabStore, modelsStore, rolesSvc, tagsSvc, translationsSvc, aiSvc, jobsSvc)
 	srv.SetIngestMaxContentBytes(cfg.IngestMaxContentBytes)
+	srv.SetMetricsHandler(llmMetrics.Handler())
 
-	log.Printf("phraseforge listening on %s, transcription=%s/%s, translation=%s/%s", cfg.BindAddr, cfg.Transcription.Provider, cfg.Transcription.Model, cfg.Translation.Provider, cfg.Translation.Model)
+	log.Printf("phraseforge listening on %s, routing over %d model(s)", cfg.BindAddr, len(modelsConfig.Models))
 	log.Fatal(http.ListenAndServe(cfg.BindAddr, srv.Router()))
 }

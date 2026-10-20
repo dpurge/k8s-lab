@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"phraseforge/internal/checkpoint"
+	"phraseforge/internal/config"
 )
 
 const (
@@ -20,13 +21,6 @@ const (
 )
 
 const (
-	// defaultNumCtx is the window used for a purpose whose NumCtx is 0. It is
-	// Ollama's own default for the CPU-only prod node and the dev machine
-	// (both report context_length 4096), and is sent explicitly with the
-	// call, so the chunk size and the call agree on the window instead of
-	// the call quietly running under whatever the server defaults to.
-	defaultNumCtx = 4096
-
 	// minChunkRunes keeps a tiny configured NumCtx from producing chunks too
 	// small to be useful.
 	minChunkRunes = 512
@@ -40,20 +34,12 @@ const (
 	runesPerToken = 1.5
 )
 
-// effectiveNumCtx is n, or defaultNumCtx when n is unset (zero or negative).
-func effectiveNumCtx(n int) int {
-	if n <= 0 {
-		return defaultNumCtx
-	}
-	return n
-}
-
 // chunkRunes is how many runes of input one LLM call should carry for a
 // context window of numCtx tokens. Half the window goes to the input (the
 // reply is about as long and shares the window), minus 512 tokens for the
 // system prompt and the call's preamble, at runesPerToken runes per token.
 func chunkRunes(numCtx int) int {
-	return max(int(float64(effectiveNumCtx(numCtx)/2-512)*runesPerToken), minChunkRunes)
+	return max(int(float64(config.EffectiveNumCtx(numCtx)/2-512)*runesPerToken), minChunkRunes)
 }
 
 // chunkPiece is one chunk of a split text with what separated it from the

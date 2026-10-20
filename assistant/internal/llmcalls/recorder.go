@@ -7,7 +7,7 @@ import (
 
 	"assistant/internal/callctx"
 	"assistant/internal/llm"
-	"assistant/internal/models"
+	"k8s-lab/shared/modelcfg"
 )
 
 // CallStore writes calls. *Store implements it.
@@ -32,15 +32,15 @@ const insertTimeout = 5 * time.Second
 type Recorder struct {
 	store   CallStore
 	metrics Metrics
-	prices  map[string]models.Price
+	prices  map[string]modelcfg.Price
 	log     *slog.Logger
 }
 
 var _ llm.Observer = (*Recorder)(nil)
 
 // NewRecorder prices calls from cfg. metrics may be nil.
-func NewRecorder(cfg *models.Config, store CallStore, metrics Metrics, log *slog.Logger) *Recorder {
-	prices := make(map[string]models.Price, len(cfg.Models))
+func NewRecorder(cfg *modelcfg.Config, store CallStore, metrics Metrics, log *slog.Logger) *Recorder {
+	prices := make(map[string]modelcfg.Price, len(cfg.Models))
 	for _, m := range cfg.Models {
 		prices[m.ID] = m.Price
 	}

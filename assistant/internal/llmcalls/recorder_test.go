@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -15,21 +16,38 @@ import (
 	"assistant/internal/llm/llmtest"
 	"assistant/internal/llmcalls"
 	"assistant/internal/metrics"
-	"assistant/internal/models"
 	"assistant/internal/workflow"
+	"k8s-lab/shared/modelcfg"
 )
 
 const recorderConfig = `providers:
-  - {id: laptop, type: ollama, base_url: "http://localhost:11434"}
-  - {id: gpu-box, type: ollama, base_url: "http://gpu-box.lan:11434"}
+  - {id: laptop, type: ollama, base_url: "http://localhost:11434", api_key_from: ""}
+  - id: gpu-box
+    type: ollama
+    base_url: "http://gpu-box.lan:11434"
+    api_key_from: ""
+    headers: {X-Distinctive-Header-Name: distinctive-literal-header-value, X-Env-Header: "env:DISTINCTIVE_HEADER_VARIABLE", X-File-Header: "file:/distinctive-dir/header-file"}
 models:
   - {id: paid, provider: gpu-box, model: big, tags: [chat], priority: 20, price: {input_per_mtok: 3, output_per_mtok: 15}}
   - {id: free, provider: laptop, model: small, tags: [chat], priority: 10}
 `
 
-func config(t *testing.T) *models.Config {
+// headerLeaks are the distinctive header names, values and sources of the test
+// configuration; none may reach a table row, a metric or a log line.
+var headerLeaks = []string{"X-Distinctive-Header-Name", "distinctive-literal-header-value", "X-Env-Header", "DISTINCTIVE_HEADER_VARIABLE", "X-File-Header", "/distinctive-dir/header-file"}
+
+func assertNoHeaderLeak(t *testing.T, where, text string) {
 	t.Helper()
-	cfg, err := models.LoadBytes("m.yaml", []byte(recorderConfig))
+	for _, s := range headerLeaks {
+		if strings.Contains(text, s) {
+			t.Errorf("%s holds the header detail %q", where, s)
+		}
+	}
+}
+
+func config(t *testing.T) *modelcfg.Config {
+	t.Helper()
+	cfg, err := modelcfg.LoadBytes("m.yaml", []byte(recorderConfig))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +256,9 @@ func TestAFallbackLeavesAFailedRowAndASuccessfulOneInTheDatabaseAndTheMetrics(t 
 			t.Errorf("every attempt belongs to the task and the user: %+v", r)
 		}
 	}
+
+	assertNoHeaderLeak(t, "the stored rows", fmt.Sprintf("%+v", rows))
+	assertNoHeaderLeak(t, "the metrics", newScrape(t, m))
 
 	usage, _ := f.store.UsageByUserAndModel(ctx, nil)
 	if len(usage) != 1 || usage[0].ModelID != "free" || usage[0].InputTokens != 1000 {

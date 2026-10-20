@@ -17,7 +17,7 @@ import (
 // KindReviewVocabulary is the purpose of the call that reviews one vocabulary
 // item (its phrase, grammar, transcription, translations, notes and examples)
 // and proposes corrections. It is meant for a more capable model than the one
-// that generated the item, so it has its own provider and model setting.
+// that generated the item, so it has its own model tags.
 const KindReviewVocabulary = "review_vocabulary"
 
 // ReviewVocabularySchema is the reply schema of the review call, sent as the

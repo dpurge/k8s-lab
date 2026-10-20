@@ -139,11 +139,10 @@ func textReviewService(t *testing.T, replies ...string) (*Service, *fakeOllama) 
 	pool := newAIDB(t)
 	ollama := newFakeOllama(t, replies)
 	cfg := config.Config{
-		Providers:           map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		ReviewTranscription: config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "TR {{text}} ({{sourceLanguage}})\n{{transcription}}\n{{vocabulary}}\n{{transcriptionPrompt}}", MaxAttempts: 3},
-		ReviewTranslation:   config.PurposeConfig{Provider: "ollama", Model: "review-model", Prompt: "TL {{text}} ({{sourceLanguage}})\n{{translations}}\n{{vocabulary}}", MaxAttempts: 3},
+		ReviewTranscription: config.PurposeConfig{Prompt: "TR {{text}} ({{sourceLanguage}})\n{{transcription}}\n{{vocabulary}}\n{{transcriptionPrompt}}", MaxAttempts: 3},
+		ReviewTranslation:   config.PurposeConfig{Prompt: "TL {{text}} ({{sourceLanguage}})\n{{translations}}\n{{vocabulary}}", MaxAttempts: 3},
 	}
-	svc := New(pool, cfg, nil, nil, nil, nil)
+	svc := useFakeOllama(t, New(pool, cfg, nil, nil, nil, nil), ollama.URL)
 	if err := svc.SetLanguageSections(context.Background(), LanguageSections{Language: "deu", TranscriptionPrompt: "rules"}); err != nil {
 		t.Fatal(err)
 	}

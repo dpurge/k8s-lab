@@ -1,0 +1,13 @@
+/* A wide table scrolls sideways inside its card instead of squeezing columns. */
+pf-llm-models { display: block; }
+pf-llm-models .pf-llm-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+pf-llm-models .pf-llm-title { margin: 0; font-size: 1.2rem; }
+pf-llm-models .pf-llm-refresh { padding: 0.35rem 0.9rem; font-size: 0.9rem; }
+pf-llm-models .pf-llm-scroll { overflow-x: auto; }
+pf-llm-models table.admin-table { margin-bottom: 0; }
+pf-llm-models th, pf-llm-models td { white-space: nowrap; }
+pf-llm-models .badge + .badge { margin-left: 0.3rem; }
+pf-llm-models .pf-llm-availability[data-available="true"] { color: var(--success); }
+pf-llm-models .pf-llm-availability[data-available="false"] { color: var(--danger); }
+pf-llm-models .pf-llm-empty { color: var(--muted); font-style: italic; }
+pf-llm-models .pf-llm-reason { margin-left: 0.4rem; font-size: 0.75rem; color: var(--muted); }

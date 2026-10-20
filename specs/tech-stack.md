@@ -1,7 +1,7 @@
 ---
-version: 15
+version: 19
 status: approved
-updated: 2026-10-16
+updated: 2026-10-20
 ---
 
 ## Languages & runtimes
@@ -13,9 +13,9 @@ updated: 2026-10-16
 - **Chi HTTP router** (`go-chi/chi v5.3.2`) — request routing and middleware across all three applications
 - **PostgreSQL driver** (`jackc/pgx v5.10.0`) — direct pgx usage, no ORM, in all applications and shared utilities
 - **Crypto** (`golang.org/x/crypto v0.57.0`) — password hashing and bearer token generation
-- **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed by phraseforge and knowledge, and by assistant for its Ollama path only (unchanged by it)
+- **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed by phraseforge and knowledge, and by assistant through the router's Ollama provider; it has an additive `Headers` field for custom request headers
 - **Shared Postgres helpers** (`shared/postgres`) — database initialization and DSN utilities
-- **Prometheus client** (`prometheus/client_golang`) — `/metrics` endpoint, used by assistant
+- **Prometheus client** (`prometheus/client_golang v1.25.0`) — `/metrics` endpoint, used by assistant and phraseforge
 - **YAML and JSON Schema** (`go.yaml.in/yaml/v3`, `santhosh-tekuri/jsonschema/v6`) — assistant's workflow files and the schemas that validate them; `go.yaml.in/yaml/v3` is the maintained fork of the archived `gopkg.in/yaml.v3`
 
 ### Frontend libraries (knowledge app only)
@@ -65,9 +65,7 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 | `assistant` | `assistant` | `assistant/CHANGELOG.md` | none (release workflow added in a later feature) | `specs/artifacts/assistant/roadmap.md` |
 | `environment` | `.` | `CHANGELOG.md` | none | |
 
-Built from: `shared/llm` is consumed by phraseforge, knowledge and assistant
-(Ollama path only); `shared/postgres` by phraseforge and knowledge. A change under
-`shared/` needs entries in every artifact that consumes the changed package.
+Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an additive `Headers` field for custom request headers) is consumed by phraseforge, knowledge and assistant; `shared/modelcfg` (the models.yaml schema, loader, lint, and credential and header resolution), `shared/yamlschema`, `shared/router` (the model router with its `ollama`, `openai`, `anthropic` and `vertex` providers and the `routertest` helpers) and `shared/retention` (batched, age-based purging) by phraseforge and assistant; `shared/postgres` by phraseforge and knowledge. A change under `shared/` needs entries in every artifact that consumes the changed package.
 
 ## Key conventions
 
@@ -89,7 +87,10 @@ Built from: `shared/llm` is consumed by phraseforge, knowledge and assistant
 - Versioned + `:latest` tags for releases
 
 **Kubeconfig isolation:**
-- Project-specific kubeconfig at `.k3d/kubeconfig`, never modifying `~/.kube/config`
+- Project-specific kubeconfig at `.k3d/kubeconfig`, never modifying `~/.kube/config`.
+- Every `kubectl` or `helm` command against the dev cluster passes `--kubeconfig=<absolute path to this project>/.k3d/kubeconfig` explicitly. The `KUBECONFIG` environment variable and the current context are never relied on, because the default configuration can include other clusters, production among them. A bare `kubectl` or `helm` is forbidden, including a read-only "which context" check.
+- Prefer `task` targets: `KUBECTL` in `Taskfile.yml` already pins the flag.
+- If the dev cluster is unreachable, report it and never try another context. Any other cluster, production included, is changed only when the user explicitly asks.
 
 **Credentials & configuration:**
 - Generated, gitignored files only: `.k3d/postgres.env`, `.k3d/garage.toml`, `.k3d/garage.env`
@@ -117,6 +118,16 @@ Built from: `shared/llm` is consumed by phraseforge, knowledge and assistant
 **Go binary optimization:**
 - Stripped symbols and DWARF: `-ldflags="-s -w"`
 - Static linking: `CGO_ENABLED=0`
+
+**Naming conventions:**
+- **Configuration keys** (YAML, JSON), **API request and response fields**, **query parameters**, **database tables and columns**: `snake_case` (lowercase words separated by underscores).
+- **Environment variables**: `UPPER_SNAKE_CASE` with the application's prefix (e.g., `PHRASEFORGE_MODELS_FILE`, `ASSISTANT_LLM_CALLS_RETENTION_DAYS`).
+- **Names that users choose and that appear as values** (provider IDs, model IDs, tags, workflow IDs): lowercase letters, digits and hyphens, starting with a letter (e.g., `ollama-cpu`, `openrouter`).
+- **Metric names**: `snake_case` with the application prefix (e.g., `phraseforge_llm_calls_total`, `assistant_llm_calls_purged_total`).
+- **Go and JavaScript identifiers**: follow their respective language conventions and are not covered by these rules.
+- **i18n message keys**: dotted lowercase words with underscores (e.g., `admin.llm_model_tags`, `admin.llm_reason_cooldown`).
+- **LEGACY — existing camelCase keys**: Some existing keys are camelCase: the PhraseForge `config.yaml` purpose keys (such as `numCtx`, `maxAttempts`), parts of PhraseForge's older admin JSON (such as `llmPrompts`, `sourceLanguage`), and the Helm chart's values for them. The human intends to migrate all of them to `snake_case`. Until then, legacy names stay as they are, but **every NEW key — even one added next to legacy camelCase neighbours — must be `snake_case`**. When a key is renamed, the old name must be rejected with a message naming the replacement rather than silently ignored.
+- **Check before naming**: before proposing any new key, field, query parameter, column or option name, check this section; a name that does not match is a defect, not a style choice, even when it sits next to legacy camelCase neighbours or copies an existing legacy spelling.
 
 **Background operation queue (knowledge, phraseforge):**
 - Any new LLM-calling code path routes through a background operation queue rather than calling

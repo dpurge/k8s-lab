@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,14 +22,14 @@ import (
 	"assistant/internal/llm/demo"
 	"assistant/internal/llm/llmtest"
 	"assistant/internal/llmcalls"
-	"assistant/internal/models"
 	"assistant/internal/tasks"
 	"assistant/internal/workflows"
+	"k8s-lab/shared/modelcfg"
 )
 
 const testModels = `providers:
-  - {id: gpu, type: ollama, base_url: "http://gpu.lan:11434"}
-  - {id: laptop, type: ollama, base_url: "http://localhost:11434"}
+  - {id: gpu, type: ollama, base_url: "http://gpu.lan:11434", api_key_from: ""}
+  - {id: laptop, type: ollama, base_url: "http://localhost:11434", api_key_from: ""}
   - {id: demo, type: demo}
 models:
   - {id: demo-hello, provider: demo, model: hello, tags: [demo], priority: 1}
@@ -39,7 +41,7 @@ models:
 // real model.
 func testApp(t *testing.T, pool *pgxpool.Pool, clock workflows.Clock, scripts map[string][]llmtest.Result) *app {
 	t.Helper()
-	cfg, err := models.LoadBytes("models.yaml", []byte(testModels))
+	cfg, err := modelcfg.LoadBytes("models.yaml", []byte(testModels))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,27 +233,119 @@ func TestAnAskTaskWithoutAPromptFailsBeforeAnyCall(t *testing.T) {
 
 func TestLoadModelsNamesTheSettingAndTheFileWhenItIsMissingOrInvalid(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope.yaml")
-	_, err := loadModels(missing, "")
+	_, err := loadModels(missing)
 	if err == nil || !strings.Contains(err.Error(), "ASSISTANT_MODELS_FILE") || !strings.Contains(err.Error(), missing) {
 		t.Errorf("missing: %v", err)
 	}
 	bad := filepath.Join(t.TempDir(), "bad.yaml")
 	os.WriteFile(bad, []byte("providers: []\nmodels: 3\n"), 0o600)
-	_, err = loadModels(bad, "")
+	_, err = loadModels(bad)
 	if err == nil || !strings.Contains(err.Error(), "ASSISTANT_MODELS_FILE") || !strings.Contains(err.Error(), bad) {
 		t.Errorf("invalid: %v", err)
 	}
-	good, err := loadModels("models.example.yaml", "")
+	good, err := loadModels("models.example.yaml")
 	if err != nil || good.providers["ollama"] == nil {
 		t.Errorf("the committed example must load: %v", err)
 	}
 }
 
+func TestLoadModelsStartsWithoutAnyCredentialAndTheRouterSaysWhichProvidersAreSkipped(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "models.yaml")
+	yaml := `providers:
+  - {id: or, type: openai, base_url: 'https://x.test/v1', api_key_from: env:ASSISTANT_TEST_KEY_VAR}
+  - {id: claude, type: anthropic, api_key_from: env:ASSISTANT_TEST_KEY_VAR}
+  - {id: gcp, type: vertex, project: p, location: us-central1, api_key_from: ""}
+  - {id: gcp-file, type: vertex, project: p, location: us-central1, api_key_from: file:` + filepath.Join(t.TempDir(), "absent-token") + `}
+  - {id: gcp-ok, type: vertex, project: p, location: us-central1, api_key_from: file:` + writeTokenFile(t) + `}
+models:
+  - {id: m-or, provider: or, model: x, tags: [chat], priority: 1}
+  - {id: m-claude, provider: claude, model: x, tags: [chat], priority: 1}
+  - {id: m-gcp, provider: gcp, model: x, tags: [chat], priority: 1}
+  - {id: m-gcp-file, provider: gcp-file, model: x, tags: [chat], priority: 1}
+  - {id: m-gcp-ok, provider: gcp-ok, model: x, tags: [chat], priority: 1}
+`
+	if err := os.WriteFile(file, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ASSISTANT_TEST_KEY_VAR", "")
+	setup, err := loadModels(file)
+	if err != nil {
+		t.Fatalf("a missing credential must not stop startup: %v", err)
+	}
+	router, err := llm.NewRouter(setup.config, setup.providers,
+		llm.WithAvailability(llm.CredentialAvailability(os.Getenv, os.ReadFile)), llm.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range router.Status() {
+		got[s.ID] = s.Reason
+	}
+	// An openai provider needs no key, so its empty variable does not hold it out.
+	want := map[string]string{"m-or": "", "m-claude": "missing_credentials", "m-gcp": "missing_credentials", "m-gcp-file": "missing_credentials", "m-gcp-ok": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("reasons = %v, want %v", got, want)
+	}
+	t.Setenv("ASSISTANT_TEST_KEY_VAR", "set")
+	if reason := router.Status()[1].Reason; reason != "" {
+		t.Errorf("the key appeared: reason = %q", reason)
+	}
+}
+
+func TestLoadModelsStartsWithAHeaderBearingProviderAndSkipsItWhileAHeaderVariableIsUnset(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "models.yaml")
+	yaml := `providers:
+  - {id: gateway, type: openai, base_url: 'https://gw.test/v1', api_key_from: "", headers: {X-Title: app, X-Gw: "env:ASSISTANT_TEST_HEADER_VAR"}}
+  - {id: local, type: ollama, base_url: 'http://localhost:11434', api_key_from: ""}
+models:
+  - {id: m-gw, provider: gateway, model: x, tags: [chat], priority: 2}
+  - {id: m-local, provider: local, model: x, tags: [chat], priority: 1}
+`
+	if err := os.WriteFile(file, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ASSISTANT_TEST_HEADER_VAR", "")
+	setup, err := loadModels(file)
+	if err != nil {
+		t.Fatalf("a header-bearing provider must load: %v", err)
+	}
+	logs := &bytes.Buffer{}
+	router, err := llm.NewRouter(setup.config, setup.providers,
+		llm.WithAvailability(llm.CredentialAvailability(os.Getenv, os.ReadFile)), llm.WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := router.Status(); got[0].Reason != "missing_credentials" || got[1].Reason != "" {
+		t.Errorf("status = %+v", got)
+	}
+	if !strings.Contains(logs.String(), "header X-Gw from env:ASSISTANT_TEST_HEADER_VAR") {
+		t.Errorf("the warning must name the header source: %s", logs)
+	}
+	t.Setenv("ASSISTANT_TEST_HEADER_VAR", "a-value")
+	if reason := router.Status()[0].Reason; reason != "" {
+		t.Errorf("the variable appeared: reason = %q", reason)
+	}
+}
+
+func writeTokenFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("a-test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // The dev deployment's pieces must agree: the committed dev models file loads,
 // and the Deployment mounts the ConfigMap where the setting says the file is.
 func TestTheDevModelsFileLoadsAndTheDeploymentMountsItWhereTheSettingSays(t *testing.T) {
-	if _, err := loadModels("models.dev.yaml", "/etc/assistant-vertex/token"); err != nil {
+	setup, err := loadModels("models.dev.yaml")
+	if err != nil {
 		t.Fatalf("models.dev.yaml: %v", err)
+	}
+	gcp, ok := setup.config.Provider("gcp")
+	if !ok || gcp.Type != "vertex" || gcp.APIKeyFrom != "file:/etc/assistant-vertex/token" {
+		t.Errorf("the dev vertex provider must read its token from the mounted secret: %+v", gcp)
 	}
 	raw, err := os.ReadFile("k8s/deployment.yaml")
 	if err != nil {
@@ -259,6 +353,12 @@ func TestTheDevModelsFileLoadsAndTheDeploymentMountsItWhereTheSettingSays(t *tes
 	}
 	deployment := string(raw)
 	file := "/etc/assistant/models.yaml"
+	if strings.Contains(deployment, "ASSISTANT_VERTEX_TOKEN_FILE") {
+		t.Error("deployment.yaml still sets the removed ASSISTANT_VERTEX_TOKEN_FILE")
+	}
+	if filepath.Dir(strings.TrimPrefix(gcp.APIKeyFrom, "file:")) != "/etc/assistant-vertex" {
+		t.Errorf("the token file %s is not inside the mounted secret", gcp.APIKeyFrom)
+	}
 	for _, want := range []string{
 		"name: " + "ASSISTANT_MODELS_FILE" + "\n              value: " + file,
 		"mountPath: " + filepath.Dir(file),
@@ -266,7 +366,6 @@ func TestTheDevModelsFileLoadsAndTheDeploymentMountsItWhereTheSettingSays(t *tes
 		"name: ASSISTANT_WORKFLOWS_DIR\n              value: /etc/assistant-workflows",
 		"mountPath: /etc/assistant-workflows",
 		"name: assistant-workflows",
-		"name: ASSISTANT_VERTEX_TOKEN_FILE\n              value: /etc/assistant-vertex/token",
 		"mountPath: /etc/assistant-vertex",
 		"secretName: assistant-vertex",
 	} {
@@ -276,14 +375,53 @@ func TestTheDevModelsFileLoadsAndTheDeploymentMountsItWhereTheSettingSays(t *tes
 	}
 }
 
-func TestAVertexProviderWithoutATokenFileSettingStopsStartupNamingBoth(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "models.yaml")
-	os.WriteFile(file, []byte("providers:\n  - {id: gcp, type: vertex, project: p, location: us-central1}\nmodels:\n  - {id: m, provider: gcp, model: gemini-2.5-flash-lite, tags: [chat], priority: 1}\n"), 0o600)
-	_, err := loadModels(file, "")
-	if err == nil || !strings.Contains(err.Error(), "ASSISTANT_VERTEX_TOKEN_FILE") || !strings.Contains(err.Error(), "ASSISTANT_MODELS_FILE") || !strings.Contains(err.Error(), `"gcp"`) {
-		t.Errorf("err = %v", err)
+// The purger the app starts deletes model calls older than the configured days,
+// counts them, and leaves the task and the user they belong to alone.
+func TestThePurgerStartedByTheAppDeletesOldCallsOnly(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	ctx := context.Background()
+	taskID := newTask(t, a, "noop", `{}`)
+	var userID string
+	if err := pool.QueryRow(ctx, "SELECT user_id::text FROM tasks WHERE id = $1::uuid", taskID).Scan(&userID); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := loadModels(file, "/tmp/t"); err != nil {
-		t.Errorf("with the setting it loads: %v", err)
+	store := llmcalls.NewStore(pool)
+	for _, age := range []time.Duration{100 * 24 * time.Hour, 89 * 24 * time.Hour} {
+		err := store.Insert(ctx, llmcalls.Call{TaskID: &taskID, UserID: userID, ModelID: "m", ProviderID: "p", ModelName: "n",
+			StartedAt: time.Now().Add(-age), Outcome: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	purger, err := a.newPurger(90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := purger.PurgeOnce(ctx); err != nil || deleted["llm_calls"] != 1 {
+		t.Fatalf("PurgeOnce = %v, %v; want llm_calls=1, nil", deleted, err)
+	}
+	var calls, taskRows int
+	if err := pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM llm_calls), (SELECT count(*) FROM tasks)").Scan(&calls, &taskRows); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || taskRows != 1 {
+		t.Errorf("calls = %d, tasks = %d; want 1, 1", calls, taskRows)
+	}
+	rec := call(t, a.handler, "GET", "/metrics", "")
+	if !strings.Contains(rec.Body.String(), "assistant_llm_calls_purged_total 1\n") {
+		t.Errorf("the purged counter does not show 1:\n%s", rec.Body)
+	}
+}
+
+func TestARetentionOfZeroDaysKeepsEveryCall(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	purger, err := a.newPurger(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := purger.PurgeOnce(context.Background()); err != nil || len(deleted) != 0 {
+		t.Errorf("PurgeOnce = %v, %v; want nothing deleted", deleted, err)
 	}
 }

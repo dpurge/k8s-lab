@@ -73,10 +73,9 @@ func runItemJob(t *testing.T, template string, source ItemSource, payload string
 	t.Cleanup(ollama.Close)
 	store := &fakeItemStore{source: source, translationApplied: true, exampleApplied: true}
 	cfg := config.Config{
-		Providers:      map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		VocabularyItem: config.PurposeConfig{Provider: "ollama", Model: "test-model", Prompt: template, MaxAttempts: 3},
+		VocabularyItem: config.PurposeConfig{Prompt: template, MaxAttempts: 3},
 	}
-	result, err := New(pool, cfg, nil, nil, nil, store).HandleItemTranslation(context.Background(), "job-1", json.RawMessage(payload))
+	result, err := useFakeOllama(t, New(pool, cfg, nil, nil, nil, store), ollama.URL).HandleItemTranslation(context.Background(), "job-1", json.RawMessage(payload))
 	return store, ollama, result, err
 }
 
@@ -157,10 +156,9 @@ func TestItemJobSkipsWhenTheItemIsGoneAtTheExampleWrite(t *testing.T) {
 	t.Cleanup(ollama.Close)
 	store := &fakeItemStore{source: ItemSource{Phrase: "der Koffer", Language: "deu"}, translationApplied: true, exampleErr: ErrItemGone}
 	cfg := config.Config{
-		Providers:      map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		VocabularyItem: config.PurposeConfig{Provider: "ollama", Model: "test-model", Prompt: itemJobTemplate, MaxAttempts: 3},
+		VocabularyItem: config.PurposeConfig{Prompt: itemJobTemplate, MaxAttempts: 3},
 	}
-	_, err := New(pool, cfg, nil, nil, nil, store).HandleItemTranslation(context.Background(), "job-1",
+	_, err := useFakeOllama(t, New(pool, cfg, nil, nil, nil, store), ollama.URL).HandleItemTranslation(context.Background(), "job-1",
 		json.RawMessage(`{"resource_type":"vocabulary_item","item_id":7,"locale":"pl"}`))
 	if !errors.Is(err, jobs.ErrSkipped) {
 		t.Fatalf("err = %v, want the job skipped (cancelled), not failed", err)

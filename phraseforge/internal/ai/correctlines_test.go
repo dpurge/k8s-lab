@@ -30,9 +30,9 @@ func TestCorrectionMessagesCarryOnlyTheRejectedLines(t *testing.T) {
 
 func TestCorrectLinesSendsOneSmallRequestAndReturnsTheReply(t *testing.T) {
 	fake := newFakeOllama(t, []string{"a {noun} [x] = A"})
-	s := correctionService(fake.URL)
+	s := correctionService(t, fake.URL)
 
-	got, err := s.correctLines(context.Background(), "generate_vocabulary", Prompt{Provider: "ollama", Model: "test-model"}, config.PurposeConfig{MaxAttempts: 3},
+	got, err := s.correctLines(context.Background(), "generate_vocabulary", Prompt{}, config.PurposeConfig{MaxAttempts: 3},
 		"phrase {grammar}", []RejectedLine{{Line: "a [noun] [x] = A", Reason: "bad"}})
 	if err != nil || got != "a {noun} [x] = A" {
 		t.Fatalf("got (%q, %v), want the scripted reply", got, err)

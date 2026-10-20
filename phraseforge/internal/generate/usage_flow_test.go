@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"phraseforge/internal/ai"
-	"phraseforge/internal/config"
 	"phraseforge/internal/jobs"
 	"phraseforge/internal/vocabulary"
 )
@@ -82,7 +81,7 @@ func newGenerateDB(t *testing.T) (*Service, *pgxpool.Pool, int64) {
 	if err := pool.QueryRow(ctx, `INSERT INTO users (username, password_hash) VALUES ('tester', 'x') RETURNING id`).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
-	aiSvc := ai.New(pool, config.Config{Providers: map[string]config.ProviderConfig{"ollama": {}}}, nil, nil, nil, nil)
+	aiSvc := testAI(t, pool)
 	return New(nil, nil, vocabulary.New(pool), nil, aiSvc, jobs.New(pool), pool), pool, userID
 }
 

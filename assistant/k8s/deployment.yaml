@@ -32,8 +32,6 @@ spec:
               value: /etc/assistant/models.yaml
             - name: ASSISTANT_WORKFLOWS_DIR
               value: /etc/assistant-workflows
-            - name: ASSISTANT_VERTEX_TOKEN_FILE
-              value: /etc/assistant-vertex/token
             - name: ASSISTANT_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -82,8 +80,10 @@ spec:
         - name: workflows
           configMap:
             name: assistant-workflows
-        # The access token for Vertex AI, written by `task refresh-assistant-vertex-token`.
-        # Optional so the pod starts without it; a call then fails with a clear message.
+        # The access token for Vertex AI, written by `task refresh-assistant-vertex-token`;
+        # models.yaml names it as the vertex provider's api_key_from (file:)
+        # (/etc/assistant-vertex/token). Optional so the pod starts without it; the
+        # provider is then skipped (missing_credentials) until the token exists.
         - name: vertex
           secret:
             secretName: assistant-vertex

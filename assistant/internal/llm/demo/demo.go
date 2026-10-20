@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"assistant/internal/llm"
-	"assistant/internal/models"
 	"assistant/internal/workflow"
+	"k8s-lab/shared/modelcfg"
 )
 
 // Provider answers the hello workflow's steps.
@@ -35,7 +35,7 @@ type stepInput struct {
 }
 
 // Complete implements llm.Provider.
-func (Provider) Complete(_ context.Context, _ models.Provider, _ models.Model, req workflow.Request) (workflow.Response, error) {
+func (Provider) Complete(_ context.Context, _ modelcfg.Provider, _ modelcfg.Model, req workflow.Request) (workflow.Response, error) {
 	var in stepInput
 	if err := json.Unmarshal([]byte(req.Input), &in); err != nil {
 		return workflow.Response{}, &llm.Failure{Kind: llm.FailClient, Err: fmt.Errorf("the demo model answers only workflow steps, and this input is not one: %w", err)}

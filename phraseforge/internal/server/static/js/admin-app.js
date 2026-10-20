@@ -67,9 +67,6 @@
   function siteLanguageOptions() {
     return BOOT.siteLanguages.map((l) => `<option value="${esc(l.Code)}">${esc(l.Name)}</option>`).join("");
   }
-  function providerOptions() {
-    return (data.providers || []).map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
-  }
   // Kinds keyed by a real target locale; every other kind stores its own
   // name as a sentinel target_language (see refreshLLMTarget).
   const TARGETED_LLM_KINDS = ["translation", "vocabulary_item", "models_item"];
@@ -119,7 +116,13 @@
       { id: "config", label: T("admin.tab_config") },
     ];
     tabs.active = activeTab;
-    tabs.addEventListener("pf-tabs-select", (e) => showTab(e.detail.id));
+    tabs.addEventListener("pf-tabs-select", (e) => {
+      showTab(e.detail.id);
+      if (e.detail.id === "llm") {
+        usage.purgeResult = "";
+        loadUsage();
+      }
+    });
 
     renderGrantsTab();
     renderIMETab();
@@ -373,8 +376,7 @@
         <td>${esc(llmKindLabel(p.kind))}</td>
         <td>${esc(p.source_language)}</td>
         <td>${hasTargetLanguage(p.kind) ? esc(p.target_language) : `<em>${esc(T("admin.llm_target_not_applicable"))}</em>`}</td>
-        <td>${esc(p.provider)}</td>
-        <td>${p.model ? esc(p.model) : `<em>${esc(T("admin.llm_model_default"))}</em>`}</td>
+        <td>${(p.model_tags || []).length ? esc(p.model_tags.join(", ")) : `<em>${esc(T("admin.llm_model_tags_default"))}</em>`}</td>
         <td>${p.think ? "✓" : "—"}</td>
         <td>${p.timeout_seconds ? esc(String(p.timeout_seconds)) : `<em>${esc(T("admin.llm_timeout_default"))}</em>`}</td>
         <td style="white-space:nowrap;">
@@ -383,7 +385,7 @@
         </td>
       </tr>`;
         })
-        .join("") || `<tr><td colspan="8"><em>${esc(T("admin.llm_no_configs"))}</em></td></tr>`;
+        .join("") || `<tr><td colspan="7"><em>${esc(T("admin.llm_no_configs"))}</em></td></tr>`;
 
     document.getElementById("tabLlm").innerHTML = `
       <div class="card" style="margin-bottom:1.5rem;">
@@ -400,14 +402,12 @@
               <select id="llm-target-language" required>${siteLanguageOptions()}</select>
             </pf-field>
           </div>
-          <div class="field-row">
-            <pf-field label="${esc(T("admin.llm_provider"))}" for="llm-provider">
-              <select id="llm-provider" required>${providerOptions()}</select>
-            </pf-field>
-            <pf-field label="${esc(T("admin.llm_model"))}" for="llm-model">
-              <input type="text" id="llm-model" placeholder="${esc(T("admin.llm_model_placeholder"))}">
-            </pf-field>
-          </div>
+          <pf-field label="${esc(T("admin.llm_model_tags"))}">
+            ${(data.tags || []).length
+              ? `<pf-tag-picker id="llm-model-tags" aria-label="${esc(T("admin.llm_model_tags"))}"></pf-tag-picker>
+            <p class="muted" id="llm-model-tags-hint" style="margin:0.4rem 0 1rem;"></p>`
+              : `<p class="muted" style="margin:0 0 1rem;">${esc(T("admin.llm_model_tags_none"))}</p>`}
+          </pf-field>
           <div class="field-row" style="margin-bottom:1rem; align-items:center;">
             <label style="display:flex; align-items:center; gap:0.5rem;">
               <input type="checkbox" id="llm-think" style="width:auto; margin:0;">
@@ -432,11 +432,12 @@
         <h2 style="margin-top:0;">${esc(T("admin.llm_configs_heading"))}</h2>
         <div style="overflow-x:auto;">
           <table class="admin-table">
-            <thead><tr><th>${esc(T("admin.llm_kind"))}</th><th>${esc(T("admin.llm_source_language"))}</th><th>${esc(T("admin.llm_target_language"))}</th><th>${esc(T("admin.llm_provider"))}</th><th>${esc(T("admin.llm_model"))}</th><th>${esc(T("admin.llm_think"))}</th><th>${esc(T("admin.llm_timeout_seconds"))}</th><th></th></tr></thead>
+            <thead><tr><th>${esc(T("admin.llm_kind"))}</th><th>${esc(T("admin.llm_source_language"))}</th><th>${esc(T("admin.llm_target_language"))}</th><th>${esc(T("admin.llm_model_tags"))}</th><th>${esc(T("admin.llm_think"))}</th><th>${esc(T("admin.llm_timeout_seconds"))}</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
       </div>
+      <div id="llmUsage"></div>
     `;
 
     const kindSelect = document.getElementById("llm-kind");
@@ -459,7 +460,7 @@
     }
     kindSelect.addEventListener("change", refreshLLMTarget);
 
-    // The prompt is shown read-only: a row stores only provider, model, think
+    // The prompt is shown read-only: a row stores only model tags, think
     // and timeout, the text is always the kind's default, and the language's
     // rules come from the Languages tab through the placeholders.
     const promptArea = document.getElementById("llm-prompt");
@@ -471,20 +472,28 @@
     }
     kindSelect.addEventListener("change", refreshLLMPrompt);
 
-    // A saved row's provider is always explicit (unlike model, where empty
-    // means "use the purpose default") — default a new row to "ollama"
-    // since this bootstrap data doesn't expose the purpose's own default.
-    const providerSelect = document.getElementById("llm-provider");
-    providerSelect.value = editingPrompt ? editingPrompt.provider : "ollama";
+    // No tag ticked means "inherit the purpose default", so the hint names the
+    // tags that default is for the chosen kind.
+    const tagPicker = document.getElementById("llm-model-tags");
+    function refreshModelTagsHint() {
+      if (!tagPicker) return;
+      const defaults = ((data.llm_default_model_tags || {})[kindSelect.value] || []).join(", ");
+      document.getElementById("llm-model-tags-hint").textContent = T("admin.llm_model_tags_hint").replace("%s", defaults);
+    }
+    if (tagPicker) {
+      tagPicker.options = data.tags;
+      tagPicker.value = editingPrompt ? editingPrompt.model_tags || [] : [];
+      kindSelect.addEventListener("change", refreshModelTagsHint);
+    }
     document.getElementById("llm-think").checked = editingPrompt ? !!editingPrompt.think : false;
     if (editingPrompt) {
       kindSelect.value = editingPrompt.kind;
       document.getElementById("llm-source-language").value = editingPrompt.source_language;
-      document.getElementById("llm-model").value = editingPrompt.model || "";
       document.getElementById("llm-timeout-seconds").value = editingPrompt.timeout_seconds || "";
     }
     refreshLLMTarget();
     refreshLLMPrompt();
+    refreshModelTagsHint();
     if (editingPrompt && hasTargetLanguage(editingPrompt.kind)) {
       targetSelect.value = editingPrompt.target_language;
     }
@@ -508,8 +517,9 @@
         // Sentinel convention: every non-targeted kind's target_language
         // is fixed to its own kind name (see refreshLLMTarget's comment).
         targetLanguage: hasTargetLanguage(kind) ? targetSelect.value : kind,
-        provider: providerSelect.value,
-        model: document.getElementById("llm-model").value,
+        // Empty means "inherit the purpose default" (the API reads omitted and
+        // empty alike).
+        model_tags: tagPicker ? tagPicker.value : [],
         think: document.getElementById("llm-think").checked,
         // Blank means "inherit the purpose default" (llm-purpose-timeout-
         // and-prompt-config) — omitted entirely rather than sent as 0/null,
@@ -532,7 +542,8 @@
         editingLlm = a.dataset.editLlm;
         renderLLMTab();
         document.getElementById("llmForm").scrollIntoView({ behavior: "smooth", block: "start" });
-        document.getElementById("llm-model").focus({ preventScroll: true });
+        const firstTag = document.querySelector("#llm-model-tags input");
+        if (firstTag) firstTag.focus({ preventScroll: true });
       });
     });
 
@@ -555,6 +566,167 @@
       });
     });
 
+    renderLLMUsage();
+  }
+
+  // The LLM tab's usage sections: the configured models, the performance of
+  // the attempts in a period, the latest attempts, and the purge of old attempt
+  // records. Their state outlives renderLLMTab (every prompt save re-renders
+  // the tab), and the numbers are fetched when the tab is opened, not on every
+  // re-render.
+  const ATTEMPTS_LIMIT = 50;
+  const usage = { window: "24h", groupBy: "model", modelId: "", outcome: "", aggregates: [], attempts: [], purgeResult: "" };
+  let aggregatesRequest = 0;
+  let attemptsRequest = 0;
+
+  function usageElement(id) {
+    return document.getElementById(id);
+  }
+
+  function renderLLMUsage() {
+    document.getElementById("llmUsage").innerHTML = `
+      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-models id="llmModels"></pf-llm-models></div>
+      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-performance id="llmPerformance"></pf-llm-performance></div>
+      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-attempts id="llmAttempts"></pf-llm-attempts></div>
+      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-purge id="llmPurge"></pf-llm-purge></div>
+    `;
+    const models = usageElement("llmModels");
+    models.labels = {
+      heading: T("admin.llm_models_heading"), refresh: T("admin.llm_models_refresh"), colModel: T("admin.llm_col_model"),
+      colProvider: T("admin.llm_col_provider"), colTags: T("admin.llm_model_tags"), colPriority: T("admin.llm_col_priority"),
+      colAvailability: T("admin.llm_col_availability"), available: T("admin.llm_available"), unavailable: T("admin.llm_unavailable"),
+      reasons: { cooldown: T("admin.llm_reason_cooldown"), missing_credentials: T("admin.llm_reason_no_credentials") },
+      none: T("admin.llm_models_none"),
+    };
+    models.locale = BOOT.locale;
+    models.addEventListener("pf-llm-models-refresh", refreshModels);
+
+    const outcomeLabels = {
+      outcomeOk: T("admin.llm_outcome_ok"), outcomeError: T("admin.llm_outcome_error"), outcomeTimeout: T("admin.llm_outcome_timeout"),
+      outcomeRateLimited: T("admin.llm_outcome_rate_limited"), outcomeCanceled: T("admin.llm_outcome_canceled"),
+    };
+    const performance = usageElement("llmPerformance");
+    performance.labels = {
+      ...outcomeLabels,
+      heading: T("admin.llm_perf_heading"), period: T("admin.llm_perf_period"), groupBy: T("admin.llm_perf_group"),
+      hint: T("admin.llm_perf_hint"), none: T("admin.llm_perf_none"),
+      window1h: T("admin.llm_window_1h"), window24h: T("admin.llm_window_24h"), window7d: T("admin.llm_window_7d"),
+      window30d: T("admin.llm_window_30d"), windowAll: T("admin.llm_window_all"),
+      groupModel: T("admin.llm_group_model"), groupKindModel: T("admin.llm_group_kind_model"),
+      colModel: T("admin.llm_col_model"), colCalls: T("admin.llm_short_calls"), colSuccess: T("admin.llm_short_success"),
+      colTime: T("admin.llm_short_time"), colTokens: T("admin.llm_short_tokens"),
+      colTokensPerSecond: T("admin.llm_short_tokens_per_second"), colCost: T("admin.llm_short_cost"),
+      tipCalls: T("admin.llm_col_calls"), tipSuccess: T("admin.llm_col_success"), tipTime: T("admin.llm_col_time_stats"),
+      tipTokens: T("admin.llm_col_tokens"), tipTokensPerSecond: T("admin.llm_col_tokens_per_second"), tipCost: T("admin.llm_col_cost"),
+    };
+    performance.locale = BOOT.locale;
+    performance.kindLabel = llmKindLabel;
+    performance.windowValue = usage.window;
+    performance.groupBy = usage.groupBy;
+    performance.addEventListener("pf-llm-performance-change", (e) => {
+      usage.window = e.detail.window;
+      usage.groupBy = e.detail.groupBy;
+      loadAggregates();
+    });
+
+    const attempts = usageElement("llmAttempts");
+    attempts.labels = {
+      ...outcomeLabels,
+      heading: T("admin.llm_attempts_heading"), filterModel: T("admin.llm_col_model"), filterOutcome: T("admin.llm_col_outcome"),
+      filterAll: T("admin.llm_attempts_filter_all"), none: T("admin.llm_attempts_none"),
+      colTime: T("admin.llm_col_time"), colPurpose: T("admin.llm_col_purpose"), colModel: T("admin.llm_col_model"),
+      colOutcome: T("admin.llm_col_outcome"), colDuration: T("admin.llm_col_duration"), colTokens: T("admin.llm_short_tokens"),
+      colHttp: T("admin.llm_col_http"), request: T("admin.llm_attempt_request"),
+      tipTokens: T("admin.llm_col_tokens"),
+    };
+    attempts.locale = BOOT.locale;
+    attempts.kindLabel = llmKindLabel;
+    attempts.addEventListener("pf-llm-attempts-filter", (e) => {
+      usage.modelId = e.detail.modelId;
+      usage.outcome = e.detail.outcome;
+      loadAttempts();
+    });
+
+    const purge = usageElement("llmPurge");
+    purge.labels = {
+      heading: T("admin.llm_purge_heading"), label: T("admin.llm_purge_label"), option7: T("admin.llm_purge_option_7"),
+      option30: T("admin.llm_purge_option_30"), option90: T("admin.llm_purge_option_90"), optionAll: T("admin.llm_purge_option_all"),
+      button: T("admin.llm_purge_button"), confirmDays: T("admin.llm_purge_confirm_days"), confirmAll: T("admin.llm_purge_confirm_all"),
+      confirmButton: T("admin.llm_purge_confirm_button"), cancel: T("admin.llm_purge_cancel"), hint: T("admin.llm_purge_hint"),
+    };
+    purge.addEventListener("pf-llm-purge-confirm", (e) => purgeAttempts(e.detail.olderThanDays));
+
+    applyUsage();
+  }
+
+  // applyUsage hands the current state to whichever usage elements are on the
+  // page; a response that arrives after the tab was re-rendered still lands.
+  function applyUsage() {
+    const models = usageElement("llmModels");
+    if (!models) return;
+    models.models = data.models || [];
+    usageElement("llmPerformance").items = usage.aggregates;
+    const attempts = usageElement("llmAttempts");
+    const modelIds = new Set([...(data.models || []).map((m) => m.id), ...usage.aggregates.map((a) => a.model_id)]);
+    attempts.modelIds = [...modelIds].sort();
+    attempts.items = usage.attempts;
+    usageElement("llmPurge").result = usage.purgeResult;
+  }
+
+  async function loadAggregates() {
+    const request = ++aggregatesRequest;
+    const since = customElements.get("pf-llm-performance").sinceFor(usage.window, new Date());
+    try {
+      const body = await apiFetch(`/api/v1/admin/llm-aggregates?since=${encodeURIComponent(since)}&group_by=${usage.groupBy}`);
+      if (request !== aggregatesRequest) return;
+      usage.aggregates = body.items || [];
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+      return;
+    }
+    applyUsage();
+  }
+
+  async function loadAttempts() {
+    const request = ++attemptsRequest;
+    const query = new URLSearchParams({ limit: String(ATTEMPTS_LIMIT) });
+    if (usage.modelId) query.set("model_id", usage.modelId);
+    if (usage.outcome) query.set("outcome", usage.outcome);
+    try {
+      const body = await apiFetch(`/api/v1/admin/llm-calls?${query}`);
+      if (request !== attemptsRequest) return;
+      usage.attempts = body.items || [];
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+      return;
+    }
+    applyUsage();
+  }
+
+  async function refreshModels() {
+    try {
+      const body = await apiFetch("/api/v1/admin/models");
+      data.models = body.models || [];
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+      return;
+    }
+    applyUsage();
+  }
+
+  function loadUsage() {
+    return Promise.all([loadAggregates(), loadAttempts()]);
+  }
+
+  async function purgeAttempts(olderThanDays) {
+    try {
+      const body = await apiFetch(`/api/v1/admin/llm-calls?older_than_days=${olderThanDays}`, { method: "DELETE" });
+      usage.purgeResult = T("admin.llm_purge_done").replace("%s", new Intl.NumberFormat(BOOT.locale).format(body.deleted));
+    } catch (e) {
+      statusBar.setMessage(e.message, true);
+      return;
+    }
+    await Promise.all([loadUsage(), refreshModels()]);
   }
 
   function languageName(code) {

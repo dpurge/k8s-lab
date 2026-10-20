@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -320,5 +321,54 @@ func TestStreamWithoutTokenCountsReportsZero(t *testing.T) {
 	r, err := New(Config{Provider: "ollama", Model: "test-model", BaseURL: server.URL}).Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil || r.PromptTokens != 0 || r.ReplyTokens != 0 {
 		t.Fatalf("got (%+v, %v), want zero token counts", r, err)
+	}
+}
+
+func TestHeadersAreSentOnStreamingAndNonStreamingRequests(t *testing.T) {
+	var mu sync.Mutex
+	var seen []http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Clone())
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"hi"}}]}`)
+			return
+		}
+		fmt.Fprintln(w, doneLine)
+	}))
+	defer server.Close()
+	headers := map[string]string{"X-Title": "t", "x-lower": "v"}
+	for _, provider := range []string{"ollama", "openai"} {
+		c := New(Config{Provider: provider, BaseURL: server.URL, APIKey: "k", Headers: headers})
+		if _, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil); err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("requests = %d", len(seen))
+	}
+	for i, h := range seen {
+		if h.Get("X-Title") != "t" || h.Get("X-Lower") != "v" {
+			t.Errorf("request %d: custom headers missing: %v", i, h)
+		}
+		if h.Get("Authorization") != "Bearer k" || h.Get("Content-Type") != "application/json" {
+			t.Errorf("request %d: the client's own headers changed: %v", i, h)
+		}
+	}
+}
+
+func TestNoHeadersSendsNoneExtra(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		fmt.Fprintln(w, doneLine)
+	}))
+	defer server.Close()
+	if _, err := complete(t, Config{BaseURL: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := got["X-Title"]; has || got.Get("Authorization") != "" {
+		t.Errorf("headers = %v", got)
 	}
 }

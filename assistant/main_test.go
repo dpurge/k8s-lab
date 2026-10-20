@@ -180,7 +180,7 @@ func TestMigrateWithoutConfigurationFailsNamingTheVariable(t *testing.T) {
 
 func TestModelsValidate(t *testing.T) {
 	good := writeFile(t, "models.yaml", `providers:
-  - {id: local, type: ollama, base_url: "http://localhost:11434"}
+  - {id: local, type: ollama, base_url: "http://localhost:11434", api_key_from: ""}
 models:
   - {id: m, provider: local, model: gemma4:12b, tags: [chat], priority: 1}
 `)
@@ -205,6 +205,28 @@ models:
 		if code := runModels(args, &out, &errOut); code != 2 {
 			t.Errorf("%v: code = %d", args, code)
 		}
+	}
+}
+
+func TestModelsValidateAcceptsAndRejectsHeaders(t *testing.T) {
+	doc := func(headers string) string {
+		return "providers:\n  - {id: local, type: ollama, base_url: \"http://localhost:11434\", api_key_from: \"\", headers: " + headers + "}\nmodels:\n  - {id: m, provider: local, model: x, tags: [chat], priority: 1}\n"
+	}
+	const secret = "pasted-SECRET-HEADER-VALUE"
+	var out, errOut bytes.Buffer
+	good := writeFile(t, "good.yaml", doc(`{X-Title: app, X-Env: "env:SOME_VARIABLE", X-File: "file:/run/h", anthropic-version: "2023-06-01"}`))
+	if code := runModels([]string{"models", "validate", good}, &out, &errOut); code != 0 {
+		t.Errorf("good headers: code=%d err=%q", code, errOut.String())
+	}
+	bad := writeFile(t, "bad.yaml", doc(`{Authorization: `+secret+`, "Bad Name": v, X-Env: "env:1X"}`))
+	out.Reset()
+	errOut.Reset()
+	code := runModels([]string{"models", "validate", bad}, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), `"local"`) || !strings.Contains(errOut.String(), "Authorization") || !strings.Contains(errOut.String(), "api_key_from") {
+		t.Errorf("bad headers: code=%d err=%q", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), secret) || strings.Contains(out.String(), secret) {
+		t.Error("the output echoes a header value")
 	}
 }
 

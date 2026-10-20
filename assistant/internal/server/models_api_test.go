@@ -171,16 +171,29 @@ func TestModelsShowTheConfigurationAndAvailabilityButNeverAnAddress(t *testing.T
 	a := newAPI(t)
 	until := fixedNow.Add(time.Minute)
 	a.models.status = []llm.ModelStatus{
-		{ID: "big", Provider: "gpu", Tags: []string{"chat", "strong"}, Priority: 20, Available: false, Until: until},
+		{ID: "big", Provider: "gpu", Tags: []string{"chat", "strong"}, Priority: 20, Available: false, Reason: llm.ReasonCooldown, Until: until},
 		{ID: "small", Provider: "laptop", Tags: []string{"chat"}, Priority: 10, Available: true},
+		{ID: "cloud", Provider: "claude", Tags: []string{"chat"}, Priority: 5, Available: false, Reason: llm.ReasonMissingCredentials},
 	}
 	rec := a.call("GET", "/api/v1/models", "/api/v1/models", nil)
 	items := decode[modelList](t, rec).Items
-	if len(items) != 2 || items[0].ID != "big" || items[0].Available || items[0].UnavailableUntil == nil || !items[0].UnavailableUntil.Equal(until) {
+	if len(items) != 3 || items[0].ID != "big" || items[0].Available || items[0].UnavailableUntil == nil || !items[0].UnavailableUntil.Equal(until) {
 		t.Fatalf("items = %+v", items)
 	}
 	if items[1].ID != "small" || !items[1].Available || items[1].UnavailableUntil != nil || items[1].Priority != 10 || items[1].Provider != "laptop" {
 		t.Errorf("small = %+v", items[1])
+	}
+	if items[0].UnavailableReason != "cooldown" || items[1].UnavailableReason != "" {
+		t.Errorf("reasons = %q, %q", items[0].UnavailableReason, items[1].UnavailableReason)
+	}
+	if cloud := items[2]; cloud.Available || cloud.UnavailableReason != "missing_credentials" || cloud.UnavailableUntil != nil {
+		t.Errorf("a model waiting for a credential has a reason and no return time: %+v", cloud)
+	}
+	if strings.Count(rec.Body.String(), "unavailable_reason") != 2 {
+		t.Errorf("unavailable_reason must be left out for an available model: %s", rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "header") {
+		t.Errorf("the response must not mention headers: %s", rec.Body)
 	}
 	if strings.Contains(rec.Body.String(), "http") || strings.Contains(rec.Body.String(), "base_url") {
 		t.Errorf("the response must not carry an address: %s", rec.Body)

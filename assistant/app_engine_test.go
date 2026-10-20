@@ -14,9 +14,9 @@ import (
 	"assistant/internal/llm/demo"
 	"assistant/internal/llm/llmtest"
 	"assistant/internal/llmcalls"
-	"assistant/internal/models"
 	"assistant/internal/tasksteps"
 	"assistant/internal/workflow"
+	"k8s-lab/shared/modelcfg"
 )
 
 const askFlow = `id: askflow
@@ -367,7 +367,7 @@ func TestTheDemoModelRefusesOtherWorkflowsAndTheFailureIsVisible(t *testing.T) {
 
 func demoSetup(t *testing.T) modelSetup {
 	t.Helper()
-	cfg, err := models.LoadBytes("models.yaml", []byte(testModels))
+	cfg, err := modelcfg.LoadBytes("models.yaml", []byte(testModels))
 	if err != nil {
 		t.Fatal(err)
 	}

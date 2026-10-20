@@ -1,0 +1,21 @@
+/* The table fits its card: seven compact columns, numbers in a small font, the
+   model and provider wrapping when needed. The scroll container is only a
+   safety net for a viewport narrower than the supported 1024 px. */
+pf-llm-performance { display: block; }
+pf-llm-performance .pf-llm-controls { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem 1rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+pf-llm-performance .pf-llm-title { margin: 0; font-size: 1.2rem; }
+pf-llm-performance .pf-llm-toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+pf-llm-performance select { width: auto; min-width: 9rem; margin: 0; padding: 0.45rem 0.75rem; font-size: 0.95rem; }
+pf-llm-performance .pf-llm-toggle { display: inline-flex; gap: 0.25rem; }
+pf-llm-performance .pf-llm-toggle button { padding: 0.35rem 0.9rem; font-size: 0.9rem; }
+pf-llm-performance .pf-llm-toggle button[aria-pressed="true"] { background: var(--btn-bg); border-color: var(--btn-bg); color: #fff; }
+pf-llm-performance .pf-llm-scroll { overflow-x: auto; }
+pf-llm-performance table.admin-table { margin-bottom: 0; }
+pf-llm-performance table.admin-table th, pf-llm-performance table.admin-table td { padding: 0.4rem 0.35rem; font-size: 0.8rem; vertical-align: top; }
+pf-llm-performance table.admin-table th { font-size: 0.75rem; line-height: 1.2; }
+pf-llm-performance td.pf-llm-model { overflow-wrap: anywhere; }
+pf-llm-performance .pf-llm-sub { color: var(--muted); font-size: 0.72rem; overflow-wrap: anywhere; }
+pf-llm-performance th:not(:first-child), pf-llm-performance td.pf-llm-number { text-align: right; }
+pf-llm-performance td.pf-llm-number { white-space: nowrap; font-variant-numeric: tabular-nums; }
+pf-llm-performance .pf-llm-empty { color: var(--muted); font-style: italic; }
+pf-llm-performance .pf-llm-hint { margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--muted); }

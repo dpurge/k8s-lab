@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"assistant/internal/models"
-	"assistant/internal/yamlschema"
+	"k8s-lab/shared/modelcfg"
+	"k8s-lab/shared/yamlschema"
 )
 
 const modelsUsage = `usage: assistant models validate <file>...
@@ -24,7 +24,7 @@ func runModels(args []string, stdout, stderr io.Writer) int {
 	}
 	failed := false
 	for _, file := range args[2:] {
-		cfg, err := models.Load(file)
+		cfg, err := modelcfg.Load(file)
 		if err != nil {
 			var found *yamlschema.Error
 			if errors.As(err, &found) {

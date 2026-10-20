@@ -105,10 +105,9 @@ func checkVocabularyService(t *testing.T, replies ...string) (*Service, *fakeOll
 	pool := newAIDB(t)
 	ollama := newFakeOllama(t, replies)
 	cfg := config.Config{
-		Providers:       map[string]config.ProviderConfig{"ollama": {BaseURL: ollama.URL}},
-		CheckVocabulary: config.PurposeConfig{Provider: "ollama", Model: "test-model", Prompt: "Check {{sourceLanguage}}:\n{{candidates}}", MaxAttempts: 3},
+		CheckVocabulary: config.PurposeConfig{Prompt: "Check {{sourceLanguage}}:\n{{candidates}}", MaxAttempts: 3},
 	}
-	return New(pool, cfg, nil, nil, nil, nil), ollama
+	return useFakeOllama(t, New(pool, cfg, nil, nil, nil, nil), ollama.URL), ollama
 }
 
 var checkItems = []CheckItem{

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assistant.local/schemas/models.schema.json",
+  "title": "Assistant models",
+  "description": "The providers the assistant can call and the models on them, with the tags a task asks for and a priority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["providers", "models"],
+  "properties": {
+    "providers": {
+      "description": "Where models run. An Ollama endpoint may be on this machine or on another one in the network. Fields per type: ollama - base_url (required), api_key_from (compulsory key, empty allowed); openai - base_url (required), api_key_from (compulsory key, empty allowed); anthropic - base_url (optional, default https://api.anthropic.com), api_key_from (compulsory key; a credential is needed); vertex - project and location (required), api_key_from (compulsory key; a credential is needed); demo - none. Every type but demo also takes the optional headers.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/provider" }
+    },
+    "models": {
+      "description": "The models a call can be routed to.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/model" }
+    },
+    "routing": {
+      "description": "How a model that keeps failing is set aside.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "breaker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "failures": {
+              "description": "Consecutive failures after which a model is unavailable. Default 3.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "cooldown_seconds": {
+              "description": "How long it stays unavailable. Default 60.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "rate_limited_cooldown_seconds": {
+              "description": "How long it stays unavailable after a rate limit (429). Default 30.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "ollama" } } }, "then": { "required": ["base_url"] } },
+        { "if": { "properties": { "type": { "const": "vertex" } } }, "then": { "required": ["project", "location"] } },
+        { "if": { "properties": { "type": { "const": "openai" } } }, "then": { "required": ["base_url"] } }
+      ],
+      "properties": {
+        "id": {
+          "description": "Name that models refer to.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "type": {
+          "description": "Kind of provider: ollama, vertex (Google), openai (any OpenAI-compatible chat API, such as OpenAI or OpenRouter), anthropic (the Anthropic Messages API), or demo.",
+          "enum": ["ollama", "vertex", "openai", "anthropic", "demo"]
+        },
+        "project": {
+          "description": "Google Cloud project that bills a vertex provider, e.g. my-project.",
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "description": "Region of a vertex provider, e.g. us-central1, or global.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "base_url": {
+          "description": "Where the provider answers, without credentials, e.g. http://localhost:11434. Required for ollama and openai; an openai provider is called at {base_url}/chat/completions, e.g. https://openrouter.ai/api/v1. Optional for anthropic, which is called at {base_url}/v1/messages and defaults to https://api.anthropic.com.",
+          "type": "string",
+          "minLength": 1
+        },
+        "api_key_from": {
+          "description": "Where the provider's API key or access token comes from. The key is compulsory on every provider except demo, but its value may be empty. Accepted: an empty string (no credential), env:NAME (the environment variable NAME, never the secret itself) or file:/absolute/path (the file's content, trimmed of whitespace, such as a mounted secret or a refreshed token). A file: is re-read on every call, so a changed file needs no restart; an env: variable is read from the process environment, which a running process does not see change, so a changed variable needs a restart. Optional in effect on ollama (sent as a Bearer key to a server behind an authenticating proxy) and openai (sent as a Bearer key; empty for a local server). Needed on anthropic (sent as the x-api-key header) and vertex (sent as a Bearer OAuth access token): without a credential those providers are skipped, with the reason missing_credentials, until one is present.",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Extra HTTP headers sent on every request to the provider, as header name -> value; allowed on every type but demo. A value is env:NAME (the environment variable, read from the process environment: a restart is needed to see a change), file:/absolute/path (the file's content, trimmed of whitespace, re-read on every call) or else a literal value (a literal that must start with env: or file: cannot be written). Sent after the provider's own headers, so they may replace a default such as anthropic-version. Not allowed: authorization and x-api-key (use api_key_from), content-type, content-length, host, connection, transfer-encoding. Header names are case-insensitive and may not repeat. A header from env: or file: that has no value makes the provider skipped, like a missing credential. Names and values are never shown in the admin UI, API or logs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "model", "tags", "priority"],
+      "properties": {
+        "id": {
+          "description": "Name of this entry in logs, records and metrics.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "provider": {
+          "description": "The id of the provider it runs on.",
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "description": "The provider's own name for the model, e.g. gemma4:12b.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "description": "What the model is good for: lowercase letters, digits and hyphens, starting with a letter. A task asks for tags; only models that have all of them are candidates.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+        },
+        "priority": {
+          "description": "Higher is tried first. Zero or more.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "options": {
+          "description": "Settings for this model; a provider ignores the ones that do not apply to it. num_ctx, think, first_token_timeout_seconds and idle_timeout_seconds are Ollama-only; num_predict (most tokens in a reply: max_tokens for openai and anthropic, which defaults to 16000, and the output limit for vertex and ollama) and overall_timeout_seconds apply to every provider.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "num_ctx": { "description": "Context window in tokens.", "type": "integer", "minimum": 1 },
+            "num_predict": { "description": "Most tokens in a reply.", "type": "integer", "minimum": 1 },
+            "think": { "description": "Let a thinking-capable model reason first; slow.", "type": "boolean" },
+            "first_token_timeout_seconds": { "description": "Wait for the first token, which covers loading the model.", "type": "integer", "minimum": 1 },
+            "idle_timeout_seconds": { "description": "Longest pause between tokens once they flow.", "type": "integer", "minimum": 1 },
+            "overall_timeout_seconds": { "description": "Longest a whole call may take.", "type": "integer", "minimum": 1 }
+          }
+        },
+        "price": {
+          "description": "US dollars per million tokens; both default to 0 (a local model costs nothing).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "input_per_mtok": { "type": "number", "minimum": 0 },
+            "output_per_mtok": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

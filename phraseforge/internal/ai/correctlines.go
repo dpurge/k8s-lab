@@ -42,7 +42,7 @@ func (s *Service) CorrectionRounds(kind string) int {
 	return effectiveMaxAttempts(s.purposeDefault(kind).MaxAttempts)
 }
 
-// CorrectLines asks the model behind kind (provider, model and timeouts as
+// CorrectLines asks the model behind kind (model tags and timeouts as
 // for Generate, so the loaded model and its context window are reused) to fix
 // rejected lines against format, returning its reply: the corrected lines,
 // one per line. format is the line format description shown to the model.

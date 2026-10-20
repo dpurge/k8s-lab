@@ -152,3 +152,11 @@ func TestATraceRecordErrorIsCounted(t *testing.T) {
 	m.TraceRecordError()
 	wantLine(t, scrape(t, m), `assistant_trace_record_errors_total 1`)
 }
+
+func TestPurgedRowsAreCounted(t *testing.T) {
+	m := New()
+	wantLine(t, scrape(t, m), "assistant_llm_calls_purged_total 0")
+	m.Purged("llm_calls", 3)
+	m.Purged("llm_calls", 4)
+	wantLine(t, scrape(t, m), "assistant_llm_calls_purged_total 7")
+}

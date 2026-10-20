@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"phraseforge/internal/ai"
-	"phraseforge/internal/config"
 	"phraseforge/internal/ime"
 )
 
@@ -24,15 +23,15 @@ func sampleAdminConfig() adminConfigExport {
 	timeout := 600
 	prompts := make([]ai.Prompt, 0, len(ai.ValidKinds))
 	for _, kind := range ai.ValidKinds {
-		prompts = append(prompts, ai.Prompt{
-			Kind: kind, SourceLanguage: "cmn", TargetLanguage: kind, Provider: "ollama",
-			Model: "gemma4:12b",
-		})
+		prompts = append(prompts, ai.Prompt{Kind: kind, SourceLanguage: "cmn", TargetLanguage: kind})
 	}
 	prompts[0].TimeoutSeconds = &timeout
+	prompts[0].ModelTags = []string{"default", "big"}
+	prompts[1].ModelTags = []string{"vision"}
+	prompts[1].Think = true
 	return adminConfigExport{
 		Version:    1,
-		IMEConfigs: []ime.Config{{Language: "cmn", Script: "Hans", SourceIME: "pinyin", TranscriptionIME: "pinyin", NeedsTranscription: true}},
+		IMEConfigs: []ime.Config{{Language: "cmn", Script: "hans", SourceIME: "cmn", TranscriptionIME: "cxs", NeedsTranscription: true}},
 		LLMPrompts: prompts,
 		LanguageSections: []ai.LanguageSections{
 			{Language: "cmn", GrammarPrompt: "N = noun\n", TranscriptionPrompt: "Pinyin with tone marks.\n"},
@@ -67,9 +66,8 @@ func TestAdminConfigExportJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func testAdminServer(db *pgxpool.Pool) *Server {
-	cfg := config.Config{Providers: map[string]config.ProviderConfig{"ollama": {}}}
-	return &Server{db: db, ai: ai.New(db, cfg, nil, nil, nil, nil)}
+func testAdminServer(t testing.TB, db *pgxpool.Pool) *Server {
+	return &Server{db: db, ai: testAI(t, db)}
 }
 
 func importRequest(t *testing.T, body string) *http.Request {
@@ -94,15 +92,19 @@ func importRequest(t *testing.T, body string) *http.Request {
 // TestImportAdminConfigRejectsBadFilesBeforeTouchingTheDatabase: every check
 // the import makes before its transaction, so no database is needed.
 func TestImportAdminConfigRejectsBadFilesBeforeTouchingTheDatabase(t *testing.T) {
-	s := testAdminServer(nil)
+	s := testAdminServer(t, nil)
 	cases := map[string]string{
 		"not JSON":              `nope`,
 		"unsupported version":   `{"version":2}`,
-		"unknown kind":          `{"version":1,"llm_prompts":[{"kind":"tag","source_language":"cmn","target_language":"x","provider":"ollama","prompt":"p"}]}`,
-		"unknown provider":      `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","provider":"nowhere","prompt":"p"}]}`,
-		"blank source language": `{"version":1,"llm_prompts":[{"kind":"title","source_language":" ","target_language":"title","provider":"ollama"}]}`,
+		"unknown kind":          `{"version":1,"llm_prompts":[{"kind":"tag","source_language":"cmn","target_language":"x","prompt":"p"}]}`,
+		"unknown tag":           `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","model_tags":["ghost"]}]}`,
+		"blank tag":             `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","model_tags":[" "]}]}`,
+		"tags no model has":     `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","model_tags":["big","vision"]}]}`,
+		"removed provider key":  `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","provider":"ollama"}]}`,
+		"removed model key":     `{"version":1,"llm_prompts":[{"kind":"title","source_language":"cmn","target_language":"title","model":"gemma4:12b"}]}`,
+		"blank source language": `{"version":1,"llm_prompts":[{"kind":"title","source_language":" ","target_language":"title"}]}`,
 		"blank section lang":    `{"version":1,"language_sections":[{"language":" ","grammar_prompt":"g"}]}`,
-		"IME without language":  `{"version":1,"ime_configs":[{"script":"Hans"}]}`,
+		"IME without language":  `{"version":1,"ime_configs":[{"script":"hans"}]}`,
 	}
 	for name, body := range cases {
 		rec := httptest.NewRecorder()
@@ -128,7 +130,7 @@ func TestAdminConfigExportImportRoundTripDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	s := testAdminServer(pool)
+	s := testAdminServer(t, pool)
 
 	importConfig := func(body []byte) {
 		t.Helper()

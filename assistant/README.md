@@ -5,8 +5,9 @@ walks the workflow's state machine, calling tools, until it reaches an end
 state. What exists today is the task queue with its API and admin interface,
 a worker that runs the built-in `noop` and `ask` workflows and the YAML
 workflows through the engine (parking a run that asks the user and resuming it
-with the answer), and the model router with Ollama, Vertex AI and a demo
-provider. Channels and memory come in later slices (see
+with the answer), and the model router with Ollama, OpenAI-compatible (such as
+OpenRouter), Anthropic and Vertex AI providers and a demo provider. Channels
+and memory come in later slices (see
 `specs/artifacts/assistant/roadmap.md`).
 
 ## Task queue
@@ -20,7 +21,7 @@ provider. Channels and memory come in later slices (see
   `/users`, `POST` and `GET` `/tasks` (paged, newest first, `status` filter),
   `GET /tasks/{id}` (with `usage`: calls, tokens, cost, models),
   `GET /tasks/{id}/llm-calls`, `GET /usage?since=`, `GET /models`; also
-  `/healthz` and `/metrics`. Errors are always
+  `/healthz` and `/metrics` (no login, shows model ids, provider ids, call counts, cost and Go/process info, never credentials or content; in production block it at the ingress or scrape the pod address directly; each scrape evaluates provider availability by reading credential and header files). Errors are always
   `{"error": {"code", "message"}}`. There is no authentication yet.
 - **Admin interface** at `/admin/`: a single-page app of native Web Components
   (`as-*`, in `internal/server/static/`), embedded in the binary. It shows the
@@ -34,6 +35,15 @@ provider. Channels and memory come in later slices (see
   `assistant_http_requests_total` / `_duration_seconds` by route template.
 - **Logs** are JSON on stdout; a task's start and finish are one line each with
   its id, workflow, outcome and duration, never its payload or result.
+- **Troubleshooting LLM calls**: every model call leaves JSON log lines that
+  share a `call_id` and carry `task_id` and `user_id`: `llm candidates` (debug),
+  one `llm attempt` per model tried (model, provider, outcome, failure kind,
+  HTTP status, the provider's request id, bounded error text), breaker and
+  provider transitions, and one `llm call done`. Prompts, replies, schemas and
+  keys are never logged. Follow one call with
+  `jq -c 'select(.call_id == "<id>")'`; the full list of messages, fields and
+  more one-liners is the Troubleshooting section of the `shared/router`
+  package documentation (`shared/router/doc.go`).
 - **Schemas** (`schemas/`) are the contracts: `db/schema.sql` (the only DDL),
   `api/openapi.yaml`, `workflow.schema.json`. Tests hold the code to them.
 
@@ -72,8 +82,8 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
   (`POST /tasks/{id}/cancel`), retry a failed or cancelled one as a new task
   (`POST /tasks/{id}/retry`), remove one (`DELETE /tasks/{id}`, not a running
   one) or all of one finished status (`DELETE /tasks?status=failed`). A removed
-  task takes its trace with it, but its model calls stay, so usage and cost do
-  not change. Removing a task a conversation is in leaves the conversation
+  task takes its trace with it, but its model calls stay (until the retention
+  above), so usage and cost do not change. Removing a task a conversation is in leaves the conversation
   usable. The task page has the buttons; the list has "Remove all" for a
   finished status filter.
 - `GET /api/v1/workflows` lists what a task or conversation can name, and the
@@ -103,7 +113,7 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
 
 ## Model router (`internal/llm`)
 
-- `models.yaml` (format in `schemas/models.schema.json`, sample in
+- `models.yaml` (format in `../shared/modelcfg/models.schema.json`, sample in
   `models.example.yaml`, dev cluster's in `models.dev.yaml`) lists providers
   (an Ollama endpoint each: localhost or another machine) and models with tags,
   a priority, Ollama options and a price per million tokens. The path is
@@ -123,14 +133,34 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
   `assistant_llm_calls_total`, `_tokens_total{user,...}`, `_cost_usd_total`,
   `_call_duration_seconds` and `assistant_llm_model_available{model}`.
   No prompt or reply is logged or stored.
+- **Retention of model calls**: `llm_calls` rows older than
+  `ASSISTANT_LLM_CALLS_RETENTION_DAYS` days (default 90, capped at 36500; 0 keeps them forever; a
+  negative or non-numeric value stops startup) are deleted automatically, in
+  batches, a minute after start and then every 6 hours. The log line is `rows
+  purged` (fields `rule`, `deleted`, `older_than`, `retention_days`) and the
+  counter is `assistant_llm_calls_purged_total`. So usage (`GET /usage`, the
+  Usage page, a task's `usage`) and call history (`GET /tasks/{id}/llm-calls`)
+  cover only the retained period. `tasks` and `task_steps` are not purged.
 - Providers: `ollama`; `vertex` (Gemini on Vertex AI, REST `generateContent`),
-  which authenticates with an OAuth access token read from the file in
-  `ASSISTANT_VERTEX_TOKEN_FILE` on every call (dev: `task
-  refresh-assistant-vertex-token` writes it from your gcloud account into a
-  Secret, valid about an hour; production needs a service account, not yet
-  built); and `demo`, a deterministic stand-in that acts out `hello` instantly,
-  to try the interface without a real model. OpenAI-compatible and Anthropic are
-  roadmap items; a provider is one `Provider` method.
+  which authenticates with an OAuth access token that the provider's
+  `api_key_from: file:/path` in `models.yaml` names, re-read on every call, so a
+  refreshed token needs no restart (dev: `task refresh-assistant-vertex-token`
+  writes it from your gcloud account into the Secret `assistant-vertex`, which
+  is mounted at `/etc/assistant-vertex/token`; `models.dev.yaml` sets
+  `api_key_from: file:/etc/assistant-vertex/token`; the token is valid about an
+  hour; production needs a service account, not yet built). Without a token the
+  Vertex provider is disabled (reason `missing_credentials`, one warning in the
+  log), never a startup error; and `demo`, a deterministic stand-in that acts out `hello` instantly,
+  to try the interface without a real model. `openai` (any OpenAI-compatible
+  chat API) and `anthropic` are also registered. Every provider except `demo`
+  may have `headers` in `models.yaml`: extra request headers, each a literal,
+  `env:NAME` or `file:/abs/path` (read on every call, sent after the provider's
+  own headers; `Authorization` and `x-api-key` are refused: use `api_key_from`).
+  An `env:` or `file:` header with no value disables the provider like a missing
+  credential (reason `missing_credentials`). Names and values are never in the
+  API, metrics, `llm_calls` or logs (the warning names only the source). The
+  rules are in the phraseforge README, "Custom request headers", and in the
+  package documentation of `../shared/modelcfg`.
 - The built-in workflow `ask` makes one call: payload `{"prompt", "system"?,
   "tags"?}`, result `{"text", "model_id"}`.
 
@@ -138,6 +168,91 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
 curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
   -d '{"user_id":"<id>","workflow_id":"ask","payload":{"prompt":"Say ready","tags":["chat"]}}'
 ```
+
+### Where to configure API keys
+
+Every provider entry in `models.yaml` except `demo` has the **compulsory** key
+`api_key_from`; its value may be empty:
+
+| `api_key_from` | Meaning |
+|---|---|
+| `""` | no credential |
+| `env:NAME` | the environment variable `NAME`, read on every call; the pod's environment only changes on a restart, so a new value needs one |
+| `file:/absolute/path` | the content of the file, trimmed of whitespace, re-read on every call, so a rotated secret or a refreshed token needs no restart |
+
+A provider without the key is a configuration error, so a forgotten credential
+is not a silent default. The key itself is never written in `models.yaml` or
+the database: `api_key_from` only says where to find it. A missing credential is
+never a startup error. Which provider type needs one:
+
+| Provider type | `api_key_from` | Credential | Sent as | Other fields |
+|---|---|---|---|---|
+| `ollama` | `""`, `env:NAME` or `file:/path` | not needed (a local server or one behind a proxy); sent when present | `Authorization: Bearer` | `base_url` required |
+| `openai` (any OpenAI-compatible API) | same (for example `env:OPENROUTER_API_KEY`) | not needed for a local server; sent when present | `Authorization: Bearer` | `base_url` required |
+| `anthropic` | same | **needed**: without one the provider is skipped | `x-api-key` header | `base_url` optional (default `https://api.anthropic.com`) |
+| `vertex` (Google) | same, usually `file:/path` to a token file | **needed**: an OAuth access token, not an API key; without one the provider is skipped | `Authorization: Bearer` | `project` and `location` required, no `base_url` |
+| `demo` | not allowed | none | answers in-process | none |
+
+A provider that needs a credential and has none (empty or unset variable,
+unreadable or empty file) is skipped by the router (reason `missing_credentials`),
+so calls fall back to the next model; with `file:` it returns by itself once the
+file has content, with `env:` set the variable and restart. Every provider
+except `demo` may also have `headers` (a literal, `env:NAME` or `file:/abs/path`
+per header, read on every call); the rules are in the phraseforge README,
+"Custom request headers", and in the package documentation of `../shared/modelcfg`.
+
+**How the dev deployment supplies them** (`k8s/deployment.yaml`, `models.dev.yaml`):
+
+- **Vertex (`gcp`):** `task refresh-assistant-vertex-token` writes a fresh
+  access token from your gcloud account into the Secret `assistant-vertex` (key
+  `token`, valid about an hour). The Deployment mounts that Secret, optional, at
+  `/etc/assistant-vertex`, and `models.dev.yaml` has `api_key_from:
+  file:/etc/assistant-vertex/token`. `task deploy-assistant` runs the refresh;
+  run it again when the token expires, no restart is needed.
+- **Ollama on the laptop (`ollama-cpu`):** `api_key_from: ""`, no credential.
+- **`env:` keys:** the Deployment's `env` list has only `ASSISTANT_MODELS_FILE`,
+  `ASSISTANT_WORKFLOWS_DIR` and `ASSISTANT_DATABASE_URL`; no provider key is set,
+  so an `env:NAME` provider has no credential there. To supply one, create a
+  Secret with the key in the `app` namespace (with the lab's kubeconfig), add an
+  entry such as this to the container's `env` in `k8s/deployment.yaml`, name it
+  in the provider (`api_key_from: env:OPENROUTER_API_KEY`) in the models
+  ConfigMap source, and run `task deploy-assistant` (it applies both and
+  restarts the pod):
+
+  ```yaml
+  - name: OPENROUTER_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: assistant-llm-keys   # a Secret you create; not created by any task
+        key: OPENROUTER_API_KEY
+        optional: true             # the pod starts without it
+  ```
+
+  Alternatively mount the Secret as a volume and use `file:`, as for Vertex; a
+  mounted file needs no restart when it changes.
+
+### Adding another provider
+
+Add an entry to `providers` and one or more to `models` in `models.yaml`, and
+restart (the file is read at startup; credentials set with `file:` or `env:` are
+re-read on every call).
+
+- `id` is free: lowercase letters, digits and hyphens, starting with a letter,
+  unique. Models refer to it in `provider`.
+- `type` picks the API: `ollama`, `openai`, `anthropic`, `vertex` (or `demo`).
+- Several providers of one type are fine: several Ollama hosts, or several
+  OpenAI-compatible endpoints such as OpenRouter and OpenAI, each with its own
+  `base_url` and `api_key_from`.
+- `openai` means any endpoint that implements `POST {base_url}/chat/completions`
+  with a Bearer key (for OpenRouter, `base_url: https://openrouter.ai/api/v1`).
+- Decide the tags with care: a workflow's `model_tags` select every model that
+  has all of them, so a model that costs money or receives the prompts should
+  carry only a tag of its own (as `openrouter-reference` does in
+  `models.example.yaml`).
+- Known limits: no per-provider connect timeout, and the timeouts are per model
+  (`options`). `first_token_timeout_seconds` and `idle_timeout_seconds` apply to
+  `ollama` models only; `overall_timeout_seconds` and `num_predict` apply to every
+  type, `num_ctx` and `think` to `ollama` only.
 
 ## Workflow engine (`internal/workflow`)
 
