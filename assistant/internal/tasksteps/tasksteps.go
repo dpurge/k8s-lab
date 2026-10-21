@@ -40,6 +40,10 @@ type Step struct {
 	OutputTokens int             `json:"output_tokens"`
 	DurationMS   int             `json:"duration_ms"`
 	At           time.Time       `json:"at"`
+	// WorkflowID is the workflow the step ran in, and Depth how many runs deep:
+	// above 0 for the steps of a workflow the request was handed to.
+	WorkflowID *string `json:"workflow_id"`
+	Depth      int     `json:"depth"`
 }
 
 // Store reads and writes steps.
@@ -48,15 +52,15 @@ type Store struct{ pool *pgxpool.Pool }
 // NewStore returns a store on pool.
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-const columns = `id, task_id::text, step, attempt, state, outcome, error, action, patch, tool, tool_result, reply, input_tokens, output_tokens, duration_ms, at`
+const columns = `id, task_id::text, step, attempt, state, outcome, error, action, patch, tool, tool_result, reply, input_tokens, output_tokens, duration_ms, at, workflow_id, depth`
 
 // Insert stores one step.
 func (s *Store) Insert(ctx context.Context, st Step) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO task_steps (task_id, step, attempt, state, outcome, error, action, patch, tool, tool_result, reply, input_tokens, output_tokens, duration_ms, at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		INSERT INTO task_steps (task_id, step, attempt, state, outcome, error, action, patch, tool, tool_result, reply, input_tokens, output_tokens, duration_ms, at, workflow_id, depth)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		st.TaskID, st.Step, st.Attempt, st.State, st.Outcome, st.Error, nullJSON(st.Action), nullJSON(st.Patch),
-		st.Tool, st.ToolResult, st.Reply, st.InputTokens, st.OutputTokens, st.DurationMS, st.At)
+		st.Tool, st.ToolResult, st.Reply, st.InputTokens, st.OutputTokens, st.DurationMS, st.At, st.WorkflowID, st.Depth)
 	if err != nil {
 		return fmt.Errorf("insert task step: %w", err)
 	}
@@ -92,7 +96,7 @@ func scan(row pgx.Row) (Step, error) {
 	var st Step
 	var action, patch []byte
 	err := row.Scan(&st.ID, &st.TaskID, &st.Step, &st.Attempt, &st.State, &st.Outcome, &st.Error, &action, &patch,
-		&st.Tool, &st.ToolResult, &st.Reply, &st.InputTokens, &st.OutputTokens, &st.DurationMS, &st.At)
+		&st.Tool, &st.ToolResult, &st.Reply, &st.InputTokens, &st.OutputTokens, &st.DurationMS, &st.At, &st.WorkflowID, &st.Depth)
 	if action != nil {
 		st.Action = action
 	}
@@ -151,6 +155,10 @@ type actionJSON struct {
 	Args    map[string]any `json:"args,omitempty"`
 	State   string         `json:"state,omitempty"`
 	Payload map[string]any `json:"payload,omitempty"`
+	// A delegate action: the workflow, the request and why.
+	Workflow string `json:"workflow,omitempty"`
+	Message  any    `json:"message,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 func toStep(rec workflow.StepRecord) (Step, error) {
@@ -164,7 +172,7 @@ func toStep(rec workflow.StepRecord) (Step, error) {
 	}
 	if rec.Action != nil {
 		a := rec.Action
-		if st.Action, err = json.Marshal(actionJSON{Type: string(a.Type), Tool: a.Tool, Args: a.Args, State: a.State, Payload: a.Payload}); err != nil {
+		if st.Action, err = json.Marshal(actionJSON{Type: string(a.Type), Tool: a.Tool, Args: a.Args, State: a.State, Payload: a.Payload, Workflow: a.Workflow, Message: a.Message, Reason: a.Reason}); err != nil {
 			return Step{}, fmt.Errorf("encode action: %w", err)
 		}
 	}
@@ -173,6 +181,10 @@ func toStep(rec workflow.StepRecord) (Step, error) {
 			return Step{}, fmt.Errorf("encode state patch: %w", err)
 		}
 	}
+	if rec.Workflow != "" {
+		st.WorkflowID = &rec.Workflow
+	}
+	st.Depth = rec.Depth
 	if rec.Tool != "" {
 		st.Tool = &rec.Tool
 	}

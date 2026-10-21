@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
+	"k8s-lab/shared/ui"
 	"knowledge/internal/auth"
 	"knowledge/internal/chat"
 	"knowledge/internal/generate"
@@ -99,6 +100,7 @@ type sendMessageRequest struct {
 type chatsResponse struct {
 	Chats []chat.Chat `json:"chats"`
 }
+
 // sendMessageResponse carries only the persisted user message: the
 // assistant's reply is produced asynchronously (see chat.Service.Send) and
 // becomes visible through the existing GET /chats/{id} polling once it
@@ -149,22 +151,20 @@ func (s *Server) Router() http.Handler {
 		w.WriteHeader(200)
 	})
 
-	// Public: the login/signup pages, the shared theme script they (and the
-	// main app) load, their own CSS/JS, the kb-button/kb-field components
-	// they're built from, and the auth API that issues/clears the session
-	// cookie. Registered as exact paths so they take precedence over the
-	// "/*" static handler below regardless of which group added them — a
-	// logged-out user hitting the authenticated catch-all for any of this
-	// would otherwise get a login page with no styling and no working
-	// components.
+	// Public: the login/signup pages, their own CSS/JS, the shared component
+	// library they're built from (/ui/, below), and the auth API that
+	// issues/clears the session cookie. Registered as exact paths so they take
+	// precedence over the "/*" static handler below regardless of which group
+	// added them — a logged-out user hitting the authenticated catch-all for
+	// any of this would otherwise get a login page with no styling and no
+	// working components.
 	r.Get("/login.html", s.serveStatic("login.html"))
 	r.Get("/signup.html", s.serveStatic("signup.html"))
-	r.Get("/theme.js", s.serveStatic("theme.js"))
-	r.Get("/theme.css", s.serveStatic("theme.css"))
 	r.Get("/auth.css", s.serveStatic("auth.css"))
 	r.Get("/auth.js", s.serveStatic("auth.js"))
-	r.Get("/components/kb-button/*", s.serveStaticGlob("components/kb-button"))
-	r.Get("/components/kb-field/*", s.serveStaticGlob("components/kb-field"))
+	// The shared Lit component library (dp-* elements, tokens.css), also public
+	// because the login page is built from it.
+	r.Handle(ui.Prefix+"*", ui.Handler())
 	r.Post("/api/v1/auth/signup", s.signup)
 	r.Post("/api/v1/auth/login", s.login)
 	r.Post("/api/v1/auth/logout", s.logout)
@@ -212,15 +212,6 @@ func (s *Server) Router() http.Handler {
 func (s *Server) serveStatic(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, static, "static/"+name)
-	}
-}
-
-// serveStaticGlob serves every file under a directory (registered with a
-// chi "/*" wildcard route), for the handful of static subtrees that must
-// stay public alongside login.html/signup.html.
-func (s *Server) serveStaticGlob(dir string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFileFS(w, r, static, "static/"+dir+"/"+chi.URLParam(r, "*"))
 	}
 }
 

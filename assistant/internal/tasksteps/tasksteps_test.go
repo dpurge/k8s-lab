@@ -164,3 +164,30 @@ func TestNoCounterIsFine(t *testing.T) {
 	r, _ := recorder(store, nil)
 	r.Record(context.Background(), workflow.StepRecord{RunID: "r", State: "a", Outcome: workflow.OutcomeOK})
 }
+
+func TestAStepOfADelegatedWorkflowKeepsItsWorkflowAndDepthAndADelegationKeepsItsTarget(t *testing.T) {
+	store := &fakeStore{}
+	rec, _ := recorder(store, nil)
+	rec.Record(context.Background(), workflow.StepRecord{
+		RunID: "11111111-2222-4333-8444-555555555555", Step: 1, Attempt: 1, State: "route", Workflow: "orchestrator", Outcome: workflow.OutcomeOK, At: at,
+		Action: &workflow.Action{Type: workflow.ActionDelegate, Workflow: "hello", Message: "say hello", Reason: "a greeting"},
+	})
+	rec.Record(context.Background(), workflow.StepRecord{
+		RunID: "11111111-2222-4333-8444-555555555555", Step: 2, Attempt: 1, State: "ask", Workflow: "hello", Depth: 1, Outcome: workflow.OutcomeOK, At: at,
+	})
+	if len(store.steps) != 2 {
+		t.Fatalf("steps = %d", len(store.steps))
+	}
+	first, second := store.steps[0], store.steps[1]
+	if first.WorkflowID == nil || *first.WorkflowID != "orchestrator" || first.Depth != 0 {
+		t.Errorf("first = %+v", first)
+	}
+	if second.WorkflowID == nil || *second.WorkflowID != "hello" || second.Depth != 1 {
+		t.Errorf("second = %+v", second)
+	}
+	for _, want := range []string{`"type":"delegate"`, `"workflow":"hello"`, `"message":"say hello"`, `"reason":"a greeting"`} {
+		if !strings.Contains(string(first.Action), want) {
+			t.Errorf("the stored action lacks %s: %s", want, first.Action)
+		}
+	}
+}

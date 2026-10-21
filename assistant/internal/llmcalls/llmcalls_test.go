@@ -194,6 +194,52 @@ func TestUsageSumsOnlySuccessfulCallsPerUserAndModel(t *testing.T) {
 	}
 }
 
+func TestUsageKeepsProvidersApart(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.store.Insert(ctx, f.call("m", "ok", 10, 1, 0.1, 0))
+	other := f.call("m", "ok", 20, 2, 0.2, time.Minute)
+	other.ProviderID = "cloud"
+	f.store.Insert(ctx, other)
+	usage, err := f.store.UsageByUserAndModel(ctx, nil)
+	if err != nil || len(usage) != 2 {
+		t.Fatalf("the same model id under two providers is two rows: %+v %v", usage, err)
+	}
+	if usage[0].ProviderID != "cloud" || usage[1].ProviderID != "box" {
+		t.Errorf("providers = %q, %q (highest cost first)", usage[0].ProviderID, usage[1].ProviderID)
+	}
+}
+
+func TestAttemptsArePagedNewestFirstWithATotal(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		outcome := "ok"
+		if i == 2 {
+			outcome = "timeout"
+		}
+		if err := f.store.Insert(ctx, f.call("m", outcome, i, 0, 0, time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, total, err := f.store.Attempts(ctx, nil, 2, 1)
+	if err != nil || total != 5 || len(page) != 2 {
+		t.Fatalf("%+v %d %v", page, total, err)
+	}
+	if page[0].InputTokens != 3 || page[1].InputTokens != 2 || page[1].Outcome != "timeout" {
+		t.Errorf("newest first, offset 1, failures included: %+v", page)
+	}
+	since := base.Add(3 * time.Minute)
+	page, total, err = f.store.Attempts(ctx, &since, 10, 0)
+	if err != nil || total != 2 || len(page) != 2 {
+		t.Errorf("since: %+v %d %v", page, total, err)
+	}
+	past, total, err := f.store.Attempts(ctx, nil, 10, 50)
+	if err != nil || total != 5 || past == nil || len(past) != 0 {
+		t.Errorf("a page past the end is empty but the total stays: %#v %d %v", past, total, err)
+	}
+}
+
 func TestUsageFromADate(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

@@ -1,7 +1,7 @@
 ---
-version: 19
+version: 22
 status: approved
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 ## Languages & runtimes
@@ -20,7 +20,7 @@ updated: 2026-10-20
 
 ### Frontend libraries (knowledge app only)
 
-- **markdown-it** (`15.0.2`) — Markdown-to-HTML rendering for knowledge chat messages; vendored as a static file, no build step or npm/bundler introduced. Safe by default: raw HTML is escaped and dangerous link protocols (e.g., `javascript:`) are rejected by built-in link validation.
+- **markdown-it** (`15.0.2`) — Markdown-to-HTML rendering for knowledge chat messages; vendored as a static file; it is not part of the `shared/ui` build. Safe by default: raw HTML is escaped and dangerous link protocols (e.g., `javascript:`) are rejected by built-in link validation.
 - **DOMPurify** (`3.4.15`) — HTML sanitizer applied to markdown-it's rendered output before DOM insertion, providing defense-in-depth beyond markdown-it's own default safety. Also vendored, same as above.
 
 Both libraries are used in `knowledge/internal/server/static/index.html` only; dictionary and phraseforge are unaffected.
@@ -65,17 +65,20 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 | `assistant` | `assistant` | `assistant/CHANGELOG.md` | none (release workflow added in a later feature) | `specs/artifacts/assistant/roadmap.md` |
 | `environment` | `.` | `CHANGELOG.md` | none | |
 
-Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an additive `Headers` field for custom request headers) is consumed by phraseforge, knowledge and assistant; `shared/modelcfg` (the models.yaml schema, loader, lint, and credential and header resolution), `shared/yamlschema`, `shared/router` (the model router with its `ollama`, `openai`, `anthropic` and `vertex` providers and the `routertest` helpers) and `shared/retention` (batched, age-based purging) by phraseforge and assistant; `shared/postgres` by phraseforge and knowledge. A change under `shared/` needs entries in every artifact that consumes the changed package.
+Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an additive `Headers` field for custom request headers) is consumed by phraseforge, knowledge and assistant; `shared/modelcfg` (the models.yaml schema, loader, lint, and credential and header resolution), `shared/yamlschema`, `shared/router` (the model router with its `ollama`, `openai`, `anthropic` and `vertex` providers and the `routertest` helpers) and `shared/retention` (batched, age-based purging) by phraseforge and assistant; `shared/postgres` by phraseforge and knowledge; `shared/ui` (the Lit component library and its handler) by phraseforge, assistant and knowledge. A change under `shared/` needs entries in every artifact that consumes the changed package.
 
 ## Key conventions
 
-**Frontend components (per-app, not shared as files):**
-- Native Web Components (Custom Elements), light DOM only (no Shadow DOM) — so components keep inheriting each app's existing CSS custom-property theming instead of being isolated from it.
-- Naming: `<app-prefix>-<name>` custom element tags — e.g. knowledge uses `kb-*`, assistant uses `as-*`; phraseforge has begun adopting `pf-*` (started with `pf-button`/`pf-nav` on its header — see `specs/artifacts/phraseforge/roadmap.md` for the remaining templates).
-- File layout: one directory per component under that app's `static/components/<tag-name>/`: `component.js` (required — calls `customElements.define`), `component.html` (optional — a `<template>` fragment, fetched and cached on first use, following the same fetch+cache pattern phraseforge's `ime.js`/`pfLoadIme` already uses for IME data), `component.css` (optional — injected into `<head>` as a `<style>` tag once on first use, scoped by using the tag name as the outermost selector).
-- Loading: a consuming page includes one `<script src="/components/<tag>/component.js">` per component it uses; the component's own JS handles fetching its template and injecting its style, so the page needs nothing else.
-- Sharing model: **deliberate duplication**, not a shared file mechanism — each app (dictionary, phraseforge, knowledge are independent Go modules, each with its own `go:embed` static tree, no bundler) keeps its own copies of any component it needs. What's shared across apps is the *convention* (naming, file layout, light-DOM-plus-self-injecting-style pattern, testing approach below) — not literal files. This was an explicit choice over a Taskfile-copy-based sharing mechanism, favoring simplicity over strict DRY across apps.
-- Testing: each component gets a `component.test.js`, run under Node + `jsdom` — a dev-time-only dependency (never used to build or ship the actual assets, which stay zero-build-step). A small per-app `package.json` plus a Taskfile task (e.g. `task test-knowledge-frontend`) wires this up.
+**Frontend components (shared library `shared/ui`):**
+- Components are Lit 3.3.3 custom elements with Shadow DOM, written in TypeScript under `shared/ui/src/` using `static properties` (no decorators), so the source is also valid for Node's built-in type stripping. Lit, TypeScript and esbuild are pinned npm dependencies of `shared/ui` with a committed lockfile.
+- Build: `task build-ui` bundles the source with esbuild (ESM, minified, code splitting) into `shared/ui/dist/`, which is gitignored and never committed. A small core entry holds Lit and the common components (`dp-shell`, `dp-button`, `dp-card`, `dp-field`, `dp-dialog`, `dp-status-bar`, `dp-pager`, `dp-tabs`); catalog components are separate chunks that a page loads on demand. Type checking is `tsc --noEmit`.
+- A2UI renderer (assistant chat): `@a2ui/web_core` 0.14.0 (Apache-2.0, pinned exactly, with its dependencies `@preact/signals-core` and `@lit/context`) and `zod` 3.25.76 (the same version web_core uses, declared because `defineCatalog` builds argument schemas with it) are dependencies of `shared/ui`. It provides the A2UI v1.0 message processor, data model, binding, function evaluation and the Lit base element; the `dp-a2ui-*` components that draw the catalog are our own, under `shared/ui/src/a2ui/`, light-DOM and styled only by the design tokens. It is built as separate on-demand entries (`dist/a2ui.js`, about 118 KB gzipped, and the development gallery `dist/a2ui-gallery.js`) that only pages drawing A2UI surfaces import; `dp-core.js` does not include it. Components never write a `style` attribute (the assistant's Content-Security-Policy forbids inline styles); they use classes or CSSOM. The reference examples and conformance cases the tests use are copied unchanged under `shared/ui/src/a2ui/fixtures/` with the upstream commit recorded. Icons are 59 Material Design paths in `src/a2ui/icons.ts`, generated once from `@material-design-icons/svg` 0.14.15 (Apache-2.0; not a dependency), because the page's policy allows no icon font. The assistant's `ASSISTANT_A2UI_MEDIA_HOSTS` (bare https hosts, validated because they are written into the Content-Security-Policy) is the only configuration that changes the policy. The JSON schemas the assistant's server validates against will be vendored under `assistant/schemas/a2ui/v1_0/` when the server side is built.
+- Theming: components read only CSS custom properties (the phraseforge palette in `shared/ui/tokens.css`, light and dark selected by `data-theme` on `<html>`), so apps share one palette without sharing page CSS.
+- Naming: `dp-<name>` custom element tags (`dp-button`, `dp-card`, `dp-field`, `dp-dialog`, `dp-status-bar`, `dp-pager`, `dp-tabs`, `dp-shell`). The per-app `as-*`, `kb-*` and `pf-*` components are deleted as each app converts; new components are added to `shared/ui`, not to an app.
+- Layout: `dp-shell` provides the phraseforge layout (top bar, collapsible sidebar with remembered state, theme toggle, footer status bar) for every app with a GUI.
+- File layout: one directory per component under `shared/ui/src/components/<tag-name>/` with `component.ts` (calls `customElements.define`) and `component.test.ts`.
+- Sharing model: `shared/ui` is a Go package of the `k8s-lab/shared` module that embeds `dist/` with `go:embed` and exposes one handler; each app mounts it at `/ui/` and loads the core with one `<script type="module" src="/ui/dp-core.js">`. Apps already depend on `shared` through a `replace` directive. Because `dist/` is built, not committed, each app's Dockerfile gets one Node build stage for `shared/ui` (trusting the corporate CA for `npm ci`, the same way its Go stage does) before `go build`; locally, `task build-ui` runs before `go run` or `go test` of an app.
+- Testing: each component gets a `component.test.ts`, run directly on the TypeScript source with `node --test` (Node's built-in type stripping) under `jsdom`, with no compile step; `task test-ui` runs the tests and `tsc --noEmit`. Each app keeps its own frontend tests for its own pages.
 
 **JSON API (phraseforge, started with `phraseforge-spa-shell-texts`):**
 - `/api/v1/<resource>` — REST-shaped JSON endpoints (`GET`/`POST`/`GET one`/`PUT`/`DELETE`), same session-cookie auth (`requireAuth`) as the server-rendered pages.

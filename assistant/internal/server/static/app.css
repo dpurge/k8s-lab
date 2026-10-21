@@ -1,98 +1,82 @@
-/* Layout of the admin page. The shared palette lives in theme.css; each
-   as-* component owns its own component.css. Layout follows phraseforge and
-   knowledge: a sticky header with the brand and navigation, content in cards,
-   a fixed-height status bar at the bottom. */
+/* Layout of the admin page. The palette is /ui/tokens.css and the frame (top
+   bar, sidebar, main area, footer) is dp-shell; each as-* component owns its own
+   component.css. This file holds only what is the assistant's own. */
 body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 17px;
   background: var(--bg);
   color: var(--text);
   margin: 0;
-  min-height: 100vh;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  /* A bare grid column grows to the widest content's minimum width, which
-     would make the whole page scroll sideways on a phone; the table scrolls
-     inside its own wrapper instead. */
-  grid-template-columns: minmax(0, 1fr);
 }
 
-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  box-sizing: border-box;
-  height: 3.5rem;
-  display: flex;
-  gap: 1.5rem;
-  align-items: center;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 0 1.5rem;
+/* Until dp-shell is defined its content would show unstyled. Not visibility:
+   hidden, which would stop a field from taking focus. */
+dp-shell:not(:defined) {
+  opacity: 0;
 }
 
-header .brand {
+dp-shell {
+  --dp-shell-main-padding: 1.5rem;
+}
+
+a.brand {
   font-weight: 700;
   font-size: 1.15rem;
   color: var(--text);
   text-decoration: none;
 }
 
-header .spacer {
-  flex: 1;
-}
-
-.as-icon-button {
-  font: inherit;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  width: 2.25rem;
-  height: 2.25rem;
-  cursor: pointer;
-}
-
-.as-icon-button:hover {
-  background: var(--surface-alt);
-}
-
-main {
-  min-width: 0;
-  padding: 1.5rem;
-  max-width: 80rem;
-  width: 100%;
-  box-sizing: border-box;
-  margin: 0 auto;
-}
-
-footer {
-  padding: 0 1.5rem;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
 a {
   color: var(--link);
 }
 
-main as-card + as-card {
+#view dp-card {
+  --dp-card-padding: 1rem 1.25rem;
+  --dp-card-radius: 8px;
+  --dp-card-heading-size: 1.1rem;
+}
+
+#view dp-card + dp-card {
   margin-top: 1rem;
 }
 
-.as-chat-layout {
-  display: grid;
-  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
-  gap: 1rem;
-  align-items: start;
+/* The chat page: the conversation list is dp-shell's sidebar (wider than a
+   menu's), and the thread fills the main area to the edges and to the bottom. */
+dp-shell[data-chat] {
+  --dp-shell-sidebar-width: 20rem;
+  --dp-shell-main-padding: 0;
+  --dp-shell-main-padding-narrow: 0;
 }
 
-@media (max-width: 800px) {
-  .as-chat-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
+#view.as-chat-page {
+  height: 100%;
 }
 
 .as-not-found {
   margin: 0;
+}
+
+/* The Usage section's side panel: a column of links to its pages. */
+.as-section-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem;
+}
+
+.as-section-nav a {
+  color: var(--text);
+  text-decoration: none;
+  padding: 0.45rem 0.75rem;
+  border-radius: 4px;
+}
+
+.as-section-nav a:hover {
+  background: var(--surface-alt);
+}
+
+.as-section-nav a[aria-current="page"] {
+  background: var(--surface-alt);
+  font-weight: 600;
+  color: var(--link);
 }

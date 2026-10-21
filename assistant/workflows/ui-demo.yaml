@@ -1,0 +1,44 @@
+id: ui-demo
+version: 1
+description: Tries the chat's interface toolkit with no model. Shows every component on one surface, asks the page for the size of its window with a function call, then shows a small form, and ends with what you filled in. Scripted by the demo model.
+intents:
+  description: "Shows the chat's interface toolkit: a tour of every component, then a small form to fill in."
+  examples: ["show me the interface components", "let me try the form demo"]
+state_schema:
+  type: object
+  properties:
+    tour_shown: {type: boolean, description: "True once the tour of all components was shown."}
+    tour_done: {type: boolean, description: "True once the user pressed Continue on the tour."}
+    device_asked: {type: boolean, description: "True once the page was asked for the size of its window."}
+    viewport: {type: object, description: "What the page answered: width, height, pixelRatio and colorScheme of its window."}
+    form_shown: {type: boolean, description: "True once the form was shown."}
+    answers: {type: object, description: "The form's answers: name, topics, level and agree, as the interface sent them."}
+    summary: {type: string, description: "One sentence saying what the user filled in."}
+  required: [summary]
+  additionalProperties: false
+start: tour
+limits: {max_steps: 8, max_tokens: 20000, max_retries: 2, max_visits: 3}
+model_tags: [demo]
+states:
+  tour:
+    instructions: >-
+      Show the tour of the interface toolkit by replying with the ask_user action
+      whose payload has a question and an A2UI interface under "ui". When the
+      observation is an action named continue, go to device.
+    next: [device]
+  device:
+    instructions: >-
+      Ask the page for the size of its window: reply with the ask_user action
+      whose payload has under "ui" one callRendererFunction message for the
+      viewport function (no question). The page's answer is the next observation,
+      {"ui_function_response": ...}; record its value in viewport and go to form.
+    next: [form]
+  form:
+    instructions: >-
+      Show the form the same way, saying what the window was. When the observation is an action named
+      submit_form, record its context in answers, write one sentence about it in
+      summary, and go to done.
+    next: [done]
+  done:
+    instructions: Finished.
+    end: true

@@ -1,0 +1,26 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+video {
+  display: block;
+  width: 100%;
+  max-height: 24rem;
+  border-radius: 0.4rem;
+  background: #000;
+}
+
+.note,
+.caption {
+  font-size: 0.85rem;
+  color: var(--muted, #667);
+}
+
+.note {
+  padding: 1rem;
+  text-align: center;
+  background: var(--surface-alt, #f3f4f6);
+  border: 1px dashed var(--border, #d7dae0);
+  border-radius: 0.4rem;
+}

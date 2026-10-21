@@ -1,0 +1,74 @@
+:host {
+  display: contents;
+}
+
+dialog {
+  box-sizing: border-box;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+dialog::backdrop {
+  background: var(--dp-dialog-backdrop, rgba(0, 0, 0, 0.4));
+}
+
+.box {
+  box-sizing: border-box;
+  max-width: var(--dp-dialog-max-width, 28rem);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--dp-dialog-padding, 1.25rem);
+  background: var(--dp-dialog-bg, var(--surface, #ffffff));
+  color: var(--dp-dialog-color, var(--text, #1f2430));
+  border: 1px solid var(--dp-dialog-border-color, var(--border, #d7dae0));
+  border-radius: var(--dp-dialog-radius, 0.6rem);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+/* Room for structured content instead of one short message: wider, hugging its
+   content in height, and resizable from the bottom-right corner. */
+.box.wide {
+  width: min(var(--dp-dialog-wide-width, 64rem), 92vw);
+  min-width: 24rem;
+  max-width: 92vw;
+  min-height: 16rem;
+  max-height: 92vh;
+  overflow: auto;
+  resize: both;
+}
+
+.heading {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+}
+
+.message {
+  margin: 0 0 1rem;
+  white-space: pre-wrap;
+}
+
+.content {
+  display: none;
+}
+
+.content.has-content {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+/* An even rhythm between the pieces of the page's content, whatever they are. */
+::slotted(:not(:first-child)) {
+  margin-top: 1.25rem;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}

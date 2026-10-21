@@ -1,6 +1,9 @@
 id: hello
 version: 1
 description: A tiny conversation for trying the assistant by hand. It asks for the user's name, then greets them.
+intents:
+  description: "Greets the user by name: asks for their name, then says hello."
+  examples: ["say hello to me", "greet me", "hello"]
 state_schema:
   type: object
   properties:

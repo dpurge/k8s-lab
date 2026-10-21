@@ -14,7 +14,7 @@
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-run-trace/component.css";
+    link.href = "/static/components/as-run-trace/component.css";
     document.head.appendChild(link);
   }
 
@@ -25,6 +25,13 @@
     return node;
   }
 
+  // stateLabel names the state; a step of a workflow the request was handed to
+  // also says which workflow, and is indented by how deep it is.
+  function stateLabel(step) {
+    if (!step.depth) return step.state;
+    return `${"↳ ".repeat(step.depth)}${step.workflow_id ? `${step.workflow_id} · ` : ""}${step.state}`;
+  }
+
   // describeAction is one line saying what the model chose to do.
   function describeAction(step) {
     const a = step.action;
@@ -32,6 +39,7 @@
     if (a.type === "tool") return `tool ${a.tool}${a.args && a.args.query ? ` "${a.args.query}"` : ""}`;
     if (a.type === "goto") return `go to ${a.state}`;
     if (a.type === "ask_user") return "ask the user";
+    if (a.type === "delegate") return `hand over to ${a.workflow}${a.reason ? ` (${a.reason})` : ""}`;
     return String(a.type);
   }
 
@@ -113,7 +121,7 @@
         const error = el("td", step.error ? "as-trace-error has-error" : "as-trace-error", step.error || f.DASH);
         tr.append(
           el("td", "as-trace-step", label),
-          el("td", "as-trace-state", step.state),
+          el("td", "as-trace-state", stateLabel(step)),
           el("td", "as-trace-action", describeAction(step)),
           outcome,
           el("td", "as-trace-tokens", tokens),

@@ -1,5 +1,5 @@
-// Package demo is a model that is not a model: it acts out one fixed workflow,
-// hello, from inside the assistant, instantly and with no load. It exists so the
+// Package demo is a model that is not a model: it acts out three fixed workflows,
+// hello, ui-demo and orchestrator, from inside the assistant, instantly and with no load. It exists so the
 // admin interface, the worker and the engine can be tried by hand, and tested,
 // without a real model, whose slowness and mistakes hide everything else. It
 // refuses every other workflow, so it cannot be mistaken for the real thing.
@@ -16,7 +16,7 @@ import (
 	"k8s-lab/shared/modelcfg"
 )
 
-// Provider answers the hello workflow's steps.
+// Provider answers the steps of the hello, ui-demo and orchestrator workflows.
 type Provider struct{}
 
 // New returns the provider.
@@ -32,6 +32,10 @@ type stepInput struct {
 	} `json:"state"`
 	RunState    map[string]any `json:"run_state"`
 	Observation any            `json:"observation"`
+	// Delegates are the workflows a delegating state may hand a request to.
+	Delegates []struct {
+		ID string `json:"id"`
+	} `json:"delegates"`
 }
 
 // Complete implements llm.Provider.
@@ -40,11 +44,29 @@ func (Provider) Complete(_ context.Context, _ modelcfg.Provider, _ modelcfg.Mode
 	if err := json.Unmarshal([]byte(req.Input), &in); err != nil {
 		return workflow.Response{}, &llm.Failure{Kind: llm.FailClient, Err: fmt.Errorf("the demo model answers only workflow steps, and this input is not one: %w", err)}
 	}
-	if in.Workflow.ID != "hello" {
-		return workflow.Response{}, &llm.Failure{Kind: llm.FailClient, Err: fmt.Errorf("the demo model knows only the hello workflow, not %q", in.Workflow.ID)}
+	var reply string
+	switch in.Workflow.ID {
+	case "hello":
+	case "orchestrator":
+		ids := make([]string, len(in.Delegates))
+		for i, d := range in.Delegates {
+			ids[i] = d.ID
+		}
+		r, err := orchestratorReply(in.State.Name, in.Observation, ids)
+		if err != nil {
+			return workflow.Response{}, &llm.Failure{Kind: llm.FailClient, Err: err}
+		}
+		return workflow.Response{Text: r, InputTokens: len(req.Input) / 4, OutputTokens: len(r) / 4}, nil
+	case "ui-demo":
+		r, err := uiDemoReply(in.State.Name, in.Observation, in.RunState)
+		if err != nil {
+			return workflow.Response{}, &llm.Failure{Kind: llm.FailClient, Err: err}
+		}
+		return workflow.Response{Text: r, InputTokens: len(req.Input) / 4, OutputTokens: len(r) / 4}, nil
+	default:
+		return workflow.Response{}, &llm.Failure{Kind: llm.FailClient, Err: fmt.Errorf("the demo model knows only the hello, ui-demo and orchestrator workflows, not %q", in.Workflow.ID)}
 	}
 
-	var reply string
 	switch in.State.Name {
 	case "ask":
 		asked, _ := in.RunState["asked"].(bool)

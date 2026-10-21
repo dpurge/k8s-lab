@@ -1,32 +1,26 @@
-# The models the dev cluster's assistant uses: the Ollama on the laptop that
-# runs the cluster, reached from a pod as host.docker.internal. Deployed as the
-# assistant-models ConfigMap by `task deploy-assistant`; check it with
+# The models the dev cluster's assistant uses: the same as phraseforge's dev
+# cluster, the Ollama on the laptop that runs the cluster, reached from a pod as
+# host.docker.internal. The GPU machine, Vertex AI and OpenRouter are the prod
+# cluster's (see models.example.yaml). Deployed as the assistant-models ConfigMap
+# by `task deploy-assistant`; check it with
 #   go run . models validate models.dev.yaml
 providers:
-  - id: ollama-cpu
+  - id: ollama
     type: ollama
     base_url: http://host.docker.internal:11434
     api_key_from: ""
-  # Gemini on Vertex AI, billed to this project; authenticated with the access
-  # token that `task refresh-assistant-vertex-token` writes into the
-  # assistant-vertex Secret, which the Deployment mounts at this path. The file
-  # is read on every call, so a refreshed token needs no restart; until it
-  # exists this provider is skipped (reason missing_credentials).
-  - id: gcp
-    type: vertex
-    project: np-te-core-ai
-    location: us-central1
-    api_key_from: file:/etc/assistant-vertex/token
   # Answers the hello workflow from inside the assistant, with no load, to try the
   # interface by hand. It refuses every other workflow.
   - id: demo
     type: demo
 
 models:
-  - id: gemma-laptop
-    provider: ollama-cpu
+  # Phraseforge's model, with the tags the assistant's workflows ask for: default
+  # (as in phraseforge), chat and review.
+  - id: gemma4-12b
+    provider: ollama
     model: gemma4:12b
-    tags: [chat, review, cheap]
+    tags: [default, chat, review, cheap]
     priority: 10
     # The laptop is CPU-bound: allow for a model load, then stop waiting when
     # output has stalled.
@@ -37,23 +31,28 @@ models:
       first_token_timeout_seconds: 300
       idle_timeout_seconds: 60
       overall_timeout_seconds: 600
-
-  # The cheapest quick Gemini the project lists. Prices are left out until they
-  # are copied from the Vertex AI price list, so its cost shows as $0.
-  # Its priority is below gemma-laptop's on purpose: testing in the dev cluster
-  # goes to ollama-cpu, and Vertex is only the fallback when that model fails.
-  - id: gemini-flash-lite
-    provider: gcp
-    model: gemini-2.5-flash-lite
-    tags: [chat, review, cheap]
-    priority: 5
+  # The same model with room for an interface: a form in A2UI is several times
+  # longer than a chat reply, so the output is not cut at 512 tokens. Only
+  # workflows that ask for the tag ui (ui-compose) use it.
+  - id: gemma4-12b-ui
+    provider: ollama
+    model: gemma4:12b
+    tags: [ui]
+    priority: 10
     options:
+      num_ctx: 8192
       num_predict: 2048
-      overall_timeout_seconds: 120
+      think: false
+      first_token_timeout_seconds: 300
+      idle_timeout_seconds: 90
+      overall_timeout_seconds: 900
+  # The demo model also plays the orchestrator (it routes by keywords), so that
+  # routing and delegation can be tried without loading the laptop; give the tag
+  # orchestrator to a real model instead to see a model route.
   - id: demo-hello
     provider: demo
     model: hello
-    tags: [demo]
+    tags: [demo, orchestrator]
     priority: 1
 
 routing:

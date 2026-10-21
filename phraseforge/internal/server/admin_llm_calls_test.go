@@ -61,6 +61,7 @@ func newLLMCallsAPI(t *testing.T) *llmCallsAPI {
 		r.Use(f.srv.requireAdmin)
 		r.Get("/api/v1/admin/llm-aggregates", f.srv.apiAdminLLMAggregates)
 		r.Get("/api/v1/admin/llm-calls", f.srv.apiAdminLLMCalls)
+		r.Get("/api/v1/admin/llm-usage", f.srv.apiAdminLLMUsage)
 		r.Delete("/api/v1/admin/llm-calls", f.srv.apiAdminPurgeLLMCalls)
 	})
 	f.router = r
@@ -234,6 +235,9 @@ func TestLLMAggregatesAndCallsRejectBadParameters(t *testing.T) {
 		"/api/v1/admin/llm-calls?limit=201",
 		"/api/v1/admin/llm-calls?limit=0",
 		"/api/v1/admin/llm-calls?limit=many",
+		"/api/v1/admin/llm-calls?offset=-1",
+		"/api/v1/admin/llm-calls?offset=x",
+		"/api/v1/admin/llm-usage?since=yesterday",
 	} {
 		var resp struct {
 			Error struct{ Code string } `json:"error"`
@@ -318,14 +322,14 @@ func TestLLMCallsAreNewestFirstFilteredAndCapped(t *testing.T) {
 	}
 }
 
-func TestLLMCallsDefaultLimitIs50AndTheMaximumIs200(t *testing.T) {
+func TestLLMCallsDefaultLimitIs25AndTheMaximumIs200(t *testing.T) {
 	f := newLLMCallsAPI(t)
 	if _, err := f.srv.db.Exec(context.Background(), `INSERT INTO llm_calls (model_id, provider_id, model_name, started_at, duration_ms, outcome)
 		SELECT 'm', 'p', 'n', now() - (g || ' seconds')::interval, 1, 'ok' FROM generate_series(1, 230) g`); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.calls(t, ""); len(got.Items) != 50 {
-		t.Errorf("default: %d items, want 50", len(got.Items))
+	if got := f.calls(t, ""); len(got.Items) != 25 {
+		t.Errorf("default: %d items, want 25", len(got.Items))
 	}
 	if got := f.calls(t, "?limit=200"); len(got.Items) != 200 {
 		t.Errorf("limit=200: %d items, want 200", len(got.Items))
@@ -375,6 +379,7 @@ func TestLLMCallsRoutesRefuseNonAdminsLikeTheOtherAdminRoutes(t *testing.T) {
 	for _, c := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/admin/llm-aggregates"},
 		{http.MethodGet, "/api/v1/admin/llm-calls"},
+		{http.MethodGet, "/api/v1/admin/llm-usage"},
 		{http.MethodDelete, "/api/v1/admin/llm-calls?older_than_days=0"},
 	} {
 		if rec := f.do(f.studentID, c.method, c.path); rec.Code != http.StatusNotFound {
@@ -394,6 +399,7 @@ func TestLLMCallsRoutesAreInTheRealRouterBehindTheLogin(t *testing.T) {
 	for _, c := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/admin/llm-aggregates"},
 		{http.MethodGet, "/api/v1/admin/llm-calls"},
+		{http.MethodGet, "/api/v1/admin/llm-usage"},
 		{http.MethodDelete, "/api/v1/admin/llm-calls?older_than_days=0"},
 	} {
 		rec := httptest.NewRecorder()
@@ -408,13 +414,14 @@ func TestLLMCallsResponsesHaveOnlyTheDocumentedFields(t *testing.T) {
 	f := newLLMCallsAPI(t)
 	seedAggregateRows(t, f)
 	aggregateKeys := " model_id provider_id kind calls ok_calls error_calls timeout_calls rate_limited_calls canceled_calls success_rate input_tokens output_tokens mean_duration_ms p50_duration_ms p95_duration_ms output_tokens_per_second cost_usd "
-	callKeys := " id started_at kind source_language target_language job_id model_id provider_id model_name tags input_tokens output_tokens cost_usd duration_ms outcome error http_status request_id "
+	callKeys := " id started_at user_id username kind source_language target_language job_id model_id provider_id model_name tags input_tokens output_tokens cost_usd duration_ms outcome error http_status request_id "
 	for _, c := range []struct {
 		path string
 		keys string
 	}{
 		{"/api/v1/admin/llm-aggregates?group_by=kind_model", aggregateKeys},
 		{"/api/v1/admin/llm-calls", callKeys},
+		{"/api/v1/admin/llm-usage", " user_id username provider_id model_id calls input_tokens output_tokens cost_usd "},
 	} {
 		body := f.adminGet(t, c.path, http.StatusOK)
 		assertNoLocatingInfo(t, string(body))
@@ -431,5 +438,101 @@ func TestLLMCallsResponsesHaveOnlyTheDocumentedFields(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestLLMCallsArePagedWithATotalAndNameTheUser(t *testing.T) {
+	f := newLLMCallsAPI(t)
+	for i := 0; i < 5; i++ {
+		c := llmcalls.Call{ModelID: "m", StartedAt: hoursAgo(float64(10 - i)), Outcome: "ok", InputTokens: i}
+		if i%2 == 0 {
+			c.UserID = &f.studentID
+		}
+		f.seed(t, c)
+	}
+	var page struct {
+		Items  []map[string]any `json:"items"`
+		Total  int              `json:"total"`
+		Limit  int              `json:"limit"`
+		Offset int              `json:"offset"`
+	}
+	if err := json.Unmarshal(f.adminGet(t, "/api/v1/admin/llm-calls?limit=2&offset=1", http.StatusOK), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 5 || page.Limit != 2 || page.Offset != 1 || len(page.Items) != 2 {
+		t.Fatalf("page = %+v", page)
+	}
+	// Newest first: i=4,3,2,1,0; offset 1 starts at i=3 (no user) then i=2 (the student).
+	if page.Items[0]["input_tokens"] != float64(3) || page.Items[0]["user_id"] != nil || page.Items[0]["username"] != nil {
+		t.Errorf("first = %v", page.Items[0])
+	}
+	if page.Items[1]["input_tokens"] != float64(2) || page.Items[1]["username"] != "student" || page.Items[1]["user_id"] != float64(f.studentID) {
+		t.Errorf("second = %v", page.Items[1])
+	}
+	if err := json.Unmarshal(f.adminGet(t, "/api/v1/admin/llm-calls?limit=2&offset=40", http.StatusOK), &page); err != nil || len(page.Items) != 0 || page.Total != 5 {
+		t.Errorf("a page past the end is empty and the total stays: %+v %v", page, err)
+	}
+	if got := f.calls(t, "?model_id=nothing"); len(got.Items) != 0 {
+		t.Errorf("no match: %d", len(got.Items))
+	}
+	var none struct{ Total int }
+	if err := json.Unmarshal(f.adminGet(t, "/api/v1/admin/llm-calls?model_id=nothing", http.StatusOK), &none); err != nil || none.Total != 0 {
+		t.Errorf("total of no match = %d, %v", none.Total, err)
+	}
+}
+
+type usageResponse struct {
+	Items []map[string]any `json:"items"`
+}
+
+func (f *llmCallsAPI) usage(t *testing.T, query string) usageResponse {
+	t.Helper()
+	var resp usageResponse
+	if err := json.Unmarshal(f.adminGet(t, "/api/v1/admin/llm-usage"+query, http.StatusOK), &resp); err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestLLMUsageSumsOnlySuccessfulCallsPerUserProviderAndModel(t *testing.T) {
+	f := newLLMCallsAPI(t)
+	ada, bob := f.adminID, f.studentID
+	seed := func(user *int64, provider, model, outcome string, in, out int, cost float64, ago float64) {
+		f.seed(t, llmcalls.Call{UserID: user, ProviderID: provider, ModelID: model, Outcome: outcome, InputTokens: in, OutputTokens: out, CostUSD: cost, StartedAt: hoursAgo(ago)})
+	}
+	seed(&ada, "gpu", "big", "ok", 100, 10, 0.5, 48)
+	seed(&ada, "gpu", "big", "ok", 200, 20, 1.0, 1)
+	seed(&ada, "gpu", "big", "error", 0, 0, 0, 1)
+	seed(&ada, "cloud", "big", "ok", 7, 7, 0.25, 1)
+	seed(&bob, "gpu", "small", "ok", 50, 5, 0, 1)
+	seed(nil, "gpu", "small", "ok", 5, 1, 0, 1)
+
+	items := f.usage(t, "").Items
+	if len(items) != 4 {
+		t.Fatalf("items = %v, want 4 (ada gpu/big, ada cloud/big, bob, no user)", items)
+	}
+	first := items[0]
+	if first["username"] != "admin" || first["provider_id"] != "gpu" || first["model_id"] != "big" || first["calls"] != float64(2) ||
+		first["input_tokens"] != float64(300) || first["output_tokens"] != float64(30) || !near(first["cost_usd"], 1.5) {
+		t.Errorf("first (highest cost, the failed call not counted) = %v", first)
+	}
+	last := items[len(items)-1]
+	if last["user_id"] != nil || last["username"] != nil {
+		t.Errorf("a call with no user has no user: %v", last)
+	}
+	since := f.usage(t, "?since="+url.QueryEscape(hoursAgo(2).Format(time.RFC3339))).Items
+	var calls float64
+	for _, it := range since {
+		calls += it["calls"].(float64)
+	}
+	if calls != 4 {
+		t.Errorf("calls since 2 hours ago = %v, want 4 (the 48-hour-old call is out)", calls)
+	}
+}
+
+func TestLLMUsageOfNoCallsIsAnEmptyArray(t *testing.T) {
+	f := newLLMCallsAPI(t)
+	if body := string(f.adminGet(t, "/api/v1/admin/llm-usage", http.StatusOK)); strings.TrimSpace(body) != `{"items":[]}` {
+		t.Errorf("body %s", body)
 	}
 }

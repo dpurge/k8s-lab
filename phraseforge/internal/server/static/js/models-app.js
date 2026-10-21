@@ -69,7 +69,8 @@
     const tags = (item.tags || [])
       .map((t) => `<a class="badge tag-link" href="#" data-tag-filter="${esc(t)}">${esc(t)}</a>`)
       .join("");
-    const card = document.createElement("pf-card");
+    const card = document.createElement("dp-card");
+    card.setAttribute("interactive", "");
     card.innerHTML = `
       <h2><a href="#" data-open="${item.id}">${esc(item.title)}</a></h2>
       <div class="meta">
@@ -98,15 +99,15 @@
     const confirmDialog = document.getElementById("confirmDialog");
     const container = document.createElement("div");
     container.innerHTML = `
-      <pf-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
+      <dp-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
         <select id="dlgExportLanguage">${languageOptions(languageFilter)}</select>
-      </pf-field>
-      <pf-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
+      </dp-field>
+      <dp-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
         <select id="dlgExportScript">${scriptOptions()}</select>
-      </pf-field>
-      <pf-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
+      </dp-field>
+      <dp-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
         <input type="text" id="dlgExportTags" placeholder="${esc(T("texts.field_tags_hint"))}">
-      </pf-field>
+      </dp-field>
     `;
     const languageSelect = container.querySelector("#dlgExportLanguage");
     const scriptSelect = container.querySelector("#dlgExportScript");
@@ -164,9 +165,9 @@
         ${
           BOOT.navFlags.canCreateAny
             ? `<div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                <pf-button variant="primary" id="newListBtn">${esc(T("texts.new"))}</pf-button>
-                <pf-button variant="secondary" id="exportModelsBtn">${esc(T("texts.export"))}</pf-button>
-                <pf-button variant="secondary" id="importModelsBtn">${esc(T("texts.import"))}</pf-button>
+                <dp-button variant="primary" id="newListBtn">${esc(T("texts.new"))}</dp-button>
+                <dp-button variant="secondary" id="exportModelsBtn">${esc(T("texts.export"))}</dp-button>
+                <dp-button variant="secondary" id="importModelsBtn">${esc(T("texts.import"))}</dp-button>
                 <input type="file" id="importModelsFile" accept=".yaml,.yml" style="display:none;">
               </div>`
             : ""
@@ -243,13 +244,13 @@
     });
 
     if (pageCount > 1) {
-      const pager = document.createElement("pf-pager");
+      const pager = document.createElement("dp-pager");
       pager.style.marginTop = "1.5rem";
       pager.setAttribute("page", String(page));
       pager.setAttribute("page-count", String(pageCount));
       pager.setAttribute("prev-label", T("texts.pagination_previous"));
       pager.setAttribute("next-label", T("texts.pagination_next"));
-      pager.addEventListener("pf-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
+      pager.addEventListener("dp-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
       container.appendChild(pager);
     }
   }
@@ -263,17 +264,17 @@
         <form id="newListForm">
           <input type="text" id="title" placeholder="${esc(T("texts.field_title"))}" autofocus required>
           <div class="field-row">
-            <pf-field label="${esc(T("texts.field_language"))}" for="language">
+            <dp-field label="${esc(T("texts.field_language"))}" for="language">
               <select id="language" required>${languageOptions()}</select>
-            </pf-field>
-            <pf-field label="${esc(T("texts.field_script"))}" for="script">
+            </dp-field>
+            <dp-field label="${esc(T("texts.field_script"))}" for="script">
               <select id="script" required>${scriptOptions("latn")}</select>
-            </pf-field>
+            </dp-field>
           </div>
-          <pf-field label="${esc(T("texts.field_tags"))}" for="tags">
+          <dp-field label="${esc(T("texts.field_tags"))}" for="tags">
             <input type="text" id="tags" placeholder="${esc(T("texts.field_tags_hint"))}">
-          </pf-field>
-          <pf-button variant="primary" type="submit">${esc(T("texts.save"))}</pf-button>
+          </dp-field>
+          <dp-button variant="primary" type="submit">${esc(T("texts.save"))}</dp-button>
         </form>
       </div>
       <p class="meta" style="margin-top:1rem;">${esc(T("models.new_hint"))}</p>
@@ -315,10 +316,10 @@
       <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <div class="resource-header">
         <div class="resource-actions">
-          <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
-          ${list.canEdit ? `<pf-button variant="secondary" type="button" id="generateMissingTranslationsBtn">${esc(T("models.generate_missing_translations"))}</pf-button>` : ""}
-          ${list.canEdit ? `<pf-button variant="secondary" type="button" id="reviewBtn">${esc(T("vocabulary.review"))}</pf-button>` : ""}
-          ${list.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
+          <dp-button variant="secondary" type="button" id="copyBtn">Copy</dp-button>
+          ${list.canEdit ? `<dp-button variant="secondary" type="button" id="generateMissingTranslationsBtn">${esc(T("models.generate_missing_translations"))}</dp-button>` : ""}
+          ${list.canEdit ? `<dp-button variant="secondary" type="button" id="reviewBtn">${esc(T("vocabulary.review"))}</dp-button>` : ""}
+          ${list.canEdit ? `<dp-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</dp-button><dp-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</dp-button>` : ""}
         </div>
         <div>
           <h1 style="margin-bottom:0.25rem;">${esc(list.title)}</h1>
@@ -331,7 +332,7 @@
     `;
     document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
-      phraseforgeCopyMarkdown("copy-models-markdown", e.currentTarget.querySelector("button"));
+      phraseforgeCopyMarkdown("copy-models-markdown", e.currentTarget);
     });
     const generateMissingTranslationsBtn = document.getElementById("generateMissingTranslationsBtn");
     if (generateMissingTranslationsBtn) {
@@ -440,7 +441,7 @@
   }
 
   function button(label, variant, onClick) {
-    const b = el("pf-button", { variant, type: "button" }, label);
+    const b = el("dp-button", { variant, type: "button" }, label);
     b.addEventListener("click", onClick);
     return b;
   }
@@ -499,7 +500,7 @@
   }
 
   // openReviewDialog shows one item's proposals with Apply and Dismiss for each
-  // and for all, inside pf-dialog's showContent. The dialog stays open while
+  // and for all, inside dp-dialog's showContent. The dialog stays open while
   // proposals are acted on; on close the View page reloads if anything was
   // applied, else only the Review column refreshes.
   async function openReviewDialog(listId, position, list, refreshColumn, reloadView) {
@@ -643,36 +644,36 @@
         <form id="listMetaForm">
           <input type="text" id="listTitle" value="${esc(list.title)}" required>
           <div class="field-row">
-            <pf-field label="${esc(T("texts.field_language"))}" for="language">
+            <dp-field label="${esc(T("texts.field_language"))}" for="language">
               <select id="language" required>${languageOptions(list.language)}</select>
-            </pf-field>
-            <pf-field label="${esc(T("texts.field_script"))}" for="script">
+            </dp-field>
+            <dp-field label="${esc(T("texts.field_script"))}" for="script">
               <select id="script" required>${scriptOptions(list.script)}</select>
-            </pf-field>
+            </dp-field>
           </div>
-          <pf-field label="${esc(T("texts.field_tags"))}" for="tags">
+          <dp-field label="${esc(T("texts.field_tags"))}" for="tags">
             <input type="text" id="tags" value="${esc((list.tags || []).join(", "))}" placeholder="${esc(T("texts.field_tags_hint"))}">
-          </pf-field>
-          <pf-button variant="primary" type="submit">${esc(T("texts.save_changes"))}</pf-button>
+          </dp-field>
+          <dp-button variant="primary" type="submit">${esc(T("texts.save_changes"))}</dp-button>
         </form>
       </div>
 
       <h2 style="margin-top:2rem;">${esc(T(isEdit ? "models.edit_item" : "models.add_item"))}</h2>
       <div class="form-card" style="max-width: none;">
         <form id="itemForm">
-          <pf-field label="${esc(T("models.col_phrase"))}" for="field-source">
+          <dp-field label="${esc(T("models.col_phrase"))}" for="field-source">
             <input type="text" id="field-source" value="${esc(editingItem?.phrase)}" autofocus required>
-          </pf-field>
-          <pf-field id="transcription-group" label="${esc(T("models.col_transcription"))}" for="field-transcription">
+          </dp-field>
+          <dp-field id="transcription-group" label="${esc(T("models.col_transcription"))}" for="field-transcription">
             <input type="text" id="field-transcription" value="${esc(editingItem?.transcription)}">
-          </pf-field>
-          <pf-field label="${esc(T("models.col_translation"))}" for="translation">
+          </dp-field>
+          <dp-field label="${esc(T("models.col_translation"))}" for="translation">
             <input type="text" id="translation" value="${esc(editingItem?.translation)}">
-          </pf-field>
+          </dp-field>
           <div class="form-actions">
-            <pf-button variant="primary" type="submit">${esc(T(isEdit ? "models.save_item" : "models.add_item"))}</pf-button>
-            ${isEdit && !editingItem.transcription ? `<pf-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</pf-button>` : ""}
-            ${isEdit && !editingItem.translation ? `<pf-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</pf-button>` : ""}
+            <dp-button variant="primary" type="submit">${esc(T(isEdit ? "models.save_item" : "models.add_item"))}</dp-button>
+            ${isEdit && !editingItem.transcription ? `<dp-button variant="secondary" class="transcribe-action" type="button" id="transcribeBtn">${esc(T("llm.transcribe"))}</dp-button>` : ""}
+            ${isEdit && !editingItem.translation ? `<dp-button variant="secondary" type="button" id="translateBtn">${esc(T("llm.translate"))}</dp-button>` : ""}
           </div>
           ${isEdit ? `<a href="#" id="cancelEditLink" class="back-link">${esc(T("models.cancel_edit"))}</a>` : ""}
         </form>

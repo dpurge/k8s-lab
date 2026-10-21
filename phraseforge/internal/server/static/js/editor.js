@@ -95,12 +95,12 @@ let pfActiveTabName = 'source';
 function pfRefreshActionVisibility(name) {
   if (document.querySelectorAll('.editor-tab-btn').length === 0) return;
   // layout.html's own `.transcribe-action { display: none; }` rule (a class
-  // selector) beats `pf-button { display: inline-block; }` (a type
+  // selector) beats `dp-button { display: inline-block; }` (a type
   // selector) by specificity — setting style.display to '' only clears the
   // inline override and falls back to the stylesheet, which still says
   // none. Must set an explicit non-empty value to actually win; only an
   // inline style (any non-empty value) can override a same-importance
-  // stylesheet rule, specificity or not. See the same-shaped pf-field/
+  // stylesheet rule, specificity or not. See the same-shaped dp-field/
   // [hidden] gotcha found in admin-app.js.
   document.querySelectorAll('.transcribe-action').forEach((button) => {
     button.style.display = name === 'transcription' && pfNeedsTranscription ? 'inline-block' : 'none';

@@ -339,6 +339,8 @@ func TestTaskStepsTableHasTheAgreedColumns(t *testing.T) {
 		{"output_tokens", "integer", false, true},
 		{"duration_ms", "integer", false, true},
 		{"at", "timestamp with time zone", false, false},
+		{"workflow_id", "text", true, false},
+		{"depth", "integer", false, true},
 	}
 	got := columnsOf(t, pool, "task_steps")
 	if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -423,6 +425,7 @@ func TestConversationsAndMessagesTablesHaveTheAgreedColumns(t *testing.T) {
 		{"kind", "text", false, true},
 		{"text", "text", false, false},
 		{"task_id", "uuid", true, false},
+		{"ui", "jsonb", true, false},
 		{"created_at", "timestamp with time zone", false, true},
 	}
 	if got := columnsOf(t, pool, "messages"); fmt.Sprint(got) != fmt.Sprint(wantMessages) {

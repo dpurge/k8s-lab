@@ -60,6 +60,36 @@
       }
     },
     "model_tags": { "$ref": "#/$defs/model_tags" },
+    "intents": {
+      "description": "What the workflow handles, for the orchestrator that routes a user's message to a workflow. A workflow without intents is never offered.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "examples": {
+          "description": "Requests the workflow handles, in a user's words.",
+          "type": "array",
+          "maxItems": 6,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "ui": {
+      "description": "The workflow may show interfaces (A2UI) in the payload of ask_user. The prompt gets a guide to the catalog; an interface in a reply is validated before the reply is accepted, and an invalid one is sent back to the model within max_retries.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalogs"],
+      "properties": {
+        "catalogs": {
+          "description": "The catalogs the model may use. Only basic exists.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["basic"] }
+        }
+      }
+    },
     "states": {
       "description": "The states of the machine, by name.",
       "type": "object",
@@ -107,6 +137,10 @@
           "minLength": 1
         },
         "model_tags": { "$ref": "#/$defs/model_tags" },
+        "delegate": {
+          "description": "The model may hand a request to another workflow from this state (the delegate action). The workflows it may name are those that declare intents.",
+          "type": "boolean"
+        },
         "output": {
           "description": "Kind of output the state produces; selects the output prompt snippet.",
           "type": "string",

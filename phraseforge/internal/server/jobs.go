@@ -140,11 +140,11 @@ func (s *Server) apiDeleteAdminJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apiClearAdminJobs bulk-deletes every done job — see
-// jobs.Service.DeleteAllDone's own doc comment on why only 'done' (not
-// pending/running/failed/cancelled) is safe to clear without per-row review.
+// apiClearAdminJobs bulk-deletes every completed and cancelled job — see
+// jobs.Service.DeleteCompletedAndCancelled's own doc comment on why only those
+// (not pending/running/failed) are safe to clear without per-row review.
 func (s *Server) apiClearAdminJobs(w http.ResponseWriter, r *http.Request) {
-	count, err := s.jobs.DeleteAllDone(r.Context())
+	count, err := s.jobs.DeleteCompletedAndCancelled(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

@@ -40,12 +40,21 @@ func (r *Runner) Run(ctx context.Context, t tasks.Task) (tasks.Outcome, error) {
 
 // Info describes a workflow a task can name.
 type Info struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
+	// Intents say what a YAML workflow handles, when it declares them: the
+	// workflows the orchestrator may route to.
+	Intents     *IntentInfo `json:"intents"`
+	ID          string      `json:"id"`
+	Description string      `json:"description"`
 	// Kind is "builtin" or "yaml".
 	Kind string `json:"kind"`
 	// PayloadHint is a payload that works as a starting point.
 	PayloadHint string `json:"payload_hint"`
+}
+
+// IntentInfo is what a workflow handles, as the API shows it.
+type IntentInfo struct {
+	Description string   `json:"description"`
+	Examples    []string `json:"examples"`
 }
 
 // builtinInfo describes the built-in workflows; the built-ins themselves
@@ -66,7 +75,11 @@ func (r *Runner) Catalog() []Info {
 	}
 	if r.engine != nil {
 		for _, id := range r.engine.Names() {
-			out = append(out, Info{ID: id, Description: r.engine.Workflows[id].Description, Kind: "yaml", PayloadHint: `{"message": "start"}`})
+			info := Info{ID: id, Description: r.engine.Workflows[id].Description, Kind: "yaml", PayloadHint: `{"message": "start"}`}
+			if in := r.engine.Workflows[id].Intents; in != nil {
+				info.Intents = &IntentInfo{Description: in.Description, Examples: in.Examples}
+			}
+			out = append(out, info)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -87,6 +100,24 @@ func (r *Runner) Names() []string {
 type EngineRunner struct {
 	Engine    *workflow.Engine
 	Workflows map[string]*workflow.Workflow
+}
+
+// Workflow returns a YAML workflow by id (workflow.Delegates).
+func (e *EngineRunner) Workflow(id string) (*workflow.Workflow, bool) {
+	wf, ok := e.Workflows[id]
+	return wf, ok
+}
+
+// Intents lists the workflows offered for delegation: the YAML workflows that
+// declare intents, by id; one without is never offered (workflow.Delegates).
+func (e *EngineRunner) Intents() []workflow.IntentInfo {
+	var out []workflow.IntentInfo
+	for _, id := range e.Names() {
+		if in := e.Workflows[id].Intents; in != nil {
+			out = append(out, workflow.IntentInfo{ID: id, Description: in.Description, Examples: in.Examples})
+		}
+	}
+	return out
 }
 
 // Has reports whether a YAML workflow has the id.
@@ -159,7 +190,17 @@ func (e *EngineRunner) Run(ctx context.Context, t tasks.Task) (tasks.Outcome, er
 
 	switch res.Status {
 	case workflow.StatusWaiting:
-		ask, err := json.Marshal(res.Ask)
+		payload := res.Ask
+		if res.Routed != nil {
+			// What the engine did before the question: say which workflow the
+			// request went to, and why, so the conversation can show it.
+			payload = make(map[string]any, len(res.Ask)+1)
+			for k, v := range res.Ask {
+				payload[k] = v
+			}
+			payload["routing"] = map[string]any{"workflow": res.Routed.Workflow, "reason": res.Routed.Reason}
+		}
+		ask, err := json.Marshal(payload)
 		if err != nil {
 			return tasks.Outcome{Run: snapshot}, fmt.Errorf("the question to the user cannot be encoded: %w", err)
 		}

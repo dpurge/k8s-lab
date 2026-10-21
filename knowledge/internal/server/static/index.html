@@ -1,137 +1,78 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <script src="/theme.js"></script>
-    <script src="/vendor/markdown-it.min.js"></script>
-    <script src="/vendor/purify.min.js"></script>
-    <script src="/components/kb-button/component.js"></script>
-    <script src="/components/kb-nav/component.js"></script>
-    <script src="/components/kb-status-bar/component.js"></script>
-    <script src="/components/kb-dialog/component.js"></script>
-    <script src="/components/kb-card/component.js"></script>
-    <script src="/components/kb-field/component.js"></script>
-    <script src="/components/kb-message/component.js"></script>
-    <script src="/components/kb-job-card/component.js"></script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Knowledge</title>
-    <link rel="stylesheet" href="/theme.css" />
+    <script src="/ui/theme-init.js" data-key="kb"></script>
+    <link rel="stylesheet" href="/ui/tokens.css" />
     <link rel="stylesheet" href="/app.css" />
+    <script src="/vendor/markdown-it.min.js"></script>
+    <script src="/vendor/purify.min.js"></script>
+    <script src="/components/kb-message/component.js"></script>
+    <script src="/components/kb-job-card/component.js"></script>
+    <script type="module" src="/ui/dp-core.js"></script>
   </head>
   <body>
-    <header>
-      <a class="brand" href="/">Knowledge</a>
-      <kb-nav id="mainNav"></kb-nav>
-      <div class="spacer"></div>
-      <span class="muted" id="userEmail"></span>
-      <kb-button variant="icon" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><span id="theme-icon"></span></kb-button>
-      <kb-button variant="secondary" onclick="run(logout)">Log out</kb-button>
-    </header>
+    <!-- Each tab has a panel (its filters and forms, in the shell's collapsible
+         sidebar) and a workspace (the shell's main area); showTab() in app.js
+         shows the pair of the current tab. -->
+    <dp-shell storage-key="kb" theme-toggle theme-label="Toggle theme" sidebar-label="Collapse/expand the panel">
+      <a slot="brand" class="brand" href="/">Knowledge</a>
+      <dp-tabs slot="header" id="mainNav" variant="underline" label="Main"></dp-tabs>
+      <div slot="actions" class="user">
+        <span class="muted" id="userEmail"></span>
+        <dp-button variant="secondary" onclick="run(logout)">Log out</dp-button>
+      </div>
 
-    <section id="knowledgeTab" class="tab active">
-      <aside>
+      <!-- The pages of Documents (the documents, and the drafts being made into
+           them), on top of the current page's own panel. Shown with either. -->
+      <dp-tabs slot="sidebar" id="documentsNav" class="panel active" orientation="vertical" label="Documents"></dp-tabs>
+
+      <aside slot="sidebar" id="knowledgeAside" class="panel active">
         <h1>Documents</h1>
         <input id="q" placeholder="Semantic search query" />
         <input id="filterTags" placeholder="Filter tags: k8s, qdrant" />
-        <kb-field label="Updated after" for="start">
+        <dp-field label="Updated after" for="start">
           <input id="start" type="datetime-local" />
-        </kb-field>
-        <kb-field label="Updated before" for="end">
+        </dp-field>
+        <dp-field label="Updated before" for="end">
           <input id="end" type="datetime-local" />
-        </kb-field>
+        </dp-field>
         <div class="actions">
-          <kb-button onclick="run(loadList)">Search</kb-button>
-          <kb-button onclick="newItem()">New</kb-button>
+          <dp-button onclick="run(loadList)">Search</dp-button>
+          <dp-button onclick="newItem()">New</dp-button>
         </div>
         <hr class="aside-divider" />
         <input id="exportTags" placeholder="Export tags: k8s, qdrant (empty = all)" />
         <div class="actions">
-          <kb-button onclick="exportItems()">Export</kb-button>
-          <kb-button onclick="$('importFile').click()">Import</kb-button>
+          <dp-button onclick="exportItems()">Export</dp-button>
+          <dp-button onclick="$('importFile').click()">Import</dp-button>
           <input id="importFile" type="file" accept=".yaml,.yml,application/yaml,text/yaml" style="display: none" onchange="run(importFile)" />
         </div>
       </aside>
 
-      <main>
-        <div id="knowledgeListView" class="view active">
-          <div id="list"></div>
-          <div class="actions">
-            <kb-button variant="secondary" id="listPrev" onclick="run(loadListPrev)">← Prev</kb-button>
-            <kb-button variant="secondary" id="listNext" onclick="run(loadListNext)">Next →</kb-button>
-          </div>
-        </div>
-
-        <div id="knowledgeDetailView" class="view">
-          <a class="back-link" onclick="showKnowledgeView('list')">← Back to list</a>
-          <input id="id" type="hidden" />
-          <kb-field label="Title" for="title">
-            <input id="title" />
-          </kb-field>
-          <div class="actions">
-            <kb-button type="button" onclick="run(generateTitle)">Generate</kb-button>
-          </div>
-          <kb-field label="Tags" for="tags">
-            <input id="tags" placeholder="k8s, qdrant, rag" />
-          </kb-field>
-          <kb-field label="Summary" for="summary">
-            <textarea id="summary" style="min-height: 5rem"></textarea>
-          </kb-field>
-          <div class="actions">
-            <kb-button type="button" onclick="run(generateSummary)">Generate</kb-button>
-          </div>
-          <kb-field label="Body (Markdown)" for="body">
-            <textarea id="body"></textarea>
-          </kb-field>
-          <div class="actions">
-            <kb-button onclick="run(save)">Save</kb-button>
-            <kb-button variant="danger" onclick="run(removeItem)">Delete</kb-button>
-          </div>
-        </div>
-      </main>
-    </section>
-
-    <section id="chatTab" class="tab">
-      <aside>
+      <aside slot="sidebar" id="chatAside" class="panel">
         <h1>Chats</h1>
-        <kb-field label="New chat title" for="newChatTitle">
+        <dp-field label="New chat title" for="newChatTitle">
           <input id="newChatTitle" />
-        </kb-field>
-        <kb-field label="Scope tags" for="newChatTags">
+        </dp-field>
+        <dp-field label="Scope tags" for="newChatTags">
           <input id="newChatTags" placeholder="empty = all knowledge" />
-        </kb-field>
+        </dp-field>
         <div class="actions">
-          <kb-button onclick="run(createChat)">Create chat</kb-button>
+          <dp-button onclick="run(createChat)">Create chat</dp-button>
         </div>
         <div id="chats"></div>
       </aside>
 
-      <main>
-        <h1 id="chatTitle">Select or create a chat</h1>
-        <div id="chatScope" class="muted"></div>
-        <div class="actions">
-          <kb-button variant="danger" onclick="run(deleteChat)">Delete chat</kb-button>
-        </div>
-        <div id="chatMessages"></div>
-        <textarea
-          id="chatInput"
-          placeholder="Ask your knowledge... Enter sends, Shift+Enter inserts a new line."
-          style="min-height: 6rem"
-        ></textarea>
-        <div class="muted">Enter sends · Shift+Enter inserts a new line</div>
-        <div class="actions">
-          <kb-button onclick="run(sendChat)">Send</kb-button>
-        </div>
-      </main>
-    </section>
-
-    <section id="ingestTab" class="tab">
-      <aside>
+      <aside slot="sidebar" id="ingestAside" class="panel">
         <h1>Ingest</h1>
         <input id="ingestUrl" placeholder="URL to ingest" />
         <input id="ingestTags" placeholder="Tags: k8s, qdrant" />
         <div class="actions">
-          <kb-button onclick="run(startIngestUrl)">Ingest URL</kb-button>
-          <kb-button onclick="$('ingestFile').click()">Upload file</kb-button>
+          <dp-button onclick="run(startIngestUrl)">Ingest URL</dp-button>
+          <dp-button onclick="$('ingestFile').click()">Upload file</dp-button>
           <input
             id="ingestFile"
             type="file"
@@ -141,51 +82,111 @@
           />
         </div>
         <div class="actions">
-          <kb-button onclick="run(refreshIngestLists)">Refresh</kb-button>
+          <dp-button onclick="run(loadDrafts)">Refresh</dp-button>
         </div>
       </aside>
 
-      <main>
+      <aside slot="sidebar" id="tasksAside" class="panel">
+        <h1>Tasks</h1>
+        <div class="actions">
+          <dp-button onclick="run(loadJobs)">Refresh</dp-button>
+        </div>
+      </aside>
+
+      <section id="knowledgeTab" class="tab active">
+        <div id="knowledgeListView" class="view active">
+          <div id="list"></div>
+          <div class="actions">
+            <dp-button variant="secondary" id="listPrev" onclick="run(loadListPrev)">← Prev</dp-button>
+            <dp-button variant="secondary" id="listNext" onclick="run(loadListNext)">Next →</dp-button>
+          </div>
+        </div>
+
+        <div id="knowledgeDetailView" class="view">
+          <a class="back-link" onclick="showKnowledgeView('list')">← Back to list</a>
+          <input id="id" type="hidden" />
+          <dp-field label="Title" for="title">
+            <input id="title" />
+          </dp-field>
+          <div class="actions">
+            <dp-button type="button" onclick="run(generateTitle)">Generate</dp-button>
+          </div>
+          <dp-field label="Tags" for="tags">
+            <input id="tags" placeholder="k8s, qdrant, rag" />
+          </dp-field>
+          <dp-field label="Summary" for="summary">
+            <textarea id="summary" style="min-height: 5rem"></textarea>
+          </dp-field>
+          <div class="actions">
+            <dp-button type="button" onclick="run(generateSummary)">Generate</dp-button>
+          </div>
+          <dp-field label="Body (Markdown)" for="body">
+            <textarea id="body"></textarea>
+          </dp-field>
+          <div class="actions">
+            <dp-button onclick="run(save)">Save</dp-button>
+            <dp-button variant="danger" onclick="run(removeItem)">Delete</dp-button>
+          </div>
+        </div>
+      </section>
+
+      <section id="chatTab" class="tab">
+        <h1 id="chatTitle">Select or create a chat</h1>
+        <div id="chatScope" class="muted"></div>
+        <div class="actions">
+          <dp-button variant="danger" onclick="run(deleteChat)">Delete chat</dp-button>
+        </div>
+        <div id="chatMessages"></div>
+        <textarea
+          id="chatInput"
+          placeholder="Ask your knowledge... Enter sends, Shift+Enter inserts a new line."
+          style="min-height: 6rem"
+        ></textarea>
+        <div class="muted">Enter sends · Shift+Enter inserts a new line</div>
+        <div class="actions">
+          <dp-button onclick="run(sendChat)">Send</dp-button>
+        </div>
+      </section>
+
+      <section id="ingestTab" class="tab">
         <div id="ingestListView" class="view active">
-          <kb-nav id="ingestSubNav"></kb-nav>
-          <div class="subview active" id="ingestDraftsSection">
-            <div id="drafts"></div>
-          </div>
-          <div class="subview" id="ingestJobsSection">
-            <div id="jobs"></div>
-          </div>
+          <div id="drafts"></div>
         </div>
 
         <div id="ingestDetailView" class="view">
           <a class="back-link" onclick="showIngestView('list')">← Back to list</a>
           <input id="draftId" type="hidden" />
           <div id="draftSource" class="muted"></div>
-          <kb-field label="Title" for="draftTitle">
+          <dp-field label="Title" for="draftTitle">
             <input id="draftTitle" />
-          </kb-field>
-          <kb-field label="Tags" for="draftTags">
+          </dp-field>
+          <dp-field label="Tags" for="draftTags">
             <input id="draftTags" placeholder="k8s, qdrant, rag" />
-          </kb-field>
-          <kb-field label="Summary" for="draftSummary">
+          </dp-field>
+          <dp-field label="Summary" for="draftSummary">
             <textarea id="draftSummary" style="min-height: 5rem"></textarea>
-          </kb-field>
-          <kb-field label="Body" for="draftBody">
+          </dp-field>
+          <dp-field label="Body" for="draftBody">
             <textarea id="draftBody"></textarea>
-          </kb-field>
+          </dp-field>
           <div class="actions">
-            <kb-button onclick="run(saveDraft)">Save</kb-button>
-            <kb-button onclick="run(approveDraft)">Approve</kb-button>
-            <kb-button variant="danger" onclick="run(discardDraft)">Discard</kb-button>
+            <dp-button onclick="run(saveDraft)">Save</dp-button>
+            <dp-button onclick="run(approveDraft)">Approve</dp-button>
+            <dp-button variant="danger" onclick="run(discardDraft)">Discard</dp-button>
           </div>
         </div>
-      </main>
-    </section>
+      </section>
 
-    <footer id="status">
-      <kb-status-bar id="statusBar"></kb-status-bar>
-    </footer>
-    <kb-dialog id="confirmDialog"></kb-dialog>
+      <section id="tasksTab" class="tab">
+        <div id="jobs"></div>
+      </section>
 
-    <script src="/app.js"></script>
+      <dp-status-bar slot="footer" id="statusBar"></dp-status-bar>
+    </dp-shell>
+    <dp-dialog id="confirmDialog"></dp-dialog>
+
+    <!-- defer: it calls dp-status-bar and dp-tabs methods at startup, so it must
+         run after dp-core.js (a module) has defined them. -->
+    <script defer src="/app.js"></script>
   </body>
 </html>

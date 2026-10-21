@@ -60,7 +60,8 @@
     const tags = (item.tags || [])
       .map((t) => `<a class="badge tag-link" href="#" data-tag-filter="${esc(t)}">${esc(t)}</a>`)
       .join("");
-    const card = document.createElement("pf-card");
+    const card = document.createElement("dp-card");
+    card.setAttribute("interactive", "");
     card.innerHTML = `
       <h2><a href="#" data-open="${item.id}">${esc(item.title)}</a></h2>
       <div class="meta">
@@ -89,15 +90,15 @@
     const confirmDialog = document.getElementById("confirmDialog");
     const container = document.createElement("div");
     container.innerHTML = `
-      <pf-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
+      <dp-field label="${esc(T("texts.field_language"))}" for="dlgExportLanguage">
         <select id="dlgExportLanguage">${languageOptions(languageFilter)}</select>
-      </pf-field>
-      <pf-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
+      </dp-field>
+      <dp-field label="${esc(T("texts.field_script"))}" for="dlgExportScript">
         <select id="dlgExportScript">${scriptOptions()}</select>
-      </pf-field>
-      <pf-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
+      </dp-field>
+      <dp-field label="${esc(T("texts.field_tags"))}" for="dlgExportTags">
         <input type="text" id="dlgExportTags" placeholder="${esc(T("texts.field_tags_hint"))}">
-      </pf-field>
+      </dp-field>
     `;
     const languageSelect = container.querySelector("#dlgExportLanguage");
     const scriptSelect = container.querySelector("#dlgExportScript");
@@ -155,10 +156,10 @@
         ${
           BOOT.navFlags.canCreateAny
             ? `<div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                <pf-button variant="primary" id="newDialogBtn">${esc(T("texts.new"))}</pf-button>
-                <pf-button variant="secondary" id="ingestDialogBtn">${esc(T("texts.ingest"))}</pf-button>
-                <pf-button variant="secondary" id="exportDialogsBtn">${esc(T("texts.export"))}</pf-button>
-                <pf-button variant="secondary" id="importDialogsBtn">${esc(T("texts.import"))}</pf-button>
+                <dp-button variant="primary" id="newDialogBtn">${esc(T("texts.new"))}</dp-button>
+                <dp-button variant="secondary" id="ingestDialogBtn">${esc(T("texts.ingest"))}</dp-button>
+                <dp-button variant="secondary" id="exportDialogsBtn">${esc(T("texts.export"))}</dp-button>
+                <dp-button variant="secondary" id="importDialogsBtn">${esc(T("texts.import"))}</dp-button>
                 <input type="file" id="importDialogsFile" accept=".yaml,.yml" style="display:none;">
               </div>`
             : ""
@@ -237,13 +238,13 @@
     });
 
     if (pageCount > 1) {
-      const pager = document.createElement("pf-pager");
+      const pager = document.createElement("dp-pager");
       pager.style.marginTop = "1.5rem";
       pager.setAttribute("page", String(page));
       pager.setAttribute("page-count", String(pageCount));
       pager.setAttribute("prev-label", T("texts.pagination_previous"));
       pager.setAttribute("next-label", T("texts.pagination_next"));
-      pager.addEventListener("pf-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
+      pager.addEventListener("dp-pager-select", (e) => goTo({ page: e.detail.page, tag: tagFilter }));
       container.appendChild(pager);
     }
   }
@@ -269,16 +270,16 @@
         <form id="dialogForm">
           <input type="text" id="title" placeholder="${esc(T("texts.field_title"))}" ${isEdit ? "" : "autofocus"} required value="${esc(existing?.title)}">
           <div class="field-row">
-            <pf-field label="${esc(T("texts.field_language"))}" for="language">
+            <dp-field label="${esc(T("texts.field_language"))}" for="language">
               <select id="language" required>${languageOptions(existing?.language)}</select>
-            </pf-field>
-            <pf-field label="${esc(T("texts.field_script"))}" for="script">
+            </dp-field>
+            <dp-field label="${esc(T("texts.field_script"))}" for="script">
               <select id="script" required>${scriptOptions(existing?.script)}</select>
-            </pf-field>
+            </dp-field>
           </div>
-          <pf-field label="${esc(T("texts.field_tags"))}" for="tags">
+          <dp-field label="${esc(T("texts.field_tags"))}" for="tags">
             <input type="text" id="tags" placeholder="${esc(T("texts.field_tags_hint"))}" value="${esc((existing?.tags || []).join(", "))}">
-          </pf-field>
+          </dp-field>
           <div class="editor-tabs">
             <button type="button" class="editor-tab-btn active" data-tab="source">${esc(T("texts.tab_source"))}</button>
             <button type="button" class="editor-tab-btn" id="tab-btn-transcription" data-tab="transcription">${esc(T("texts.tab_transcription"))}</button>
@@ -294,7 +295,7 @@
             <textarea id="field-translation" placeholder="${esc(T("texts.field_translation_hint"))}">${esc(existing?.translation)}</textarea>
           </div>
           <div class="form-actions">
-            <pf-button variant="primary" type="submit">${esc(T("texts.save"))}</pf-button>
+            <dp-button variant="primary" type="submit">${esc(T("texts.save"))}</dp-button>
           </div>
         </form>
       </div>
@@ -347,34 +348,34 @@
       <h1>${esc(T("dialogs.ingest_title"))}</h1>
       <div class="form-card" style="max-width: none;">
         <form id="ingestForm">
-          <pf-field label="${esc(T("texts.ingest_source_label"))}" for="ingest-source">
+          <dp-field label="${esc(T("texts.ingest_source_label"))}" for="ingest-source">
             <select id="ingest-source">
               <option value="text">${esc(T("texts.ingest_source_text"))}</option>
               <option value="file">${esc(T("texts.ingest_source_file"))}</option>
               <option value="url">${esc(T("texts.ingest_source_url"))}</option>
             </select>
-          </pf-field>
+          </dp-field>
           <div id="ingest-field-text">
             <textarea id="ingest-content" placeholder="${esc(T("texts.ingest_field_text"))}"></textarea>
           </div>
           <div id="ingest-field-file" style="display:none;">
-            <pf-field label="${esc(T("texts.ingest_field_file"))}" for="ingest-file">
+            <dp-field label="${esc(T("texts.ingest_field_file"))}" for="ingest-file">
               <input type="file" id="ingest-file" accept=".md,.txt">
-            </pf-field>
+            </dp-field>
           </div>
           <div id="ingest-field-url" style="display:none;">
             <input type="url" id="ingest-url" placeholder="${esc(T("texts.ingest_field_url"))}">
           </div>
           <div class="field-row">
-            <pf-field label="${esc(T("texts.field_language"))}" for="ingest-language">
+            <dp-field label="${esc(T("texts.field_language"))}" for="ingest-language">
               <select id="ingest-language" required>${languageOptions()}</select>
-            </pf-field>
-            <pf-field label="${esc(T("texts.field_script"))}" for="ingest-script">
+            </dp-field>
+            <dp-field label="${esc(T("texts.field_script"))}" for="ingest-script">
               <select id="ingest-script" required>${scriptOptions()}</select>
-            </pf-field>
+            </dp-field>
           </div>
           <div class="form-actions">
-            <pf-button variant="primary" type="submit" id="ingestSubmitBtn">${esc(T("texts.ingest_submit"))}</pf-button>
+            <dp-button variant="primary" type="submit" id="ingestSubmitBtn">${esc(T("texts.ingest_submit"))}</dp-button>
           </div>
         </form>
       </div>
@@ -506,12 +507,12 @@
       <a href="#" id="backLink" class="back-link">${esc(T("texts.back"))}</a>
       <div class="resource-header">
         <div class="resource-actions">
-          <pf-button variant="secondary" type="button" id="copyBtn">Copy</pf-button>
-          ${dialog.canEdit && !dialog.title ? `<pf-button variant="secondary" type="button" id="generateTitleBtn">${esc(T("texts.generate_title"))}</pf-button>` : ""}
-          ${dialog.canEdit && dialog.needsTranscription && !dialog.transcription ? `<pf-button variant="secondary" type="button" id="generateTranscriptionBtn">${esc(T("texts.generate_transcription"))}</pf-button>` : ""}
-          ${dialog.canEdit && !dialog.hasTranslation ? `<pf-button variant="secondary" type="button" id="generateTranslationBtn">${esc(T("texts.generate_translation"))}</pf-button>` : ""}
-          ${dialog.canEdit ? `<pf-button variant="secondary" type="button" id="generateVocabBtn">${esc(T("texts.generate_vocabulary"))}</pf-button><pf-button variant="secondary" type="button" id="generateModelsBtn">${esc(T("texts.generate_models"))}</pf-button>` : ""}
-          ${dialog.canEdit ? `<pf-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</pf-button><pf-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</pf-button>` : ""}
+          <dp-button variant="secondary" type="button" id="copyBtn">Copy</dp-button>
+          ${dialog.canEdit && !dialog.title ? `<dp-button variant="secondary" type="button" id="generateTitleBtn">${esc(T("texts.generate_title"))}</dp-button>` : ""}
+          ${dialog.canEdit && dialog.needsTranscription && !dialog.transcription ? `<dp-button variant="secondary" type="button" id="generateTranscriptionBtn">${esc(T("texts.generate_transcription"))}</dp-button>` : ""}
+          ${dialog.canEdit && !dialog.hasTranslation ? `<dp-button variant="secondary" type="button" id="generateTranslationBtn">${esc(T("texts.generate_translation"))}</dp-button>` : ""}
+          ${dialog.canEdit ? `<dp-button variant="secondary" type="button" id="generateVocabBtn">${esc(T("texts.generate_vocabulary"))}</dp-button><dp-button variant="secondary" type="button" id="generateModelsBtn">${esc(T("texts.generate_models"))}</dp-button>` : ""}
+          ${dialog.canEdit ? `<dp-button variant="primary" type="button" id="editBtn">${esc(T("texts.edit"))}</dp-button><dp-button variant="danger" type="button" id="deleteBtn">${esc(T("texts.delete"))}</dp-button>` : ""}
         </div>
         <div>
           <h1 style="margin-bottom:0.25rem;">${esc(dialog.title)}</h1>
@@ -558,7 +559,7 @@
     // outer article doesn't need it duplicated here.
     document.getElementById("backLink").addEventListener("click", (e) => { e.preventDefault(); goTo({ page: listContext.page, tag: listContext.tag }); });
     document.getElementById("copyBtn").addEventListener("click", (e) => {
-      phraseforgeCopyActiveMarkdown(e.currentTarget.querySelector("button"));
+      phraseforgeCopyActiveMarkdown(e.currentTarget);
     });
     document.querySelectorAll(".editor-tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => pfSwitchTab(btn.dataset.tab));

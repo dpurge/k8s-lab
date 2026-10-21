@@ -1,0 +1,85 @@
+:host {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.text {
+  color: var(--dp-a2ui-text-color, inherit);
+}
+
+.caption {
+  color: var(--dp-a2ui-caption-color, var(--muted, #667));
+  font-size: var(--dp-a2ui-caption-size, inherit);
+}
+
+.text > :first-child {
+  margin-top: 0;
+}
+
+.text > :last-child {
+  margin-bottom: 0;
+}
+
+.text p,
+.text ul,
+.text ol,
+.text pre {
+  margin: 0.5em 0;
+}
+
+.text h1,
+.text h2,
+.text h3,
+.text h4,
+.text h5,
+.text h6 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.25;
+}
+
+.text h1 {
+  font-size: 1.5em;
+}
+
+.text h2 {
+  font-size: 1.3em;
+}
+
+.text h3 {
+  font-size: 1.15em;
+}
+
+.text h4,
+.text h5,
+.text h6 {
+  font-size: 1em;
+}
+
+.text ul,
+.text ol {
+  padding-inline-start: 1.5rem;
+}
+
+.text code {
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+  background: var(--surface-alt, #f3f4f6);
+  border-radius: 0.25rem;
+}
+
+.text pre {
+  padding: 0.6rem;
+  overflow-x: auto;
+  background: var(--surface-alt, #f3f4f6);
+  border: 1px solid var(--border, #d7dae0);
+  border-radius: 0.4rem;
+}
+
+.text pre code {
+  padding: 0;
+  background: none;
+}
+
+.text a {
+  color: var(--link, #3b5bab);
+}

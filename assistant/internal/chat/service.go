@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"assistant/internal/a2ui"
 	"assistant/internal/tasks"
 	"assistant/internal/workflows"
 )
@@ -40,6 +42,10 @@ type Channel interface {
 // ErrorCounter counts messages that could not be posted.
 type ErrorCounter interface{ ChatNotifyError() }
 
+// RejectionCounter counts A2UI messages that validation refused, by source:
+// "interface" (a workflow's) or "event" (the page's).
+type RejectionCounter interface{ A2UIRejected(source string) }
+
 // Service runs conversations: it turns the user's messages into workflow runs
 // and the runs' questions, results and failures into the assistant's messages.
 type Service struct {
@@ -48,7 +54,20 @@ type Service struct {
 	Catalog Catalog
 	Channel Channel
 	Errors  ErrorCounter
-	Log     *slog.Logger
+	// Rejections counts refused A2UI messages; may be nil.
+	Rejections RejectionCounter
+	// UI checks the interfaces workflows show and the events the page sends
+	// back. Nil means conversations have no interfaces: an interface in a
+	// question is dropped with a note, and events are refused.
+	UI *a2ui.Validator
+	// CallTimeout is how long a run waits for the page to answer a function it
+	// asked the page to run; zero means 15 seconds.
+	CallTimeout time.Duration
+	Log         *slog.Logger
+
+	// callMu keeps an answer and a timeout of the same call from both being
+	// recorded.
+	callMu sync.Mutex
 }
 
 // ErrNotConversational is returned for a workflow a conversation cannot run.
@@ -56,16 +75,20 @@ var ErrNotConversational = errors.New("a conversation can run a YAML workflow or
 
 // payloadFor builds the task payload that carries the user's text into a
 // workflow, by the workflow's kind.
-func (s *Service) payloadFor(workflowID, text string) (json.RawMessage, error) {
+func (s *Service) payloadFor(workflowID string, message any) (json.RawMessage, error) {
 	for _, info := range s.Catalog.Catalog() {
 		if info.ID != workflowID {
 			continue
 		}
 		switch {
 		case info.Kind == "yaml":
-			return json.Marshal(map[string]any{"message": text})
+			return json.Marshal(map[string]any{"message": message})
 		case info.ID == "ask":
-			return json.Marshal(map[string]any{"prompt": text})
+			if text, ok := message.(string); ok {
+				return json.Marshal(map[string]any{"prompt": text})
+			}
+			raw, _ := json.Marshal(message)
+			return json.Marshal(map[string]any{"prompt": string(raw)})
 		}
 		return nil, ErrNotConversational
 	}
@@ -95,6 +118,20 @@ func (s *Service) Send(ctx context.Context, conversationID, text string) (Messag
 		return s.command(ctx, v, text)
 	}
 
+	current, err := s.currentRun(ctx, v)
+	if err != nil {
+		return Message{}, err
+	}
+	msg, err := s.Store.AddMessage(ctx, v.ID, RoleUser, KindText, text, nil)
+	if err != nil {
+		return Message{}, err
+	}
+	return msg, s.advance(ctx, v, current, text)
+}
+
+// currentRun is the run the conversation is in, or nil when there is none or it
+// was removed. It returns ErrBusy while the run is working.
+func (s *Service) currentRun(ctx context.Context, v View) (*tasks.Task, error) {
 	var current *tasks.Task
 	if v.TaskID != nil {
 		t, err := s.Tasks.Get(ctx, *v.TaskID)
@@ -104,36 +141,35 @@ func (s *Service) Send(ctx context.Context, conversationID, text string) (Messag
 		case errors.Is(err, tasks.ErrNotFound):
 			// The run was removed: the conversation just starts a new one.
 		default:
-			return Message{}, fmt.Errorf("look up the conversation's run: %w", err)
+			return nil, fmt.Errorf("look up the conversation's run: %w", err)
 		}
 	}
 	if current != nil && (current.Status == tasks.StatusPending || current.Status == tasks.StatusRunning) {
-		return Message{}, ErrBusy
+		return nil, ErrBusy
 	}
+	return current, nil
+}
 
-	msg, err := s.Store.AddMessage(ctx, v.ID, RoleUser, KindText, text, nil)
-	if err != nil {
-		return Message{}, err
-	}
+// advance gives the user's turn to the run: as the answer to the question it is
+// waiting for, or as the first message of a new run. A failure is said in the
+// conversation and returned.
+func (s *Service) advance(ctx context.Context, v View, current *tasks.Task, value any) error {
 	if current != nil && current.Status == tasks.StatusWaiting {
-		answer, _ := json.Marshal(text)
+		answer, _ := json.Marshal(value)
 		if _, err := s.Tasks.Resume(ctx, current.ID, answer); err != nil {
-			return msg, s.fail(ctx, v, fmt.Errorf("could not deliver your answer to the run: %w", err))
+			return s.fail(ctx, v, fmt.Errorf("could not deliver your answer to the run: %w", err))
 		}
-		return msg, nil
+		return nil
 	}
-	payload, err := s.payloadFor(v.WorkflowID, text)
+	payload, err := s.payloadFor(v.WorkflowID, value)
 	if err != nil {
-		return msg, s.fail(ctx, v, fmt.Errorf("could not start the workflow %q: %w", v.WorkflowID, err))
+		return s.fail(ctx, v, fmt.Errorf("could not start the workflow %q: %w", v.WorkflowID, err))
 	}
 	task, err := s.Tasks.Create(ctx, tasks.New{UserID: v.UserID, WorkflowID: v.WorkflowID, Source: tasks.SourceTelegram, Payload: payload})
 	if err != nil {
-		return msg, s.fail(ctx, v, fmt.Errorf("could not start the workflow %q: %w", v.WorkflowID, err))
+		return s.fail(ctx, v, fmt.Errorf("could not start the workflow %q: %w", v.WorkflowID, err))
 	}
-	if err := s.Store.SetTask(ctx, v.ID, task.ID); err != nil {
-		return msg, err
-	}
-	return msg, nil
+	return s.Store.SetTask(ctx, v.ID, task.ID)
 }
 
 // fail tells the user in the conversation why their message did not take, and
@@ -210,6 +246,19 @@ func (s *Service) TaskUpdated(ctx context.Context, t tasks.Task) {
 		return
 	}
 	if !ok {
+		return
+	}
+	if t.Status == tasks.StatusWaiting {
+		if line := routingLine(t.Ask); line != "" {
+			s.post(ctx, c, KindInfo, line, &t.ID)
+		}
+		text, ui := askParts(t.Ask)
+		if text != "" {
+			s.post(ctx, c, KindQuestion, text, &t.ID)
+		}
+		if len(ui) > 0 {
+			s.postInterface(ctx, c, &t.ID, ui)
+		}
 		return
 	}
 	kind, text := describe(t)
@@ -314,4 +363,23 @@ func (m *MockChannel) Delivered() []Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]Message(nil), m.delivered...)
+}
+
+// routingLine is the short note that tells the user where their request went:
+// "→ hello: they ask for a greeting", from the engine's routing key in the ask.
+func routingLine(ask json.RawMessage) string {
+	var payload struct {
+		Routing *struct {
+			Workflow string `json:"workflow"`
+			Reason   string `json:"reason"`
+		} `json:"routing"`
+	}
+	if json.Unmarshal(ask, &payload) != nil || payload.Routing == nil || payload.Routing.Workflow == "" {
+		return ""
+	}
+	line := "→ " + payload.Routing.Workflow
+	if reason := strings.TrimSpace(payload.Routing.Reason); reason != "" {
+		line += ": " + reason
+	}
+	return line
 }

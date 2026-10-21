@@ -95,10 +95,11 @@ func (s *Store) ForTask(ctx context.Context, taskID string) ([]Call, error) {
 	return calls, rows.Err()
 }
 
-// Usage is what one user used of one model. Only successful calls count: a
-// failed attempt has no tokens and no cost.
+// Usage is what one user used of one model of one provider. Only successful
+// calls count: a failed attempt has no tokens and no cost.
 type Usage struct {
 	UserID       string  `json:"user_id"`
+	ProviderID   string  `json:"provider_id"`
 	ModelID      string  `json:"model_id"`
 	Calls        int     `json:"calls"`
 	InputTokens  int     `json:"input_tokens"`
@@ -106,16 +107,18 @@ type Usage struct {
 	CostUSD      float64 `json:"cost_usd"`
 }
 
-// UsageByUserAndModel sums successful calls per user and model, from since if
-// given. Ordered by cost, highest first, then by user and model.
+// UsageByUserAndModel sums successful calls per user, provider and model, from
+// since if given. Ordered by cost, highest first, then by user, provider and
+// model. It is the finest grain: a page that groups by one of the three sums
+// these rows.
 func (s *Store) UsageByUserAndModel(ctx context.Context, since *time.Time) ([]Usage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id::text, model_id, count(*)::int, coalesce(sum(input_tokens), 0)::int,
+		SELECT user_id::text, provider_id, model_id, count(*)::int, coalesce(sum(input_tokens), 0)::int,
 		       coalesce(sum(output_tokens), 0)::int, coalesce(sum(cost_usd), 0)::float8
 		FROM llm_calls
 		WHERE outcome = 'ok' AND ($1::timestamptz IS NULL OR started_at >= $1)
-		GROUP BY user_id, model_id
-		ORDER BY 6 DESC, user_id, model_id`, since)
+		GROUP BY user_id, provider_id, model_id
+		ORDER BY 7 DESC, user_id, provider_id, model_id`, since)
 	if err != nil {
 		return nil, fmt.Errorf("usage: %w", err)
 	}
@@ -123,12 +126,38 @@ func (s *Store) UsageByUserAndModel(ctx context.Context, since *time.Time) ([]Us
 	out := []Usage{}
 	for rows.Next() {
 		var u Usage
-		if err := rows.Scan(&u.UserID, &u.ModelID, &u.Calls, &u.InputTokens, &u.OutputTokens, &u.CostUSD); err != nil {
+		if err := rows.Scan(&u.UserID, &u.ProviderID, &u.ModelID, &u.Calls, &u.InputTokens, &u.OutputTokens, &u.CostUSD); err != nil {
 			return nil, fmt.Errorf("usage: %w", err)
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// Attempts returns one page of attempts, newest first, from since if given,
+// and the number of attempts there are in all (not just on this page). Failed
+// attempts are included: this is the record, not the usage.
+func (s *Store) Attempts(ctx context.Context, since *time.Time, limit, offset int) ([]Call, int, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*)::int FROM llm_calls WHERE ($1::timestamptz IS NULL OR started_at >= $1)`, since).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count llm calls: %w", err)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+columns+` FROM llm_calls
+		WHERE ($1::timestamptz IS NULL OR started_at >= $1)
+		ORDER BY started_at DESC, id DESC LIMIT $2 OFFSET $3`, since, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list llm calls: %w", err)
+	}
+	defer rows.Close()
+	calls := []Call{}
+	for rows.Next() {
+		c, err := scan(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("list llm calls: %w", err)
+		}
+		calls = append(calls, c)
+	}
+	return calls, total, rows.Err()
 }
 
 // TaskUsage is what one task used.

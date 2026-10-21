@@ -480,6 +480,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- Exactly one job running app-wide: the single-worker, one-Ollama-call-at-a-time constraint.
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_running_idx ON jobs ((true)) WHERE status = 'running';
 CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (created_at ASC) WHERE status = 'pending';
+-- Who asked for the job; NULL for a job queued by the system itself and for jobs
+-- from before this was recorded. The user's model calls are attributed to them.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id bigint REFERENCES users(id) ON DELETE SET NULL;
 
 -- ── Reviews ──────────────────────────────────────────────────────────────────
 -- The latest review of a vocabulary item, one row per item id (a new review
@@ -553,3 +556,8 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 CREATE INDEX IF NOT EXISTS llm_calls_started_idx ON llm_calls (started_at);
 CREATE INDEX IF NOT EXISTS llm_calls_model_idx ON llm_calls (model_id, started_at);
 CREATE INDEX IF NOT EXISTS llm_calls_job_idx ON llm_calls (job_id);
+-- Who the call was made for: the user whose request led to it, directly or through
+-- a job. NULL for a call with no user behind it and for calls from before this
+-- was recorded.
+ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS user_id bigint REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS llm_calls_user_idx ON llm_calls (user_id, started_at);

@@ -1,49 +1,93 @@
-/* index.html-specific layout and content styling. Shared CSS variables live
-   in theme.css; kb-button/kb-nav/kb-status-bar/kb-dialog/kb-card/kb-field
-   each own their own component.css. */
-
-/* Typography and header match phraseforge's (templates/layout.html:
-   body, header.topnav) — see specs/features/knowledge-theme-parity-
-   phraseforge.md. */
+/* index.html-specific styling. The palette is /ui/tokens.css and the frame (top
+   bar, collapsible sidebar, main area, footer) is dp-shell; each kb-* component
+   owns its own component.css. This file holds only what is Knowledge's own. */
 body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 17px;
   background: var(--bg);
   color: var(--text);
   margin: 0;
-  height: 100vh;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
 }
 
-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  box-sizing: border-box;
-  height: 3.5rem;
-  display: flex;
-  gap: 1.5rem;
-  align-items: center;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 0 1.5rem;
+/* Until dp-shell is defined its content would show unstyled. Not visibility:
+   hidden, which would stop a field from taking focus. */
+dp-shell:not(:defined) {
+  opacity: 0;
 }
 
-header .brand {
+dp-shell {
+  --dp-shell-sidebar-width: 22.5rem;
+  --dp-shell-main-padding: 1rem;
+}
+
+a.brand {
   font-weight: 700;
   font-size: 1.15rem;
   color: var(--text);
   text-decoration: none;
 }
 
-header .spacer {
-  flex: 1;
+.user {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
 }
 
-/* Actual <button> elements now only ever exist inside kb-button's own
-   light DOM (see its component.css) — every page-authored button is a
-   <kb-button>. */
+/* The user name gives way when the top bar is short of room, as on a phone. */
+#userEmail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+dp-field {
+  --dp-field-margin-bottom: 0.75rem;
+}
+
+/* A phone's top bar has room for the menu button, the tabs, "Log out" and the
+   theme button, not for the brand text or the e-mail address. */
+@media (max-width: 760px) {
+  a.brand,
+  #userEmail {
+    display: none;
+  }
+  .user dp-button {
+    --dp-button-padding: 0.45rem 0.8rem;
+    --dp-button-font-size: 0.9rem;
+  }
+}
+
+/* A tab is a panel in the sidebar plus a workspace in the main area; only the
+   current tab's pair shows (showTab in app.js). */
+.panel,
+.tab {
+  display: none;
+}
+
+.panel.active,
+.tab.active {
+  display: block;
+}
+
+/* The shell's sidebar does not wrap its text; a panel's must. */
+.panel {
+  white-space: normal;
+}
+
+/* The card look the list items had. */
+#list dp-card,
+#drafts dp-card,
+#chats dp-card {
+  --dp-card-padding: 0.7rem;
+  --dp-card-radius: 8px;
+}
+
+#chats dp-card {
+  margin: 0.5rem 0;
+}
+
 input,
 textarea {
   font: inherit;
@@ -56,37 +100,6 @@ textarea {
   border: 1px solid var(--border);
 }
 
-.tab {
-  display: none;
-  /* Grid items default to min-height:auto, which lets content grow
-     past the body grid's 1fr row instead of respecting it — that
-     would push the footer off-screen or make the whole page scroll.
-     min-height:0 lets aside/main's own overflow:auto scroll instead. */
-  min-height: 0;
-}
-
-.tab.active {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-}
-
-footer {
-  display: flex;
-  gap: 1rem;
-  align-items: baseline;
-  border-top: 1px solid var(--border);
-  padding: 0.4rem 1rem;
-  box-sizing: border-box;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-aside {
-  border-right: 1px solid var(--border);
-  padding: 1rem;
-  overflow: auto;
-}
-
 /* Separates the search block above from the export/import block below in
    the knowledge aside — otherwise both look like one undifferentiated
    stack of inputs. */
@@ -96,10 +109,6 @@ aside {
   margin: 1rem 0;
 }
 
-main {
-  padding: 1rem;
-  overflow: auto;
-}
 
 /* #list/#drafts/#jobs move from a cramped single-column sidebar stack into
    the roomier main workspace, laid out as a responsive card grid.
@@ -118,18 +127,6 @@ main {
 }
 
 .view.active {
-  display: block;
-}
-
-#ingestSubNav {
-  margin-bottom: 0.75rem;
-}
-
-.subview {
-  display: none;
-}
-
-.subview.active {
   display: block;
 }
 

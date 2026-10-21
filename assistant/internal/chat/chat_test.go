@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"assistant/internal/chat"
@@ -28,6 +30,7 @@ type fakeTasks struct {
 	resumed   []string // id=message
 	createErr error
 	resumeErr error
+	mu        sync.Mutex
 }
 
 func (f *fakeTasks) Create(ctx context.Context, n tasks.New) (tasks.Task, error) {
@@ -46,8 +49,17 @@ func (f *fakeTasks) Resume(ctx context.Context, id string, message json.RawMessa
 	if f.resumeErr != nil {
 		return tasks.Task{}, f.resumeErr
 	}
+	f.mu.Lock()
 	f.resumed = append(f.resumed, id+"="+string(message))
+	f.mu.Unlock()
 	return f.store.Get(ctx, id)
+}
+
+// snapshotResumed is resumed, read safely while a timer may be adding to it.
+func (f *fakeTasks) snapshotResumed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.resumed...)
 }
 
 func (f *fakeTasks) setStatus(id, status string) {
@@ -546,5 +558,64 @@ func TestTheMockChannelKeepsOnlyTheLastMessages(t *testing.T) {
 	got := m.Delivered()
 	if len(got) != 200 || got[0].ID != 50 || got[199].ID != 249 {
 		t.Errorf("kept %d, first %d", len(got), got[0].ID)
+	}
+}
+
+func TestAnInterfaceMessageKeepsItsA2UIPayloadAndTheOthersHaveNone(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	c := r.conversation(t, "hello")
+	ui := json.RawMessage(`[{"version":"v1.0","createSurface":{"surfaceId":"s","catalogId":"x"}}]`)
+	sent, err := r.svc.Store.AddUIMessage(ctx, c.ID, chat.RoleAssistant, chat.KindUI, "", ui, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := json.RawMessage(`{"version":"v1.0","action":{"name":"go"}}`)
+	back, err := r.svc.Store.AddUIMessage(ctx, c.ID, chat.RoleUser, chat.KindUIAction, "Go", action, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := r.svc.Store.AddMessage(ctx, c.ID, chat.RoleAssistant, chat.KindText, "hi", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// jsonb keeps the JSON's content, not its spelling.
+	same := func(got, want json.RawMessage) bool {
+		var a, b any
+		return json.Unmarshal(got, &a) == nil && json.Unmarshal(want, &b) == nil && reflect.DeepEqual(a, b)
+	}
+	if sent.Kind != chat.KindUI || !same(sent.UI, ui) || back.Kind != chat.KindUIAction || plain.UI != nil {
+		t.Errorf("sent %+v back %+v plain %+v", sent, back, plain)
+	}
+	all, _ := r.svc.Store.Messages(ctx, c.ID, 0)
+	if len(all) != 3 || !same(all[0].UI, ui) || !same(all[1].UI, action) || all[2].UI != nil {
+		t.Fatalf("stored: %+v", all)
+	}
+	encoded, _ := json.Marshal(all[2])
+	if strings.Contains(string(encoded), `"ui"`) {
+		t.Errorf("a message without A2UI must not carry a ui key: %s", encoded)
+	}
+}
+
+func TestTheDatabaseKeepsAnInterfaceMessageAndItsPayloadTogether(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	c := r.conversation(t, "hello")
+	if _, err := r.svc.Store.AddUIMessage(ctx, c.ID, chat.RoleAssistant, chat.KindUI, "", nil, nil); err == nil {
+		t.Error("an interface message without a payload was stored")
+	}
+	if _, err := r.svc.Store.AddUIMessage(ctx, c.ID, chat.RoleAssistant, chat.KindText, "x", json.RawMessage(`[]`), nil); err == nil {
+		t.Error("a text message with a payload was stored")
+	}
+}
+
+func TestTheListShowsAnInterfaceAsTheLastWordsWhenItHasNoText(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	c := r.conversation(t, "hello")
+	r.svc.Store.AddUIMessage(ctx, c.ID, chat.RoleAssistant, chat.KindUI, "", json.RawMessage(`[]`), nil)
+	views, err := r.svc.List(ctx, r.user.ID)
+	if err != nil || len(views) != 1 || views[0].LastText == nil || *views[0].LastText != "(an interface)" {
+		t.Errorf("%+v %v", views, err)
 	}
 }

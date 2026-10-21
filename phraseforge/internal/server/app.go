@@ -15,7 +15,7 @@ import (
 // chromeI18nKeys lists every i18n key layout.html's sidebar/header used to
 // render server-side — gathered before that markup moved into shell.js.
 var chromeI18nKeys = []string{
-	"nav.texts", "nav.dialogs", "nav.vocabulary", "nav.models", "nav.admin", "nav.jobs", "nav.logout",
+	"nav.documents", "nav.texts", "nav.dialogs", "nav.vocabulary", "nav.models", "nav.tasks", "nav.usage", "nav.config", "nav.main", "nav.logout",
 	"nav.all_languages", "sidebar.toggle", "theme.toggle",
 }
 
@@ -85,13 +85,16 @@ func buildAppBootstrap(ctx context.Context, u auth.User, nv nav, s *Server) (map
 		if err != nil {
 			return nil, err
 		}
-		bootstrap["admin"] = map[string]any{
+		bootstrap["config"] = map[string]any{
 			"navFlags": navFlags, "languages": adminLangs, "scripts": adminScripts,
 			"imePresets": imePresets, "siteLanguages": i18n.Locales,
 			"locale": u.Locale, "i18n": adminAppI18n(u.Locale),
 		}
-		bootstrap["jobs"] = map[string]any{
+		bootstrap["tasks"] = map[string]any{
 			"navFlags": navFlags, "locale": u.Locale, "i18n": jobsAppI18n(u.Locale),
+		}
+		bootstrap["usage"] = map[string]any{
+			"navFlags": navFlags, "locale": u.Locale, "i18n": usageAppI18n(u.Locale),
 		}
 	}
 

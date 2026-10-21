@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +50,15 @@ func testWorkflows(t *testing.T) map[string]*workflow.Workflow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]*workflow.Workflow{wf.ID: wf, hello.ID: hello}
+	uiDemo, err := workflow.Load("workflows/ui-demo.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestrator, err := workflow.Load("workflows/orchestrator.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]*workflow.Workflow{wf.ID: wf, hello.ID: hello, uiDemo.ID: uiDemo, orchestrator.ID: orchestrator}
 }
 
 const (
@@ -352,7 +362,7 @@ func TestTheDemoModelRefusesOtherWorkflowsAndTheFailureIsVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, err := newApp(pool, a.log, &recordingClock{}, demoSetup(t), map[string]*workflow.Workflow{"other": wf})
+	a2, err := newApp(pool, a.log, &recordingClock{}, demoSetup(t), map[string]*workflow.Workflow{"other": wf}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +370,7 @@ func TestTheDemoModelRefusesOtherWorkflowsAndTheFailureIsVisible(t *testing.T) {
 	a2.worker.RunOnce(context.Background())
 	got := getTask(t, a2, id)
 	msg, _ := got["error"].(string)
-	if got["status"] != "failed" || !strings.Contains(msg, "demo model knows only the hello workflow") {
+	if got["status"] != "failed" || !strings.Contains(msg, "demo model knows only the hello, ui-demo and orchestrator workflows") {
 		t.Errorf("task = %v", got)
 	}
 }
@@ -519,7 +529,7 @@ func TestTheWorkflowsListHasEveryBuiltinAndYAMLWorkflowWithAHint(t *testing.T) {
 			t.Errorf("%s: the hint is not a JSON object: %v", it.ID, err)
 		}
 	}
-	if strings.Join(ids, ",") != "ask,askflow,hello,noop" || byID["noop"] != "builtin" || byID["hello"] != "yaml" {
+	if strings.Join(ids, ",") != "ask,askflow,hello,noop,orchestrator,ui-demo" || byID["noop"] != "builtin" || byID["hello"] != "yaml" {
 		t.Errorf("ids = %v kinds = %v", ids, byID)
 	}
 }
@@ -724,5 +734,367 @@ func TestCancellingAConversationsWaitingRunFromTheTasksPageShowsInTheConversatio
 	}
 	if code := say(t, a, conv, "again"); code != 201 {
 		t.Errorf("after a cancel the next message starts a new run: %d", code)
+	}
+}
+
+// lastInterface returns the surface ids and the component ids of the most
+// recent interface message of a conversation.
+func lastInterface(t *testing.T, a *app, convID string) (surface string, componentIDs map[string]bool) {
+	t.Helper()
+	rec := call(t, a.handler, "GET", "/api/v1/conversations/"+convID+"/messages", "")
+	var body struct {
+		Items []struct {
+			Kind string          `json:"kind"`
+			UI   json.RawMessage `json:"ui"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for i := len(body.Items) - 1; i >= 0; i-- {
+		if body.Items[i].Kind != "ui" {
+			continue
+		}
+		var list []map[string]any
+		if err := json.Unmarshal(body.Items[i].UI, &list); err != nil {
+			t.Fatal(err)
+		}
+		componentIDs = map[string]bool{}
+		for _, m := range list {
+			for _, kind := range []string{"createSurface", "updateComponents"} {
+				body, ok := m[kind].(map[string]any)
+				if !ok {
+					continue
+				}
+				if kind == "createSurface" {
+					surface, _ = body["surfaceId"].(string)
+				}
+				for _, comp := range anySlice(body["components"]) {
+					componentIDs[comp.(map[string]any)["id"].(string)] = true
+				}
+			}
+		}
+		return surface, componentIDs
+	}
+	t.Fatalf("no interface message in %s", rec.Body)
+	return "", nil
+}
+
+// lastRendererCall is the id of the most recent function the run asked the page to run.
+func lastRendererCall(t *testing.T, a *app, convID string) string {
+	t.Helper()
+	rec := call(t, a.handler, "GET", "/api/v1/conversations/"+convID+"/messages", "")
+	var body struct {
+		Items []struct {
+			Kind string          `json:"kind"`
+			UI   json.RawMessage `json:"ui"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for i := len(body.Items) - 1; i >= 0; i-- {
+		if body.Items[i].Kind != "ui" {
+			continue
+		}
+		var list []map[string]any
+		if err := json.Unmarshal(body.Items[i].UI, &list); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range list {
+			if c, ok := m["callRendererFunction"].(map[string]any); ok {
+				return c["functionCallId"].(string)
+			}
+		}
+	}
+	t.Fatalf("the run asked the page for nothing: %s", rec.Body)
+	return ""
+}
+
+func anySlice(v any) []any {
+	s, _ := v.([]any)
+	return s
+}
+
+func uiEvent(t *testing.T, a *app, convID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return call(t, a.handler, "POST", "/api/v1/conversations/"+convID+"/ui-events", body)
+}
+
+func actionBody(surface, component, name, userMessage, context string) string {
+	return `{"version":"v1.0","action":{"name":"` + name + `","userMessage":"` + userMessage + `","surfaceId":"` + surface + `","sourceComponentId":"` + component + `","timestamp":"2026-10-21T12:00:00Z","context":` + context + `}}`
+}
+
+// The interface toolkit end to end, with the real engine, the demo model and
+// the real HTTP API: the run shows a tour, the page's action moves it on to a
+// form, and the form's answers end it.
+func TestUIDemoShowsATourThenAFormAndEndsWithTheAnswers(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	conv := startChat(t, a, "ui-demo")
+	ctx := context.Background()
+
+	if code := say(t, a, conv, "start"); code != 201 {
+		t.Fatalf("first message: %d", code)
+	}
+	a.worker.RunOnce(ctx)
+	got := chatTexts(t, a, conv)
+	if len(got) != 3 || got[1] != "assistant/question: Here is every component of the toolkit. Try them, then press Continue." || got[2] != "assistant/ui: " {
+		t.Fatalf("after the first step: %v", got)
+	}
+	tourSurface, tourComponents := lastInterface(t, a, conv)
+	for _, id := range []string{"root", "name", "picks", "chips", "volume", "when", "image", "video", "audio", "modal", "tabs", "icons", "next"} {
+		if !tourComponents[id] {
+			t.Errorf("the tour lacks component %q", id)
+		}
+	}
+
+	// Nothing but a component of a surface the conversation drew can act.
+	for name, body := range map[string]string{
+		"unknown surface":   actionBody("elsewhere", "next", "continue", "", "{}"),
+		"unknown component": actionBody(tourSurface, "ghost", "continue", "", "{}"),
+		"not a message":     `{"version":"v1.0"}`,
+	} {
+		if rec := uiEvent(t, a, conv, body); rec.Code != 400 {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if rec := uiEvent(t, a, conv, actionBody(tourSurface, "next", "continue", "Continue to the form", "{}")); rec.Code != 201 {
+		t.Fatalf("the action: %d %s", rec.Code, rec.Body)
+	}
+	if rec := uiEvent(t, a, conv, actionBody(tourSurface, "next", "continue", "", "{}")); rec.Code != 409 {
+		t.Errorf("while the run works another action is refused: %d", rec.Code)
+	}
+	a.worker.RunOnce(ctx)
+
+	// The run now asks the page, without a word to the user, how big its window
+	// is. The engine gave the call its own id; the page answers with it.
+	callID := lastRendererCall(t, a, conv)
+	if !strings.HasPrefix(callID, "call-") {
+		t.Fatalf("the call id was not assigned by the assistant: %q", callID)
+	}
+	answer := `{"version":"v1.0","rendererFunctionResponse":{"functionCallId":"` + callID + `","value":{"width":1280,"height":900,"pixelRatio":2,"colorScheme":"dark"}}}`
+	if rec := uiEvent(t, a, conv, answer); rec.Code != 201 {
+		t.Fatalf("the answer: %d %s", rec.Code, rec.Body)
+	}
+	if rec := uiEvent(t, a, conv, answer); rec.Code != 400 {
+		t.Errorf("an answer is taken once: %d", rec.Code)
+	}
+	a.worker.RunOnce(ctx)
+	formSurface, formComponents := lastInterface(t, a, conv)
+	if formSurface == tourSurface || !formComponents["submit"] {
+		t.Fatalf("the form was not shown: surface %q components %v", formSurface, formComponents)
+	}
+
+	context := `{"name":"Janusz","topics":["languages","hiking"],"level":4,"agree":true}`
+	if rec := uiEvent(t, a, conv, actionBody(formSurface, "submit", "submit_form", "Submitted the form", context)); rec.Code != 201 {
+		t.Fatalf("the submit: %d %s", rec.Code, rec.Body)
+	}
+	a.worker.RunOnce(ctx)
+	got = chatTexts(t, a, conv)
+	last := got[len(got)-1]
+	if !strings.HasPrefix(last, "assistant/result: Thank you, Janusz. You chose hiking, languages, at level 4.") {
+		t.Fatalf("the end: %v", got)
+	}
+	var kinds []string
+	for _, line := range got {
+		kinds = append(kinds, strings.SplitN(line, ":", 2)[0])
+	}
+	want := "user/text,assistant/question,assistant/ui,user/ui_action,assistant/ui,user/ui_action,assistant/question,assistant/ui,user/ui_action,assistant/result"
+	if strings.Join(kinds, ",") != want {
+		t.Errorf("the conversation read:\n got %s\nwant %s", strings.Join(kinds, ","), want)
+	}
+	if got[3] != "user/ui_action: Continue to the form" || got[8] != "user/ui_action: Submitted the form" {
+		t.Errorf("an action shows as the user's own words: %v", got)
+	}
+}
+
+func TestAnInterfaceErrorFromThePageIsRecordedThroughTheAPI(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	conv := startChat(t, a, "ui-demo")
+	say(t, a, conv, "start")
+	a.worker.RunOnce(context.Background())
+	rec := uiEvent(t, a, conv, `{"version":"v1.0","error":{"code":"RENDERER_ERROR","surfaceId":"x","message":"it broke"}}`)
+	if rec.Code != 201 || field(t, rec, "kind") != "ui_action" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if rec := uiEvent(t, a, conv, `{"version":"v1.0","callAgentFunction":{"surfaceId":"x","functionCallId":"c","callFunction":{"@call":"formatNumber","catalogId":"https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json","args":{"value":1}}}}`); rec.Code != 400 {
+		t.Errorf("function calls are not handled yet: %d", rec.Code)
+	}
+	if rec := uiEvent(t, a, "00000000-0000-0000-0000-000000000000", `{"version":"v1.0","error":{"code":"X","surfaceId":"x","message":"m"}}`); rec.Code != 404 {
+		t.Errorf("unknown conversation: %d", rec.Code)
+	}
+}
+
+// The page calls the assistant: the tour's own Text asks for the workflows, and
+// the answer is in the conversation.
+func TestThePageCanAskTheAssistantForTheWorkflowsThroughTheAPI(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	conv := startChat(t, a, "ui-demo")
+	say(t, a, conv, "start")
+	a.worker.RunOnce(context.Background())
+	surface, _ := lastInterface(t, a, conv)
+	catalog := "https://assistant.k8s-lab.local/a2ui/catalog.json"
+	callBody := `{"version":"v1.0","callAgentFunction":{"surfaceId":"` + surface + `","functionCallId":"page-1","callFunction":{"@call":"listWorkflows","catalogId":"` + catalog + `","args":{}}}}`
+	if rec := uiEvent(t, a, conv, callBody); rec.Code != 201 {
+		t.Fatalf("the call: %d %s", rec.Code, rec.Body)
+	}
+	if rec := uiEvent(t, a, conv, callBody); rec.Code != 400 {
+		t.Errorf("a used id: %d", rec.Code)
+	}
+	rec := call(t, a.handler, "GET", "/api/v1/conversations/"+conv+"/messages", "")
+	if !strings.Contains(rec.Body.String(), `agentFunctionResponse`) || !strings.Contains(rec.Body.String(), `ui-demo: `) || !strings.Contains(rec.Body.String(), `"functionCallId":"page-1"`) {
+		t.Errorf("the answer is not in the conversation: %s", rec.Body)
+	}
+}
+
+// The orchestrator, end to end with the real engine, the demo model and the HTTP
+// API: a request is routed to the workflow that fits, the conversation says so
+// and follows it, the result comes back to the orchestrator, and a request that
+// fits nothing is answered by the orchestrator itself.
+func TestTheOrchestratorHandsARequestToAWorkflowAndTheConversationFollowsIt(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	conv := startChat(t, a, "orchestrator")
+	ctx := context.Background()
+	handledBy := func() any {
+		return field(t, call(t, a.handler, "GET", "/api/v1/conversations/"+conv, ""), "handled_by")
+	}
+
+	if code := say(t, a, conv, "please say hello to me"); code != 201 {
+		t.Fatalf("first message: %d", code)
+	}
+	a.worker.RunOnce(ctx)
+	got := chatTexts(t, a, conv)
+	want := []string{
+		"user/text: please say hello to me",
+		`assistant/info: → hello: you mentioned "hello"`,
+		"assistant/question: What is your name?",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("after routing:\n got %q\nwant %q", got, want)
+	}
+	if handledBy() != "hello" {
+		t.Errorf("handled_by = %v: the question comes from the hello workflow", handledBy())
+	}
+
+	// The answer goes to the workflow that asked, not to the orchestrator.
+	if code := say(t, a, conv, "Ada"); code != 201 {
+		t.Fatalf("answer: %d", code)
+	}
+	a.worker.RunOnce(ctx)
+	got = chatTexts(t, a, conv)
+	if last := got[len(got)-1]; !strings.HasPrefix(last, "assistant/result: The hello workflow finished.") {
+		t.Fatalf("the end: %v", got)
+	}
+	if handledBy() != nil {
+		t.Errorf("handled_by = %v after the run ended", handledBy())
+	}
+
+	// One trace for the whole run, the child's steps marked and in order.
+	view := call(t, a.handler, "GET", "/api/v1/conversations/"+conv, "")
+	steps := call(t, a.handler, "GET", "/api/v1/tasks/"+field(t, view, "task_id").(string)+"/steps", "")
+	var body struct {
+		Items []struct {
+			Step       int             `json:"step"`
+			State      string          `json:"state"`
+			WorkflowID string          `json:"workflow_id"`
+			Depth      int             `json:"depth"`
+			Action     json.RawMessage `json:"action"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(steps.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var trail []string
+	for _, s := range body.Items {
+		trail = append(trail, fmt.Sprintf("%d:%s:%d", s.Step, s.WorkflowID, s.Depth))
+	}
+	if got := strings.Join(trail, " "); got != "1:orchestrator:0 2:hello:1 3:hello:1 4:hello:1 5:orchestrator:0" {
+		t.Errorf("trace = %s", got)
+	}
+	if !strings.Contains(string(body.Items[0].Action), `"type":"delegate"`) || !strings.Contains(string(body.Items[0].Action), `"workflow":"hello"`) {
+		t.Errorf("the delegation is in the trace: %s", body.Items[0].Action)
+	}
+
+	// A request nothing fits is answered by the orchestrator, with no routing line.
+	say(t, a, conv, "what is the weather")
+	a.worker.RunOnce(ctx)
+	got = chatTexts(t, a, conv)
+	if last := got[len(got)-1]; !strings.HasPrefix(last, "assistant/result: I have no workflow for that. I can hand you to: hello, ui-demo.") {
+		t.Errorf("no match: %v", got)
+	}
+	for _, line := range got[len(got)-3:] {
+		if strings.HasPrefix(line, "assistant/info: →") {
+			t.Errorf("a routing line without routing: %v", got)
+		}
+	}
+
+	// An unclear request gets one question from the orchestrator itself.
+	say(t, a, conv, "help")
+	a.worker.RunOnce(ctx)
+	got = chatTexts(t, a, conv)
+	if last := got[len(got)-1]; !strings.HasPrefix(last, "assistant/question: What would you like to do? I can hand you to: hello, ui-demo.") {
+		t.Errorf("a question: %v", got)
+	}
+	if handledBy() != nil {
+		t.Errorf("the orchestrator itself asks: %v", handledBy())
+	}
+	// Its answer is routed like any message.
+	say(t, a, conv, "the interface components please")
+	a.worker.RunOnce(ctx)
+	got = chatTexts(t, a, conv)
+	if !strings.Contains(strings.Join(got[len(got)-3:], "\n"), `assistant/info: → ui-demo: you mentioned "interface"`) {
+		t.Errorf("routed to the interface demo: %v", got)
+	}
+	if handledBy() != "ui-demo" {
+		t.Errorf("handled_by = %v", handledBy())
+	}
+	surface, components := lastInterface(t, a, conv)
+	if !components["next"] {
+		t.Fatalf("the child's interface was not shown: %q %v", surface, components)
+	}
+	// The user's action on the child's interface goes to the child.
+	if rec := uiEvent(t, a, conv, actionBody(surface, "next", "continue", "Continue to the form", "{}")); rec.Code != 201 {
+		t.Fatalf("the action: %d %s", rec.Code, rec.Body)
+	}
+	a.worker.RunOnce(ctx)
+	if handledBy() != "ui-demo" {
+		t.Errorf("handled_by = %v after the action", handledBy())
+	}
+	if id := lastRendererCall(t, a, conv); !strings.HasPrefix(id, "call-") {
+		t.Errorf("the child asked the page for its window: %q", id)
+	}
+}
+
+func TestOnlyWorkflowsThatDeclareIntentsAreOfferedForRouting(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	rec := call(t, a.handler, "GET", "/api/v1/workflows", "")
+	var body struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Intents *struct {
+				Description string   `json:"description"`
+				Examples    []string `json:"examples"`
+			} `json:"intents"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]bool{}
+	for _, w := range body.Items {
+		offered[w.ID] = w.Intents != nil
+	}
+	if !offered["hello"] || !offered["ui-demo"] || offered["orchestrator"] || offered["noop"] || offered["ask"] || offered["askflow"] {
+		t.Errorf("offered = %v", offered)
+	}
+	for _, w := range body.Items {
+		if w.ID == "hello" && (w.Intents == nil || len(w.Intents.Examples) == 0 || w.Intents.Description == "") {
+			t.Errorf("hello's intents = %+v", w.Intents)
+		}
 	}
 }

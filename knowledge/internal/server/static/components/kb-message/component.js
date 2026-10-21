@@ -74,7 +74,7 @@
       const { role, contentNode, sources } = this._message || {};
 
       // Clear any previously rendered content before re-rendering — matches
-      // kb-nav's own re-render pattern (textContent = "" rather than
+      // dp-tabs's own re-render pattern (textContent = "" rather than
       // innerHTML = "").
       this.textContent = "";
       this.dataset.role = role || "";

@@ -30,7 +30,7 @@ assert.ok(
 function buildDom(formHtml) {
   const html = `<!doctype html><html><body>
     <span id="theme-icon"></span>
-    <pf-dialog id="confirmDialog"></pf-dialog>
+    <dp-dialog id="confirmDialog"></dp-dialog>
     ${formHtml}
     <script>${sharedScript}</script>
   </body></html>`;

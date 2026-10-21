@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"assistant/internal/a2ui"
 	"assistant/internal/callctx"
 	"assistant/internal/chat"
 	"assistant/internal/config"
@@ -151,7 +152,7 @@ func callLogAttrs(ctx context.Context) []slog.Attr {
 // newApp wires the stores, the model router, the workflow engine, the worker
 // and the HTTP handler together. The clock is how the noop workflow waits;
 // tests pass a fake. wfs are the YAML workflows tasks can name.
-func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup modelSetup, wfs map[string]*workflow.Workflow) (*app, error) {
+func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup modelSetup, wfs map[string]*workflow.Workflow, mediaHosts []string) (*app, error) {
 	m := metrics.New()
 	taskStore := tasks.NewStore(pool)
 	callStore := llmcalls.NewStore(pool)
@@ -179,22 +180,31 @@ func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup m
 	if err != nil {
 		return nil, fmt.Errorf("workflow prompts: %w", err)
 	}
+	uiValidator, err := a2ui.New()
+	if err != nil {
+		return nil, fmt.Errorf("A2UI schemas: %w", err)
+	}
+	// A workflow that declares ui is taught the catalog, and an interface it
+	// writes is checked before its reply is accepted.
+	prompts.UIGuide = uiValidator.Guide()
 	stepStore := tasksteps.NewStore(pool)
 	engine := &workflow.Engine{
-		LLM: router, Tools: toolRegistry, Prompts: prompts,
+		LLM: router, Tools: toolRegistry, Prompts: prompts, UI: uiValidator,
 		Recorder: tasksteps.NewRecorder(stepStore, m, log),
 	}
-	runner := workflows.NewRunner(workflows.New(clock, workflows.WithLLM(router)), &workflows.EngineRunner{Engine: engine, Workflows: wfs})
+	engineRunner := &workflows.EngineRunner{Engine: engine, Workflows: wfs}
+	engine.Delegates = engineRunner // the workflows that declare intents are what the orchestrator routes to
+	runner := workflows.NewRunner(workflows.New(clock, workflows.WithLLM(router)), engineRunner)
 
 	conversations := &chat.Service{
 		Store: chat.NewStore(pool), Tasks: taskStore, Catalog: runner,
-		Channel: &chat.MockChannel{}, Errors: m, Log: log,
+		Channel: &chat.MockChannel{}, Errors: m, Rejections: m, UI: uiValidator, Log: log,
 	}
 	worker := &tasks.Worker{Queue: taskStore, Runner: runner, Observer: m, Notifier: conversations, Log: log}
 
 	return &app{
 		handler: server.NewRouter(server.Deps{
-			DB: pool, Users: users.NewStore(pool), Tasks: taskStore, Calls: callStore, Steps: stepStore, Worker: worker, Workflows: runner, Chat: conversations, Models: router, Metrics: m, Log: log,
+			DB: pool, Users: users.NewStore(pool), Tasks: taskStore, Calls: callStore, Steps: stepStore, Worker: worker, Workflows: runner, Chat: conversations, Models: router, A2UIMediaHosts: mediaHosts, Metrics: m, Log: log,
 		}),
 		worker:  worker,
 		tasks:   taskStore,
@@ -261,7 +271,7 @@ func serve() int {
 		return 1
 	}
 	log.Info("workflows loaded", "count", len(wfs), "dir", cfg.WorkflowsDir)
-	a, err := newApp(pool, log, workflows.RealClock{}, setup, wfs)
+	a, err := newApp(pool, log, workflows.RealClock{}, setup, wfs, cfg.A2UIMediaHosts)
 	if err != nil {
 		log.Error("startup", "error", err)
 		return 1

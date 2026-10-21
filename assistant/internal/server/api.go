@@ -59,6 +59,7 @@ type StepStore interface {
 type CallStore interface {
 	ForTask(ctx context.Context, taskID string) ([]llmcalls.Call, error)
 	UsageByUserAndModel(ctx context.Context, since *time.Time) ([]llmcalls.Usage, error)
+	Attempts(ctx context.Context, since *time.Time, limit, offset int) ([]llmcalls.Call, int, error)
 	UsageForTasks(ctx context.Context, taskIDs []string) (map[string]llmcalls.TaskUsage, error)
 }
 
@@ -137,6 +138,7 @@ func (d Deps) mountAPI(r chi.Router) {
 		r.Get("/tasks/{id}/steps", d.listTaskSteps)
 		r.Get("/tasks/{id}/llm-calls", d.listTaskCalls)
 		r.Get("/usage", d.usage)
+		r.Get("/llm-calls", d.listAttempts)
 		r.Get("/models", d.listModels)
 		r.Get("/workflows", d.listWorkflows)
 		r.Get("/conversations", d.listConversations)
@@ -145,6 +147,7 @@ func (d Deps) mountAPI(r chi.Router) {
 		r.Delete("/conversations/{id}", d.removeConversation)
 		r.Get("/conversations/{id}/messages", d.listMessages)
 		r.Post("/conversations/{id}/messages", d.sendMessage)
+		r.Post("/conversations/{id}/ui-events", d.postUIEvent)
 	})
 }
 

@@ -19,7 +19,6 @@ import (
 // adminAppI18nKeys mirrors modelsAppI18nKeys/vocabularyAppI18nKeys for the
 // Admin SPA shell.
 var adminAppI18nKeys = []string{
-	"admin.title",
 	"admin.config_heading", "admin.config_import_hint", "admin.config_export",
 	"admin.config_import_file", "admin.config_import", "admin.config_import_confirm",
 	"admin.grant_heading", "admin.user", "admin.role", "admin.language_scoped", "admin.grant",
@@ -39,25 +38,8 @@ var adminAppI18nKeys = []string{
 	"admin.llm_configs_heading", "admin.llm_delete_confirm", "admin.llm_no_configs",
 	"admin.sections_heading", "admin.sections_hint", "admin.sections_grammar", "admin.sections_transcription", "admin.sections_dictionary",
 	"admin.sections_save", "admin.sections_configs_heading", "admin.sections_delete_confirm", "admin.sections_no_configs",
-	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_languages", "admin.tab_config",
+	"admin.tab_grants", "admin.tab_ime", "admin.tab_llm", "admin.tab_languages", "admin.tab_transfer", "nav.config",
 	"admin.snippet_field", "admin.snippet_text", "admin.llm_placeholders_hint",
-	"admin.llm_models_heading", "admin.llm_models_refresh", "admin.llm_col_model", "admin.llm_col_provider",
-	"admin.llm_col_priority", "admin.llm_col_availability", "admin.llm_available", "admin.llm_unavailable",
-	"admin.llm_reason_cooldown", "admin.llm_reason_no_credentials",
-	"admin.llm_models_none", "admin.llm_perf_heading", "admin.llm_perf_period", "admin.llm_perf_group",
-	"admin.llm_perf_hint", "admin.llm_perf_none", "admin.llm_window_1h", "admin.llm_window_24h",
-	"admin.llm_window_7d", "admin.llm_window_30d", "admin.llm_window_all", "admin.llm_group_model",
-	"admin.llm_group_kind_model", "admin.llm_col_purpose", "admin.llm_col_calls", "admin.llm_col_success",
-	"admin.llm_col_tokens_per_second", "admin.llm_col_cost", "admin.llm_short_calls", "admin.llm_short_success",
-	"admin.llm_short_time", "admin.llm_short_tokens", "admin.llm_short_tokens_per_second", "admin.llm_short_cost",
-	"admin.llm_col_time_stats", "admin.llm_attempt_request", "admin.llm_outcome_ok",
-	"admin.llm_outcome_error", "admin.llm_outcome_timeout", "admin.llm_outcome_rate_limited", "admin.llm_outcome_canceled",
-	"admin.llm_attempts_heading", "admin.llm_attempts_filter_all", "admin.llm_attempts_none", "admin.llm_col_time",
-	"admin.llm_col_outcome", "admin.llm_col_duration", "admin.llm_col_tokens", "admin.llm_col_http",
-	"admin.llm_purge_heading", "admin.llm_purge_label",
-	"admin.llm_purge_option_7", "admin.llm_purge_option_30", "admin.llm_purge_option_90", "admin.llm_purge_option_all",
-	"admin.llm_purge_button", "admin.llm_purge_confirm_days", "admin.llm_purge_confirm_all", "admin.llm_purge_confirm_button",
-	"admin.llm_purge_cancel", "admin.llm_purge_done", "admin.llm_purge_hint",
 	"texts.edit", "texts.delete", "vocabulary.cancel_edit",
 }
 

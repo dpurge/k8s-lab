@@ -1,0 +1,179 @@
+:host {
+  display: grid;
+  /* One column that can be narrower than its content: a bare column grows to
+     the widest content and makes the whole page scroll sideways on a phone. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  box-sizing: border-box;
+  height: var(--dp-shell-height, 100vh);
+  background: var(--bg, #f3f4f6);
+  color: var(--text, #1f2430);
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  height: var(--dp-shell-header-height, 3.5rem);
+  padding: 0 1.5rem;
+  background: var(--surface, #ffffff);
+  border-bottom: 1px solid var(--border, #d7dae0);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.actions[hidden] {
+  display: none;
+}
+
+/* What the page puts in the top bar after the brand (tabs, say) may be narrower
+   than its content and then scrolls sideways, rather than widening the page. */
+::slotted([slot="header"]) {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+/* What the page puts in the top bar's actions may shrink, so a long user name
+   gives way instead of pushing the buttons off the screen. */
+::slotted([slot="actions"]) {
+  min-width: 0;
+}
+
+.theme-toggle {
+  margin-left: auto;
+}
+
+.actions:not([hidden]) + .theme-toggle {
+  margin-left: 0;
+}
+
+/* The middle row. min-height: 0 lets it be as tall as the row, not as its
+   content, so the sidebar and the main area scroll on their own. */
+.body {
+  display: grid;
+  grid-template-columns: var(--dp-shell-sidebar-width, 15rem) minmax(0, 1fr);
+  min-height: 0;
+  transition: grid-template-columns 0.15s ease;
+}
+
+.body.no-sidebar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:host([sidebar-collapsed]) .body:not(.no-sidebar) {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+aside {
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 1.5rem 1rem;
+  overflow-y: auto;
+  white-space: nowrap;
+  background: var(--surface-alt, #e9ebee);
+  border-right: 1px solid var(--border, #d7dae0);
+  transition: opacity 0.1s ease, padding 0.15s ease;
+}
+
+aside[hidden] {
+  display: none;
+}
+
+:host([sidebar-collapsed]) aside {
+  padding: 1.5rem 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+main {
+  box-sizing: border-box;
+  min-width: 0; /* content wider than the column scrolls inside main, not the page */
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--dp-shell-main-padding, 2rem 3rem);
+}
+
+/* centered: a login or signup page, with its content in the middle. */
+:host([centered]) main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+footer {
+  border-top: 1px solid var(--border, #d7dae0);
+  background: var(--surface, #ffffff);
+  padding: 0 1.5rem;
+}
+
+footer[hidden] {
+  display: none;
+}
+
+.scrim {
+  display: none;
+}
+
+/* A narrow screen: the sidebar is a drawer over the page, closed unless
+   sidebar-open is set, whatever the saved collapsed choice of wide screens. */
+@media (max-width: 760px) {
+  .body,
+  :host([sidebar-collapsed]) .body:not(.no-sidebar) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  aside,
+  :host([sidebar-collapsed]) aside {
+    position: fixed;
+    top: var(--dp-shell-header-height, 3.5rem);
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(var(--dp-shell-sidebar-width, 15rem), 85vw);
+    padding: 1.5rem 1rem;
+    opacity: 1;
+    pointer-events: auto;
+    visibility: hidden;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease, visibility 0s linear 0.2s;
+  }
+  :host([sidebar-open]) aside {
+    visibility: visible;
+    transform: none;
+    transition: transform 0.2s ease;
+  }
+  .scrim:not([hidden]) {
+    display: block;
+    position: fixed;
+    top: var(--dp-shell-header-height, 3.5rem);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 25;
+    background: var(--dp-shell-scrim, rgba(0, 0, 0, 0.4));
+  }
+  main {
+    padding: var(--dp-shell-main-padding-narrow, 1.5rem);
+  }
+  /* A phone's top bar: the brand, the user and two buttons must fit in 390px. */
+  header {
+    gap: 0.75rem;
+    padding: 0 1rem;
+  }
+}

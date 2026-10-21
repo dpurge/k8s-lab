@@ -1,0 +1,35 @@
+:host {
+  display: block;
+}
+
+.card {
+  box-sizing: border-box;
+  color: inherit;
+  background: var(--dp-card-bg, var(--surface, #ffffff));
+  border: 1px solid var(--dp-card-border-color, var(--border, #d7dae0));
+  border-radius: var(--dp-card-radius, 0.6rem);
+  padding: var(--dp-card-padding, 1.5rem);
+  box-shadow: var(--dp-card-shadow, 0 1px 2px rgba(0, 0, 0, 0.04));
+}
+
+.heading {
+  margin: 0 0 var(--dp-card-heading-gap, 0.75rem);
+  font-size: var(--dp-card-heading-size, 1.2rem);
+}
+
+:host([interactive]) .card {
+  cursor: pointer;
+}
+
+:host([interactive]) .card:hover {
+  border-color: var(--dp-card-hover-border-color, var(--link, #3b5bab));
+}
+
+:host(:focus-visible) {
+  outline: none;
+}
+
+:host(:focus-visible) .card {
+  outline: 2px solid var(--dp-card-focus-color, var(--link, #3b5bab));
+  outline-offset: 2px;
+}

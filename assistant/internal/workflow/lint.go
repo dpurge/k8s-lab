@@ -25,6 +25,13 @@ func Lint(wf *Workflow, tools ToolSet) []Finding {
 	lintLimits(wf, add)
 	lintTags(wf.ModelTags, add, "model_tags")
 	lintStateSchema(wf, add)
+	if wf.UI != nil {
+		for i, c := range wf.UI.Catalogs {
+			if c != "basic" {
+				add(fmt.Sprintf("the catalog %q does not exist; only basic does", c), "ui", "catalogs", fmt.Sprint(i))
+			}
+		}
+	}
 
 	if _, ok := wf.States[wf.Start]; !ok {
 		add(fmt.Sprintf("start state %q does not exist", wf.Start), "start")

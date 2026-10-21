@@ -40,6 +40,9 @@ var (
 // snippets. Build one with LoadPrompts, which rejects any placeholder it does
 // not know, so a bad prompt fails at startup and never reaches a model.
 type Prompts struct {
+	// UIGuide is added to the system prompt of every step of a workflow that
+	// declares ui: how to write an interface and which components there are.
+	UIGuide  string
 	template string
 	lang     map[string]string
 	output   map[string]string

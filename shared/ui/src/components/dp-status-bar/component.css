@@ -1,0 +1,25 @@
+:host {
+  display: flex;
+  align-items: center;
+  gap: var(--dp-status-bar-gap, 1rem);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--dp-status-bar-min-height, 2.4rem);
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+.status {
+  color: var(--dp-status-bar-status-color, var(--muted, #6b7280));
+  font-size: var(--dp-status-bar-status-size, 0.85rem);
+}
+
+.message {
+  color: var(--dp-status-bar-message-color, inherit);
+}
+
+:host([error]) .message {
+  color: var(--dp-status-bar-error-color, var(--danger, #b3453f));
+}

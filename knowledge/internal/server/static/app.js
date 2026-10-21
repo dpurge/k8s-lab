@@ -5,34 +5,27 @@ let currentChat = "";
 // transition and refresh the draft list (see pollStatus below).
 let ingestJobRunning = false;
 
-const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab"];
+const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab", "tasksTab"];
+// The menu has one item, Documents, for the two tabs that hold documents: the
+// documents themselves ("knowledge") and the drafts being made into them
+// ("ingest"). The two are the pages in the sidebar's Documents list.
+const DOCUMENT_TABS = ["knowledge", "ingest"];
 const mainNav = $("mainNav");
-const ingestSubNav = $("ingestSubNav");
+const documentsNav = $("documentsNav");
 const confirmDialog = $("confirmDialog");
-mainNav.items = [
-  { id: "knowledge", label: "Documents" },
-  { id: "chat", label: "Chat" },
-  { id: "ingest", label: "Ingest" },
-];
-mainNav.active = "knowledge"; // matches the markup's default "tab active" on knowledgeTab
-mainNav.addEventListener("kb-nav-select", (event) => showTab(event.detail.id));
+mainNav.active = "documents"; // matches the markup's default "tab active" on knowledgeTab
+documentsNav.active = "knowledge";
+// "documents" is the menu's name for the documents page; the other items are tabs.
+mainNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id === "documents" ? "knowledge" : event.detail.id));
+documentsNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id));
 
-ingestSubNav.items = [
-  { id: "drafts", label: "Drafts" },
-  { id: "jobs", label: "Jobs" },
-];
-ingestSubNav.active = "drafts"; // matches the markup's default "subview active" on ingestDraftsSection
-// Bound directly to ingestSubNav (not document), so this can't be reached by
-// or collide with mainNav's own element-bound kb-nav-select listener above,
-// even though both listen for the same event name.
-ingestSubNav.addEventListener("kb-nav-select", (event) => showIngestSection(event.detail.id));
-
-// One delegated kb-card-select listener per list container, added
+// One delegated dp-card-select listener per list container, added
 // once here, instead of an inline onclick handler re-created on every
-// card each time #list/#drafts/#chats gets re-rendered.
-$("list").addEventListener("kb-card-select", (event) => run(() => openItem(event.detail.id)));
-$("drafts").addEventListener("kb-card-select", (event) => run(() => openDraft(event.detail.id)));
-$("chats").addEventListener("kb-card-select", (event) => run(() => openChat(event.detail.id)));
+// card each time #list/#drafts/#chats gets re-rendered. The card's value is
+// the id of the item, draft or chat it shows.
+$("list").addEventListener("dp-card-select", (event) => run(() => openItem(event.detail.value)));
+$("drafts").addEventListener("dp-card-select", (event) => run(() => openDraft(event.detail.value)));
+$("chats").addEventListener("dp-card-select", (event) => run(() => openChat(event.detail.value)));
 $("chatMessages").addEventListener("kb-source-select", (event) => run(() => openItem(event.detail.id)));
 $("jobs").addEventListener("kb-job-retry", (event) => run(() => retryJob(event.detail.id)));
 $("jobs").addEventListener("kb-job-delete", (event) => run(() => deleteJob(event.detail.id)));
@@ -47,23 +40,21 @@ function showIngestView(view) {
   $("ingestDetailView").classList.toggle("active", view === "detail");
 }
 
-function showIngestSection(id) {
-  $("ingestDraftsSection").classList.toggle("active", id === "drafts");
-  $("ingestJobsSection").classList.toggle("active", id === "jobs");
-  ingestSubNav.active = id;
-}
-
 function showTab(tab) {
   for (const id of TAB_IDS) $(id).classList.toggle("active", id === tab + "Tab");
-  mainNav.active = tab;
+  // The tab's panel is in the shell's sidebar; the workspace is in its main area.
+  for (const id of TAB_IDS) $(id.replace("Tab", "Aside")).classList.toggle("active", id === tab + "Tab");
+  documentsNav.classList.toggle("active", DOCUMENT_TABS.includes(tab));
+  mainNav.active = DOCUMENT_TABS.includes(tab) ? "documents" : tab;
+  if (DOCUMENT_TABS.includes(tab)) documentsNav.active = tab;
   // Entering a tab always lands on its list view for predictability;
   // openItem()/openDraft() call showTab() themselves and then switch
   // to the detail view immediately after, overriding this.
   if (tab === "knowledge") showKnowledgeView("list");
   if (tab === "ingest") showIngestView("list");
-  if (tab === "ingest") showIngestSection("drafts");
   if (tab === "chat") run(loadChats);
-  if (tab === "ingest") run(async () => { await loadDrafts(); await loadJobs(); });
+  if (tab === "ingest") run(loadDrafts);
+  if (tab === "tasks") run(loadJobs);
 }
 
 function parseTags(value) {
@@ -171,12 +162,12 @@ function renderItem(item) {
   const summary = item.summary ? esc(item.summary) : '<span class="muted">(generating summary…)</span>';
 
   return `
-    <kb-card data-id="${esc(item.id)}">
+    <dp-card interactive value="${esc(item.id)}">
       <b>${title}</b>
       <div>${summary}</div>
       <div>${tags}</div>
       <div class="muted">${score}Updated ${new Date(item.updated_at).toLocaleString()}</div>
-    </kb-card>
+    </dp-card>
   `;
 }
 
@@ -309,10 +300,10 @@ function renderChat(chat) {
   const scope = tags || '<span class="muted">all knowledge</span>';
 
   return `
-    <kb-card data-id="${esc(chat.id)}">
+    <dp-card interactive value="${esc(chat.id)}">
       <b>${esc(chat.title)}</b>
       <div>${scope}</div>
-    </kb-card>
+    </dp-card>
   `;
 }
 
@@ -447,21 +438,27 @@ async function startIngestFile() {
   message(`Started: ${job.kind} (job ${job.id})`);
 }
 
-// Tracks the live Drafts/Jobs counts shown in ingestSubNav's pill labels.
-// Kept as its own object (rather than recomputed from the DOM) so
-// loadDrafts()/loadJobs() can each update their own count independently —
-// including a background refresh of the currently-hidden pill (see
-// pollStatus below) — without clobbering the other pill's last-known count.
-// null means "not loaded yet", shown as a bare label with no count.
-const ingestPillCounts = { drafts: null, jobs: null };
+// The live Drafts and Tasks counts shown in the menu's labels. Kept as its own
+// object (rather than recomputed from the DOM).
+const navCounts = { drafts: null, tasks: null };
 
-function updateIngestPillCount(id, count) {
-  ingestPillCounts[id] = count;
-  ingestSubNav.items = [
-    { id: "drafts", label: ingestPillCounts.drafts === null ? "Drafts" : `Drafts (${ingestPillCounts.drafts})` },
-    { id: "jobs", label: ingestPillCounts.jobs === null ? "Jobs" : `Jobs (${ingestPillCounts.jobs})` },
+// Sets the count shown in a menu label (Drafts, Tasks) and redraws the labels.
+// Each list updates its own count independently, so one loading never clobbers
+// the other's last-known count. null means "not loaded yet": a bare label.
+function updateNavCount(id, count) {
+  navCounts[id] = count;
+  const withCount = (label, n) => (n === null ? label : `${label} (${n})`);
+  mainNav.items = [
+    { id: "documents", label: "Documents" },
+    { id: "chat", label: "Chat" },
+    { id: "tasks", label: withCount("Tasks", navCounts.tasks) },
+  ];
+  documentsNav.items = [
+    { id: "knowledge", label: "Documents" },
+    { id: "ingest", label: withCount("Drafts", navCounts.drafts) },
   ];
 }
+updateNavCount("drafts", null);
 
 async function loadDrafts() {
   const data = await api("/ingest/drafts");
@@ -469,19 +466,19 @@ async function loadDrafts() {
   $("drafts").innerHTML = drafts.length
     ? drafts.map(renderDraft).join("")
     : '<p class="muted">No drafts pending review.</p>';
-  updateIngestPillCount("drafts", drafts.length);
+  updateNavCount("drafts", drafts.length);
 }
 
 function renderDraft(d) {
   const tags = (d.tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
 
   return `
-    <kb-card data-id="${esc(d.id)}">
+    <dp-card interactive value="${esc(d.id)}">
       <b>${esc(d.title)}</b>
       <div>${esc(d.summary)}</div>
       <div>${tags}</div>
       <div class="muted">${esc(d.source_kind)}: ${esc(d.source_ref)} · chunk ${d.chunk_index + 1} · Updated ${new Date(d.updated_at).toLocaleString()}</div>
-    </kb-card>
+    </dp-card>
   `;
 }
 
@@ -561,8 +558,8 @@ async function loadJobs() {
   const list = data.jobs || [];
   $("jobs").innerHTML = "";
   if (!list.length) {
-    $("jobs").innerHTML = '<p class="muted">No jobs yet.</p>';
-    updateIngestPillCount("jobs", 0);
+    $("jobs").innerHTML = '<p class="muted">No tasks yet.</p>';
+    updateNavCount("tasks", 0);
     return;
   }
   for (const job of list) {
@@ -570,29 +567,19 @@ async function loadJobs() {
     card.job = job;
     $("jobs").appendChild(card);
   }
-  updateIngestPillCount("jobs", list.length);
-}
-
-// Refreshes both Ingest sub-workspaces at once — mirrors showTab("ingest")'s
-// own reset-and-reload behavior above, and (per the spec's "(or both)"
-// allowance) is a smaller, simpler diff than tracking which pill is active
-// just for the Refresh button; it also keeps a currently-hidden pill's
-// count current, not just the visible list.
-async function refreshIngestLists() {
-  await loadDrafts();
-  await loadJobs();
+  updateNavCount("tasks", list.length);
 }
 
 async function retryJob(id) {
   const job = await api("/jobs/" + id + "/retry", { method: "POST" });
-  message(`Retrying as new ${job.kind} job (${job.id}).`);
+  message(`Retrying as new ${job.kind} task (${job.id}).`);
   await loadJobs();
 }
 
 async function deleteJob(id) {
-  if (!(await confirmDialog.confirm("Delete this job's history permanently? This cannot be undone.", { danger: true }))) return;
+  if (!(await confirmDialog.confirm("Delete this task's history permanently? This cannot be undone.", { danger: true }))) return;
   await api("/jobs/" + id, { method: "DELETE" });
-  message("Job deleted.");
+  message("Task deleted.");
   await loadJobs();
 }
 
@@ -606,11 +593,11 @@ async function pollStatus() {
     $("statusBar").setJobStatus(job ? `${job.kind}: ${job.step || "running"}` : "");
 
     // Detect an "ingest" job's running -> finished transition and
-    // refresh the draft list + job history so newly created drafts
-    // and the just-finished/failed job appear without a manual
-    // reload, but only while the Ingest tab is open.
+    // refresh the draft list + task history so newly created drafts
+    // and the just-finished/failed task appear (and their counts in the
+    // menu change) without a manual reload.
     const isIngestRunning = job?.kind === "ingest";
-    if (ingestJobRunning && !isIngestRunning && $("ingestTab").classList.contains("active")) {
+    if (ingestJobRunning && !isIngestRunning) {
       // Called outside run(), so a rejection here can't be caught by
       // this function's own try/catch below — ignore it the same way
       // as the /jobs/current call itself: this is a nice-to-have
@@ -629,6 +616,8 @@ run(async () => {
   $("userEmail").textContent = me.email;
 });
 run(loadList);
+run(loadDrafts);
+run(loadJobs);
 pollStatus();
 setInterval(pollStatus, 3000);
 

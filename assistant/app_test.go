@@ -32,7 +32,7 @@ const testModels = `providers:
   - {id: laptop, type: ollama, base_url: "http://localhost:11434", api_key_from: ""}
   - {id: demo, type: demo}
 models:
-  - {id: demo-hello, provider: demo, model: hello, tags: [demo], priority: 1}
+  - {id: demo-hello, provider: demo, model: hello, tags: [demo, orchestrator], priority: 1}
   - {id: big, provider: gpu, model: big-model, tags: [chat, strong], priority: 20, price: {input_per_mtok: 2, output_per_mtok: 10}}
   - {id: small, provider: laptop, model: small-model, tags: [chat], priority: 10}
 `
@@ -46,7 +46,7 @@ func testApp(t *testing.T, pool *pgxpool.Pool, clock workflows.Clock, scripts ma
 		t.Fatal(err)
 	}
 	setup := modelSetup{config: cfg, providers: map[string]llm.Provider{"ollama": llmtest.NewProvider(scripts), "demo": demo.New()}}
-	a, err := newApp(pool, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), clock, setup, testWorkflows(t))
+	a, err := newApp(pool, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), clock, setup, testWorkflows(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,9 +343,14 @@ func TestTheDevModelsFileLoadsAndTheDeploymentMountsItWhereTheSettingSays(t *tes
 	if err != nil {
 		t.Fatalf("models.dev.yaml: %v", err)
 	}
-	gcp, ok := setup.config.Provider("gcp")
-	if !ok || gcp.Type != "vertex" || gcp.APIKeyFrom != "file:/etc/assistant-vertex/token" {
-		t.Errorf("the dev vertex provider must read its token from the mounted secret: %+v", gcp)
+	// The dev cluster mimics phraseforge's: one Ollama on the laptop. The GPU
+	// machine, Vertex and OpenRouter are the prod cluster's (models.example.yaml).
+	ollama, ok := setup.config.Provider("ollama")
+	if !ok || ollama.Type != "ollama" || ollama.APIKeyFrom != "" {
+		t.Errorf("the dev models file must have the laptop's Ollama as provider ollama: %+v", ollama)
+	}
+	if _, ok := setup.config.Provider("gcp"); ok {
+		t.Error("the dev models file must not use Vertex: it needs a token that the deploy no longer writes")
 	}
 	raw, err := os.ReadFile("k8s/deployment.yaml")
 	if err != nil {
@@ -355,9 +360,6 @@ func TestTheDevModelsFileLoadsAndTheDeploymentMountsItWhereTheSettingSays(t *tes
 	file := "/etc/assistant/models.yaml"
 	if strings.Contains(deployment, "ASSISTANT_VERTEX_TOKEN_FILE") {
 		t.Error("deployment.yaml still sets the removed ASSISTANT_VERTEX_TOKEN_FILE")
-	}
-	if filepath.Dir(strings.TrimPrefix(gcp.APIKeyFrom, "file:")) != "/etc/assistant-vertex" {
-		t.Errorf("the token file %s is not inside the mounted secret", gcp.APIKeyFrom)
 	}
 	for _, want := range []string{
 		"name: " + "ASSISTANT_MODELS_FILE" + "\n              value: " + file,

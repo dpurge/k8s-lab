@@ -31,3 +31,7 @@ node_modules/
 # assistant: local settings (secrets) and the temporary corporate CA copy used during Docker build
 assistant/.env
 assistant/.docker/corp-ca/_corp-ca.pem
+
+# Built bundle of shared/ui (task build-ui); only the placeholder is tracked
+shared/ui/dist/*
+!shared/ui/dist/.gitkeep

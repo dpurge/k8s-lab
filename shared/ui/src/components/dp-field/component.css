@@ -1,0 +1,15 @@
+:host {
+  display: block;
+  margin-bottom: var(--dp-field-margin-bottom, 0);
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+::slotted([slot="label"]) {
+  display: block;
+  font-size: var(--dp-field-label-size, 0.85rem);
+  color: var(--dp-field-label-color, var(--muted, #6b7280));
+  margin-bottom: var(--dp-field-label-gap, 0.3rem);
+}

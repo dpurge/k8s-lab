@@ -6,6 +6,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,6 +29,11 @@ const (
 	KindResult   = "result"
 	KindError    = "error"
 	KindInfo     = "info"
+	// KindUI is an interface the assistant sent: Message.UI holds its A2UI
+	// messages. KindUIAction is what the page sent back through it (an action,
+	// an error, a function call or its answer), as the user's turn.
+	KindUI       = "ui"
+	KindUIAction = "ui_action"
 )
 
 // Errors a caller can tell apart.
@@ -60,17 +66,24 @@ type View struct {
 	LastText *string   `json:"last_text"`
 	LastAt   time.Time `json:"last_at"`
 	Messages int       `json:"messages"`
+	// HandledBy is the workflow that is taking the current turn when it is not
+	// the conversation's own: the workflow the run handed the request to. Nil
+	// when the conversation's own workflow is the one.
+	HandledBy *string `json:"handled_by"`
 }
 
 // Message is one thing said.
 type Message struct {
-	ID             int64     `json:"id"`
-	ConversationID string    `json:"conversation_id"`
-	Role           string    `json:"role"`
-	Kind           string    `json:"kind"`
-	Text           string    `json:"text"`
-	TaskID         *string   `json:"task_id"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             int64   `json:"id"`
+	ConversationID string  `json:"conversation_id"`
+	Role           string  `json:"role"`
+	Kind           string  `json:"kind"`
+	Text           string  `json:"text"`
+	TaskID         *string `json:"task_id"`
+	// UI is the A2UI payload of a ui or ui_action message, and absent from the
+	// other kinds.
+	UI        json.RawMessage `json:"ui,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // Store reads and writes conversations and messages.
@@ -86,13 +99,18 @@ const conversationColumns = `c.id::text, c.user_id::text, c.workflow_id, c.title
 
 const viewColumns = conversationColumns + `,
 	t.status, t.error,
-	(SELECT left(m.text, 140) FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1),
+	(SELECT left(CASE WHEN m.kind = 'ui' AND m.text = '' THEN '(an interface)' ELSE m.text END, 140) FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1),
 	coalesce((SELECT max(m.created_at) FROM messages m WHERE m.conversation_id = c.id), c.created_at) AS last_at,
-	(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id)::int`
+	(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id)::int,
+	t.run`
 
 func scanView(row pgx.Row) (View, error) {
 	var v View
-	err := row.Scan(&v.ID, &v.UserID, &v.WorkflowID, &v.Title, &v.TaskID, &v.CreatedAt, &v.TaskStatus, &v.TaskError, &v.LastText, &v.LastAt, &v.Messages)
+	var run []byte
+	err := row.Scan(&v.ID, &v.UserID, &v.WorkflowID, &v.Title, &v.TaskID, &v.CreatedAt, &v.TaskStatus, &v.TaskError, &v.LastText, &v.LastAt, &v.Messages, &run)
+	if err == nil && v.TaskStatus != nil && (*v.TaskStatus == "pending" || *v.TaskStatus == "running" || *v.TaskStatus == "waiting") {
+		v.HandledBy = handledBy(run)
+	}
 	return v, err
 }
 
@@ -200,14 +218,32 @@ func (s *Store) ForTask(ctx context.Context, taskID string) (Conversation, bool,
 	return c, true, nil
 }
 
-// AddMessage appends a message.
-func (s *Store) AddMessage(ctx context.Context, conversationID, role, kind, text string, taskID *string) (Message, error) {
+// messageColumns are the columns of a Message, in the order scanMessage reads.
+const messageColumns = `id, conversation_id::text, role, kind, text, task_id::text, ui, created_at`
+
+func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO messages (conversation_id, role, kind, text, task_id) VALUES ($1::uuid, $2, $3, $4, $5::uuid)
-		RETURNING id, conversation_id::text, role, kind, text, task_id::text, created_at`,
-		conversationID, role, kind, text, taskID).
-		Scan(&m.ID, &m.ConversationID, &m.Role, &m.Kind, &m.Text, &m.TaskID, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Kind, &m.Text, &m.TaskID, &m.UI, &m.CreatedAt)
+	return m, err
+}
+
+// AddMessage appends a message without A2UI.
+func (s *Store) AddMessage(ctx context.Context, conversationID, role, kind, text string, taskID *string) (Message, error) {
+	return s.AddUIMessage(ctx, conversationID, role, kind, text, nil, taskID)
+}
+
+// AddUIMessage appends a message that may carry A2UI. ui is required for the
+// kinds ui and ui_action and must be nil for the others (the database checks
+// it). It is stored as given: whoever calls this has validated it.
+func (s *Store) AddUIMessage(ctx context.Context, conversationID, role, kind, text string, ui json.RawMessage, taskID *string) (Message, error) {
+	var payload any
+	if len(ui) > 0 {
+		payload = []byte(ui)
+	}
+	m, err := scanMessage(s.pool.QueryRow(ctx, `
+		INSERT INTO messages (conversation_id, role, kind, text, ui, task_id) VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::uuid)
+		RETURNING `+messageColumns,
+		conversationID, role, kind, text, payload, taskID))
 	if err != nil {
 		return Message{}, fmt.Errorf("add message: %w", err)
 	}
@@ -221,7 +257,7 @@ func (s *Store) Messages(ctx context.Context, conversationID string, after int64
 		return nil, ErrNotFound
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, conversation_id::text, role, kind, text, task_id::text, created_at
+		SELECT `+messageColumns+`
 		FROM messages WHERE conversation_id = $1::uuid AND id > $2 ORDER BY id`, conversationID, after)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
@@ -229,11 +265,42 @@ func (s *Store) Messages(ctx context.Context, conversationID string, after int64
 	defer rows.Close()
 	out := []Message{}
 	for rows.Next() {
-		var m Message
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Kind, &m.Text, &m.TaskID, &m.CreatedAt); err != nil {
+		m, err := scanMessage(rows)
+		if err != nil {
 			return nil, fmt.Errorf("list messages: %w", err)
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// handledBy is the workflow of the deepest run in a run snapshot, when the run
+// handed its request on (it has a child); nil otherwise.
+func handledBy(run []byte) *string {
+	var r struct {
+		WorkflowID string `json:"workflow_id"`
+		Child      *struct {
+			WorkflowID string `json:"workflow_id"`
+			Child      json.RawMessage
+		} `json:"child"`
+	}
+	if len(run) == 0 || json.Unmarshal(run, &r) != nil || r.Child == nil {
+		return nil
+	}
+	deepest := r.Child.WorkflowID
+	next := r.Child.Child
+	for len(next) > 0 && string(next) != "null" {
+		var n struct {
+			WorkflowID string          `json:"workflow_id"`
+			Child      json.RawMessage `json:"child"`
+		}
+		if json.Unmarshal(next, &n) != nil {
+			break
+		}
+		deepest, next = n.WorkflowID, n.Child
+	}
+	if deepest == "" {
+		return nil
+	}
+	return &deepest
 }

@@ -14,10 +14,12 @@ import (
 	"phraseforge/internal/metrics"
 )
 
-// Call is one row of llm_calls. JobID is nil for a call made outside a job, and
-// Error, HTTPStatus and RequestID are nil when unknown.
+// Call is one row of llm_calls. JobID is nil for a call made outside a job,
+// UserID is nil when no user is behind the call, and Error, HTTPStatus and
+// RequestID are nil when unknown.
 type Call struct {
 	JobID          *string
+	UserID         *int64
 	Kind           string
 	SourceLanguage string
 	TargetLanguage string
@@ -90,10 +92,10 @@ func (s *Store) Insert(ctx context.Context, c Call) error {
 		tags = []string{} // a NULL would violate the column's NOT NULL
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO llm_calls
-		(job_id, kind, source_language, target_language, model_id, provider_id, model_name, tags,
+		(job_id, user_id, kind, source_language, target_language, model_id, provider_id, model_name, tags,
 		 input_tokens, output_tokens, cost_usd, started_at, duration_ms, outcome, error, http_status, request_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-		c.JobID, c.Kind, c.SourceLanguage, c.TargetLanguage, c.ModelID, c.ProviderID, c.ModelName, tags,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		c.JobID, c.UserID, c.Kind, c.SourceLanguage, c.TargetLanguage, c.ModelID, c.ProviderID, c.ModelName, tags,
 		c.InputTokens, c.OutputTokens, c.CostUSD, c.StartedAt, c.DurationMS, c.Outcome, c.Error, c.HTTPStatus, c.RequestID)
 	return err
 }

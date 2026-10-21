@@ -16,7 +16,7 @@
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-task-actions/component.css";
+    link.href = "/static/components/as-task-actions/component.css";
     document.head.appendChild(link);
   }
 

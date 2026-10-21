@@ -20,3 +20,12 @@ func TestJobIDIsAbsentOutsideAJob(t *testing.T) {
 		t.Error("an empty job id must count as absent")
 	}
 }
+
+func TestUserIDRoundTripsThroughTheContextAndIsAbsentWithoutOne(t *testing.T) {
+	if id, ok := UserID(WithUserID(context.Background(), 7)); !ok || id != 7 {
+		t.Errorf("UserID = %d, %v; want 7, true", id, ok)
+	}
+	if id, ok := UserID(context.Background()); ok || id != 0 {
+		t.Errorf("UserID of a bare context = %d, %v; want 0, false", id, ok)
+	}
+}

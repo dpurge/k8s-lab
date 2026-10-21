@@ -22,28 +22,40 @@
   let chrome = window.__PF_APP_BOOTSTRAP__.chrome;
   const T = (key) => (chrome.i18n && chrome.i18n[key]) || key;
 
-  const SECTION_IDS = ["texts", "dialogs", "vocabulary", "models", "admin", "jobs", "profile"];
-  // Sidebar tabs — Profile is deliberately not one of them (it's the
-  // header's username quick-link only, matching today's layout, where
-  // Profile isn't in the sidebar either).
-  const NAV_SECTIONS = ["texts", "dialogs", "vocabulary", "models", "admin", "jobs"];
+  const SECTION_IDS = ["texts", "dialogs", "vocabulary", "models", "tasks", "usage", "config", "profile"];
+  // The main menu (in the top bar) is Documents, then Tasks, Usage and Config for
+  // an admin — Profile is deliberately not one of its items (it's the header's
+  // username quick-link only). Documents groups the four content sections, which
+  // are the pages of the sidebar's list; the language filter above that list
+  // narrows them.
+  const DOCUMENT_SECTIONS = ["texts", "dialogs", "vocabulary", "models"];
+  const MENU_SECTIONS = ["tasks", "usage", "config"];
 
+  // navIdFor is the menu item a section belongs to ("" for Profile).
+  function navIdFor(section) {
+    if (DOCUMENT_SECTIONS.includes(section)) return "documents";
+    return MENU_SECTIONS.includes(section) ? section : "";
+  }
+
+  // The content section the Documents item opens: the one the reader was last on.
+  let lastDocumentSection = "texts";
   let activeSection = null;
   let languageFilter = localStorage.getItem("phraseforge-language") || "";
-  let sidebarTabs = null;
+  let mainNav = null;
 
   function isKnownSection(id) {
     return (
       SECTION_IDS.includes(id) &&
-      (id !== "admin" || chrome.navFlags.isAdmin) &&
-      (id !== "jobs" || chrome.navFlags.isAdmin) &&
+      (id !== "config" || chrome.navFlags.isAdmin) &&
+      (id !== "tasks" || chrome.navFlags.isAdmin) &&
+      (id !== "usage" || chrome.navFlags.isAdmin) &&
       !!window.pfSections[id]
     );
   }
 
   // Sections whose show() takes the whole route (specs/features/phraseforge-
   // hash-navigation.md). The others (admin, profile) are called bare.
-  const ROUTED_SECTIONS = ["texts", "dialogs", "vocabulary", "models", "jobs"];
+  const ROUTED_SECTIONS = ["texts", "dialogs", "vocabulary", "models", "tasks", "usage", "config"];
 
   function sectionOpts(route) {
     return ROUTED_SECTIONS.includes(route.section) ? route : undefined;
@@ -53,12 +65,17 @@
   // source of truth for the active section, so there is no sessionStorage
   // copy of it any more. An empty or unknown hash is rewritten to #/texts.
   function renderRoute(route) {
+    currentRoute = route;
     if (!isKnownSection(route.section)) {
       window.pfRouter.replace({ section: "texts" });
       return;
     }
     showSection(route.section, sectionOpts(route));
   }
+
+  // The route being shown: a section that lists its own pages in the sidebar
+  // needs to know which one is current.
+  let currentRoute = { section: "" };
 
   // opts (optional) is forwarded verbatim to the target section's own
   // show(opts). Renders only — URL changes go through pfRouter.navigate.
@@ -72,7 +89,9 @@
       const el = document.getElementById(s + "-app");
       if (el) el.style.display = s === id ? "" : "none";
     }
-    if (sidebarTabs) sidebarTabs.active = NAV_SECTIONS.includes(id) ? id : "";
+    if (DOCUMENT_SECTIONS.includes(id)) lastDocumentSection = id;
+    if (mainNav) mainNav.active = navIdFor(id);
+    buildSidebar();
     const mod = window.pfSections[id];
     if (mod && mod.show) mod.show(opts);
   }
@@ -90,12 +109,20 @@
     window.pfRouter.navigate({ section: activeSection });
   }
 
+  // The sidebar element is kept here because it leaves the page while it is
+  // empty (see buildSidebar).
+  const sidebar = document.getElementById("sidebar");
+
   function buildSidebar() {
-    const sidebar = document.getElementById("sidebar");
     if (!sidebar) return;
     sidebar.innerHTML = "";
 
-    if (chrome.navFlags.viewableLanguages && chrome.navFlags.viewableLanguages.length) {
+    // The Usage and Config sections list their own pages here.
+    const mod = window.pfSections[activeSection];
+    if (mod && mod.sidebarNav) sidebar.appendChild(mod.sidebarNav(currentRoute));
+
+    // The content sections: the language filter, then the four of them.
+    if (DOCUMENT_SECTIONS.includes(activeSection) && chrome.navFlags.viewableLanguages && chrome.navFlags.viewableLanguages.length) {
       const select = document.createElement("select");
       select.id = "language-filter";
       const allOption = document.createElement("option");
@@ -112,29 +139,44 @@
       select.addEventListener("change", (e) => setLanguageFilter(e.target.value));
       sidebar.appendChild(select);
     }
+    if (DOCUMENT_SECTIONS.includes(activeSection)) {
+      const pages = document.createElement("dp-tabs");
+      pages.setAttribute("orientation", "vertical");
+      pages.setAttribute("label", T("nav.documents"));
+      pages.items = DOCUMENT_SECTIONS.map((id) => ({ id, label: T("nav." + id) }));
+      pages.active = activeSection;
+      pages.addEventListener("dp-tabs-select", (e) => window.pfRouter.navigate({ section: e.detail.id }));
+      sidebar.appendChild(pages);
+    }
 
-    sidebarTabs = document.createElement("pf-tabs");
-    sidebarTabs.setAttribute("orientation", "vertical");
-    const items = [
-      { id: "texts", label: T("nav.texts") },
-      { id: "dialogs", label: T("nav.dialogs") },
-      { id: "vocabulary", label: T("nav.vocabulary") },
-      { id: "models", label: T("nav.models") },
-    ];
-    if (chrome.navFlags.isAdmin) items.push({ id: "admin", label: T("nav.admin") });
-    if (chrome.navFlags.isAdmin) items.push({ id: "jobs", label: T("nav.jobs") });
-    sidebarTabs.items = items;
-    sidebarTabs.active = NAV_SECTIONS.includes(activeSection) ? activeSection : "";
-    sidebarTabs.addEventListener("pf-tabs-select", (e) => window.pfRouter.navigate({ section: e.detail.id }));
-    sidebar.appendChild(sidebarTabs);
+    // dp-shell draws a sidebar for as long as it has a child in that slot, so
+    // an empty one is taken out and put back when there is something to show.
+    const shell = document.querySelector("dp-shell");
+    if (sidebar.childElementCount && !sidebar.isConnected) shell.appendChild(sidebar);
+    else if (!sidebar.childElementCount) sidebar.remove();
+  }
+
+  // buildMainNav fills the menu in the top bar: Documents for every user, then
+  // Tasks, Usage and Config for an admin.
+  function buildMainNav() {
+    mainNav = document.getElementById("mainNav");
+    if (!mainNav) return;
+    const items = [{ id: "documents", label: T("nav.documents") }];
+    if (chrome.navFlags.isAdmin) items.push({ id: "tasks", label: T("nav.tasks") }, { id: "usage", label: T("nav.usage") }, { id: "config", label: T("nav.config") });
+    mainNav.items = items;
+    mainNav.setAttribute("label", T("nav.main"));
+    mainNav.active = navIdFor(activeSection);
+    if (!mainNav.dataset.wired) {
+      mainNav.dataset.wired = "1";
+      mainNav.addEventListener("dp-tabs-select", (e) =>
+        window.pfRouter.navigate({ section: e.detail.id === "documents" ? lastDocumentSection : e.detail.id }),
+      );
+    }
   }
 
   function buildHeader() {
-    const sidebarToggle = document.getElementById("sidebarToggleBtn");
-    if (sidebarToggle) {
-      sidebarToggle.setAttribute("aria-label", T("sidebar.toggle"));
-      sidebarToggle.setAttribute("title", T("sidebar.toggle"));
-    }
+    const shell = document.querySelector("dp-shell");
+    if (shell) shell.setAttribute("sidebar-label", T("sidebar.toggle"));
     const userLink = document.getElementById("userLink");
     if (userLink) userLink.textContent = chrome.username;
     const logoutLink = document.getElementById("logoutLink");
@@ -162,11 +204,13 @@
       if (mod && mod.setBootstrap && newBootstrap[s]) mod.setBootstrap(newBootstrap[s]);
     }
     buildHeader();
+    buildMainNav();
     buildSidebar();
     renderRoute(window.pfRouter.parse(window.location.hash));
   };
 
   buildHeader();
+  buildMainNav();
   buildSidebar();
   window.pfRouter.start(renderRoute);
 })();

@@ -160,3 +160,14 @@ func TestPurgedRowsAreCounted(t *testing.T) {
 	m.Purged("llm_calls", 4)
 	wantLine(t, scrape(t, m), "assistant_llm_calls_purged_total 7")
 }
+
+func TestRejectedA2UIMessagesAreCountedBySource(t *testing.T) {
+	m := New()
+	wantLine(t, scrape(t, m), `assistant_a2ui_rejected_total{source="interface"} 0`)
+	wantLine(t, scrape(t, m), `assistant_a2ui_rejected_total{source="event"} 0`)
+	m.A2UIRejected("interface")
+	m.A2UIRejected("event")
+	m.A2UIRejected("event")
+	wantLine(t, scrape(t, m), `assistant_a2ui_rejected_total{source="interface"} 1`)
+	wantLine(t, scrape(t, m), `assistant_a2ui_rejected_total{source="event"} 2`)
+}

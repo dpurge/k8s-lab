@@ -16,6 +16,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"k8s-lab/shared/ui"
+
 	"phraseforge/internal/ai"
 	"phraseforge/internal/auth"
 	"phraseforge/internal/catalog"
@@ -132,6 +134,8 @@ func (s *Server) Router() http.Handler {
 		panic(err) // embedded at build time — a missing "static" dir is a programmer error, not a runtime one
 	}
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServerFS(staticSub)))
+	// The shared Lit component library (dp-* elements, tokens.css).
+	r.Handle(ui.Prefix+"*", ui.Handler())
 
 	r.Get("/login", s.handleLoginForm)
 	r.Post("/login", s.handleLogin)
@@ -289,6 +293,7 @@ func (s *Server) Router() http.Handler {
 				r.Get("/models", s.apiListAdminModels)
 				r.Get("/llm-aggregates", s.apiAdminLLMAggregates)
 				r.Get("/llm-calls", s.apiAdminLLMCalls)
+				r.Get("/llm-usage", s.apiAdminLLMUsage)
 				r.Delete("/llm-calls", s.apiAdminPurgeLLMCalls)
 				r.Post("/grants", s.apiCreateAdminGrant)
 				r.Delete("/grants/{id}", s.apiRevokeAdminGrant)
@@ -336,6 +341,9 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), userCtxKey, u)
+		// What the request does in turn (a job it queues, a model call it makes)
+		// is recorded as being for this user.
+		ctx = jobs.WithUserID(ctx, u.ID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

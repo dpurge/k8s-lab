@@ -117,3 +117,14 @@ test("a step with nothing more recorded says so when opened", () => {
   rows(el)[0].click();
   assert.match(el.querySelector("tr.as-trace-more").textContent, /Nothing more was recorded/);
 });
+
+test("a delegation is a row of its own, and the steps of the workflow it handed to are marked and indented", () => {
+  const el = mount([
+    step({ id: 1, step: 1, state: "route", workflow_id: "orchestrator", action: { type: "delegate", workflow: "hello", message: "hi", reason: "a greeting" }, tool: null, tool_result: null }),
+    step({ id: 2, step: 2, state: "ask", workflow_id: "hello", depth: 1, action: { type: "ask_user", payload: { question: "?" } }, tool: null, tool_result: null }),
+    step({ id: 3, step: 3, state: "greet", workflow_id: "deeper", depth: 2, action: { type: "goto", state: "done" }, tool: null, tool_result: null }),
+  ]);
+  const got = rows(el).map(cells);
+  assert.deepEqual(got.map((r) => r[1]), ["route", "↳ hello · ask", "↳ ↳ deeper · greet"]);
+  assert.equal(got[0][2], "hand over to hello (a greeting)");
+});

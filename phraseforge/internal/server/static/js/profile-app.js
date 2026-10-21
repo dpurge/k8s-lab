@@ -86,7 +86,7 @@
               ${BOOT.locales.map((l) => `<option value="${esc(l.Code)}"${l.Code === profile.locale ? " selected" : ""}>${esc(l.Name)}</option>`).join("")}
             </select>
           </div>
-          <pf-button variant="primary" type="submit">${esc(T("profile.language_save"))}</pf-button>
+          <dp-button variant="primary" type="submit">${esc(T("profile.language_save"))}</dp-button>
         </form>
       </div>
 
@@ -96,7 +96,7 @@
           <input type="password" id="current-password" placeholder="${esc(T("profile.current_password"))}" required>
           <input type="password" id="new-password" placeholder="${esc(T("profile.new_password"))}" required minlength="8">
           <input type="password" id="confirm-password" placeholder="${esc(T("profile.confirm_password"))}" required minlength="8">
-          <pf-button variant="primary" type="submit">${esc(T("profile.change_password"))}</pf-button>
+          <dp-button variant="primary" type="submit">${esc(T("profile.change_password"))}</dp-button>
         </form>
       </div>
     `;

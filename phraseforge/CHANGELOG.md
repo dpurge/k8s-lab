@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Main menu in the top bar: Documents and, for admins, Tasks, Usage and Config; the content sections (Texts, Dialogs, Vocabulary, Models) and the language filter are in the left sidebar of Documents, and Usage and Config list their own pages there.
+- Usage section for admins (`#/usage`) with a sidebar: Usage (calls, tokens and cost per user, provider and model), Models, Performance and Attempts.
+- The user is recorded on jobs and model calls (nullable `user_id` on `jobs` and `llm_calls`, added by `phraseforge migrate`, which the deploy runs); a retry keeps the original job's user, and old rows show a dash.
+- `GET /api/v1/admin/llm-usage?since=` (admin only): successful calls per user, provider and model.
+- Attempts are paged and show the user's name.
+
 - Admin > LLM: the configured models with their availability, the performance of the model attempts in a period (success rate, mean, median and 95th percentile duration, tokens, speed and cost, per model or per purpose and model), the latest attempts with model and outcome filters, and a confirmed purge of old attempt records (`GET /api/v1/admin/llm-aggregates`, `GET` and `DELETE /api/v1/admin/llm-calls`). The Polish catalog has the English texts for the new labels.
 - Retention: model-call history (`llm_calls.retention_days`, default 30) and finished jobs (`jobs.retention_days_done`, default 7 for status done, `jobs.retention_days_failed`, default 30 for failed and cancelled) are purged automatically in batches; 0 keeps forever, pending and running jobs never purged. Metrics `phraseforge_llm_calls_purged_total` and `phraseforge_jobs_purged_total{rule}`.
 - Model routing: a purpose's `model_tags` select models from `models.yaml` (path `PHRASEFORGE_MODELS_FILE`, required); the router tries the highest-priority available model that has all the tags and falls back down the list. Every provider entry has the compulsory `api_key_from` key (`""`, `env:NAME` or `file:/abs/path`, read per call) and optional `headers` (custom HTTP headers, each `env:` or `file:/` re-read per call; reserved names refused). Missing credentials disable only that provider (unavailable in admin, warn in log), never halt startup. Circuit breaker holds failing models or unreachable providers out for `cooldown_seconds`. `/api/v1/admin/models` lists configured models with availability and `unavailable_reason` (missing_credentials or cooldown).
@@ -54,11 +60,21 @@ All notable changes to this project will be documented in this file.
 
 ### Removed
 
+- The Models, Performance, Attempts and purge cards of the Admin LLM tab (now in Usage).
+- The purpose, HTTP status and request id columns of the Attempts list (the API still returns them).
+
 - **Breaking change:** `config.yaml`: `<purpose>.provider`, `<purpose>.model`, `<purpose>.think` and the top-level `providers:` block are removed; they are replaced by `<purpose>.model_tags` (which selects models by tag) and `models.yaml` (which defines providers with `api_key_from` and models with per-model `options.think`). Old keys are rejected at load with messages naming the replacement. The Helm chart repository values and all mounted ConfigMaps must be updated together — mismatch fails at startup with a clear error.
 - **Breaking change:** `llm_prompts` table: `provider` and `model` columns replaced by `model_tags text[]` (NULL inherits purpose defaults). Admin > LLM uses tag checkboxes instead of provider/model dropdowns. Existing prompt overrides (provider/model pairs) are discarded (verified: 0 rows on dev; production must verify read-only before migration).
 
 ### Changed
 
+- Jobs are called Tasks in the UI, and Clear removes completed and cancelled tasks (`POST /api/v1/admin/jobs/clear` is unchanged).
+- Admin is now Config, with its tabs as sidebar pages (Permissions, IME, LLM, Languages, Export/import).
+- `GET /api/v1/admin/llm-calls` is paged: `offset` parameter, response `{items,total,limit,offset}`, default `limit` 25 instead of 50 (at most 200).
+- Addresses `#/tasks` and `#/config` replace `#/jobs` and `#/admin`; the old ones land on Texts.
+- The shared UI library (`shared/ui`) gained usage, model and attempt tables and shared formatting.
+
+- The embedded shared UI library now also carries the on-demand A2UI renderer files (`a2ui.js`, `a2ui-gallery.js` and a shared chunk, about 200 KB gzipped together); no page of this app loads them, so nothing changes on screen.
 - Config validation: unknown keys in `config.yaml` are now rejected at startup, naming the file and key (misspelt keys used to be silently ignored).
 - Retention: days are capped at 36500 (99.9 years); exceeding this at load is a validation error.
 - Retry behavior: a job whose only matching model is briefly held by the circuit breaker now waits for it (up to 2 minutes per attempt, within the attempt budget) instead of failing at once.

@@ -100,8 +100,15 @@ CREATE TABLE IF NOT EXISTS task_steps (
     input_tokens  integer NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
     output_tokens integer NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
     duration_ms   integer NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
-    at            timestamptz NOT NULL
+    at            timestamptz NOT NULL,
+    -- The workflow the step ran in and how deep that run was: a request handed
+    -- to another workflow (delegation) puts its steps in the same trace, one
+    -- level down. NULL and 0 for the steps of a run that delegated to no one.
+    workflow_id   text,
+    depth         integer NOT NULL DEFAULT 0 CHECK (depth >= 0)
 );
+ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS workflow_id text;
+ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS depth integer NOT NULL DEFAULT 0 CHECK (depth >= 0);
 
 -- A task's trace, in the order it happened.
 CREATE INDEX IF NOT EXISTS task_steps_task_idx ON task_steps (task_id, id);
@@ -132,10 +139,22 @@ CREATE TABLE IF NOT EXISTS messages (
     id              bigserial PRIMARY KEY,
     conversation_id uuid NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
     role            text NOT NULL CHECK (role IN ('user', 'assistant')),
-    kind            text NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'question', 'result', 'error', 'info')),
+    kind            text NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'question', 'result', 'error', 'info', 'ui', 'ui_action')),
     text            text NOT NULL,
     task_id         uuid,
+    -- A2UI: for kind 'ui' the array of A2UI messages the assistant sent to the
+    -- page (already validated); for 'ui_action' the one message the page sent
+    -- back (an action, an error, a function call or its answer). NULL for the
+    -- other kinds.
+    ui              jsonb,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
+
+-- Databases made before A2UI have neither the column nor the wider kinds.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS ui jsonb;
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_kind_check;
+ALTER TABLE messages ADD CONSTRAINT messages_kind_check CHECK (kind IN ('text', 'question', 'result', 'error', 'info', 'ui', 'ui_action'));
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_ui_check;
+ALTER TABLE messages ADD CONSTRAINT messages_ui_check CHECK ((kind IN ('ui', 'ui_action')) = (ui IS NOT NULL));
 
 CREATE INDEX IF NOT EXISTS messages_conversation_idx ON messages (conversation_id, id);

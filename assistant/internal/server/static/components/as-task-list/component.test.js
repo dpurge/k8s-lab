@@ -2,7 +2,7 @@ import { test, mock, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { load, reset, mockFetch, jsonResponse, flush, task, user, tasksApi, USER_ID } from "../testenv.js";
 
-await load("format.js", "api.js", "components/as-pager/component.js", "components/as-task-list/component.js");
+await load("format.js", "api.js", "components/as-task-list/component.js");
 
 afterEach(() => {
   mock.timers.reset();
@@ -87,7 +87,7 @@ test("an empty queue says so and shows no table", async () => {
   assert.equal(el.querySelector(".as-task-list-message").textContent, "No tasks yet.");
   assert.equal(el.querySelector(".as-task-list-table-wrap").hidden, true);
   assert.equal(el.querySelector(".as-task-list-summary").textContent, "0 tasks");
-  assert.equal(el.querySelector("as-pager").children.length, 0);
+  assert.equal(Number(el.querySelector("dp-pager").getAttribute("page-count")), 1, "one page, which the pager draws as nothing");
 });
 
 test("an empty filtered list names the filter", async () => {
@@ -183,7 +183,7 @@ test("after a failure the rows already shown stay, and recovery clears the error
 
 test("the pager follows the total and the page", async () => {
   const { el } = await mount({ page: 2 }, tasksApi({ tasks: Array.from({ length: 25 }, (_, i) => task({ id: `${i}`.padStart(8, "0") + "-2222-4333-8444-555555555555` ".slice(0, 28) })), total: 60 }));
-  const pager = el.querySelector("as-pager");
+  const pager = el.querySelector("dp-pager");
   assert.equal(pager.getAttribute("page"), "2");
   assert.equal(pager.getAttribute("page-count"), "3");
 });
@@ -192,7 +192,7 @@ test("picking a page emits as-list-change with the current status", async () => 
   const { el } = await mount({ page: 1, status: "failed" }, tasksApi({ tasks: [task({ status: "failed" })], total: 60 }));
   const seen = [];
   document.body.addEventListener("as-list-change", (e) => seen.push(e.detail));
-  el.querySelector(".as-pager-next").click();
+  el.querySelector("dp-pager").dispatchEvent(new window.CustomEvent("dp-pager-select", { detail: { page: 2 }, bubbles: true }));
   assert.deepEqual(seen, [{ status: "failed", page: 2 }]);
   assert.equal(el.getAttribute("page"), "1", "the list leaves the decision to its host");
 });
@@ -437,7 +437,7 @@ test("injects its stylesheet once", async () => {
   await mount();
   await mount();
   assert.equal(document.querySelectorAll("#as-task-list-style").length <= 1, true);
-  assert.equal(document.getElementById("as-task-list-style").getAttribute("href"), "/admin/components/as-task-list/component.css");
+  assert.equal(document.getElementById("as-task-list-style").getAttribute("href"), "/static/components/as-task-list/component.css");
 });
 
 test("a task that called a model shows the model, tokens and cost", async () => {

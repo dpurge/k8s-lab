@@ -57,7 +57,10 @@ models:
   - id: gemma-gpu
     provider: ollama-gpu
     model: gemma4:27b # PLACEHOLDER: a model pulled on the GPU machine
-    tags: [default, chat, review]
+    # orchestrator: the workflow that routes a message to another workflow and ui:
+    # workflows whose models write interfaces ask for these tags; give them to the
+    # best model there is.
+    tags: [default, chat, review, orchestrator, ui]
     priority: 100
     options: { num_ctx: 32768, think: false }
   # The CPU model: the fallback (priority 10), always on the local machine.

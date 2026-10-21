@@ -1,0 +1,37 @@
+/* Design tokens shared by every app: phraseforge's blue/gray palette. Light is
+   the default; dark overrides via :root[data-theme="dark"], so the theme
+   toggle only ever flips one attribute on <html>. Components read these
+   custom properties, which pass through shadow roots. */
+:root {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-alt: #e9ebee;
+  --border: #d7dae0;
+  --text: #1f2430;
+  --muted: #6b7280;
+  --link: #3b5bab;
+  --link-hover: #2f4a8c;
+  --btn-bg: #3b5bab;
+  --btn-bg-hover: #2f4a8c;
+  --danger: #b3453f;
+  --danger-hover: #9c3b36;
+  --success: #3f8a5c;
+  --warning: #a8741a;
+}
+
+:root[data-theme="dark"] {
+  --bg: #1c1f26;
+  --surface: #242830;
+  --surface-alt: #2b303a;
+  --border: #3a3f4a;
+  --text: #dfe3e8;
+  --muted: #8b93a1;
+  --link: #7b9bd1;
+  --link-hover: #9db7de;
+  --btn-bg: #4a6fa5;
+  --btn-bg-hover: #5c85bd;
+  --danger: #c17b74;
+  --danger-hover: #cf8f89;
+  --success: #7fb894;
+  --warning: #d4a35a;
+}

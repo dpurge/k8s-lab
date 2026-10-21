@@ -1,0 +1,23 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+audio {
+  display: block;
+  width: 100%;
+}
+
+.description {
+  margin-bottom: 0.35rem;
+}
+
+.note {
+  padding: 0.75rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted, #667);
+  background: var(--surface-alt, #f3f4f6);
+  border: 1px dashed var(--border, #d7dae0);
+  border-radius: 0.4rem;
+}

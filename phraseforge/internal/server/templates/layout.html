@@ -5,22 +5,7 @@
   <meta charset="utf-8">
   <title>{{block "title" .}}PhraseForge{{end}}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script>
-    // Applied before first paint (head, not body) to avoid a flash of the
-    // wrong theme. Explicit choice (localStorage) wins; otherwise follow the
-    // OS preference.
-    (function () {
-      var stored = localStorage.getItem('phraseforge-theme');
-      var theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-      document.documentElement.setAttribute('data-theme', theme);
-      if (localStorage.getItem('phraseforge-sidebar') === 'collapsed') {
-        document.documentElement.setAttribute('data-sidebar', 'collapsed');
-      }
-      // The remembered language filter is applied in-page by shell.js now
-      // (phraseforge-spa-unified-shell) — there is only one URL, so there is
-      // no page-reload redirect to do here anymore.
-    })();
-  </script>
+  <script src="/ui/theme-init.js" data-key="phraseforge"></script>
   <style>
     /* Blue/gray palette. Light is the default; dark overrides via
        :root[data-theme="dark"] so the toggle only ever has to flip one
@@ -58,88 +43,49 @@
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
+    /* Until dp-shell is defined its content would show unstyled. Not
+       visibility: hidden, which would stop the login page's autofocus from
+       taking effect: a field that cannot be focused loses it. */
+    dp-shell:not(:defined) { opacity: 0; }
     body {
       margin: 0; color: var(--text); background: var(--bg);
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       font-size: 17px;
-      /* auto header row, everything else fills the middle, auto footer —
-         lets .layout's two columns (and main.auth-page) scroll
-         independently within a fixed-height row instead of growing the
-         whole page. Extended to 3 rows (from phraseforge-scroll-
-         independent's 2) to add the status-bar footer below. */
-      display: grid; grid-template-rows: auto 1fr auto; height: 100vh;
     }
 
-    /* sticky top bar */
-    header.topnav {
-      position: sticky; top: 0; z-index: 10;
-      height: 3.5rem; background: var(--surface); border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; gap: 1.5rem; padding: 0 1.5rem;
-    }
-    header.topnav .brand { font-weight: 700; font-size: 1.15rem; color: var(--text); text-decoration: none; }
-    header.topnav .user { margin-left: auto; display: flex; align-items: center; gap: 1rem; font-size: 0.95rem; color: var(--muted); }
-    header.topnav .user a { color: var(--muted); text-decoration: none; }
-    header.topnav .user a:hover { color: var(--link); }
-    /* Visual skin (border/size/color/hover) now lives in pf-button's own
-       component.css (variant="icon") — this class is kept only as a
-       page-layout hook for header positioning. */
-    .theme-toggle { margin-left: auto; }
-    /* login/signup's submit pf-button needs to fill its centered form-card,
-       matching the original plain <button style="width:100%">. Scoped by a
-       dedicated class (not by .form-card, which every other page's Save
-       button also sits inside) so no other pf-button is affected. */
-    pf-button.full-width { display: block; width: 100%; }
-    pf-button.full-width button { width: 100%; }
-    /* logged-in pages put .user after the toggle, so the toggle shouldn't also claim margin-left:auto twice */
-    .user + .theme-toggle, .theme-toggle + .user { margin-left: 0; }
+    /* The top bar itself is dp-shell's (with its theme and sidebar buttons);
+       these style the page's own content in its slots. */
+    a.brand { font-weight: 700; font-size: 1.15rem; color: var(--text); text-decoration: none; }
+    .user { display: flex; align-items: center; gap: 1rem; font-size: 0.95rem; color: var(--muted); }
+    .user a { color: var(--muted); text-decoration: none; }
+    .user a:hover { color: var(--link); }
+    /* The user name gives way (with an ellipsis) when the top bar is short of
+       room, as on a phone; "Log out" stays whole. */
+    .user { min-width: 0; }
+    #userLink { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #logoutLink { flex: none; white-space: nowrap; }
 
-    /* sidebar + content grid */
-    .layout {
-      display: grid; grid-template-columns: 15rem 1fr;
-      /* Overrides the grid item's default min-height:auto, which would
-         otherwise let this row grow past body's 1fr track to fit content
-         (the actual bug: aside/main only "scroll together" because .layout
-         itself grows the whole page instead of being height-constrained). */
-      min-height: 0;
-      transition: grid-template-columns 0.15s ease;
-    }
-    [data-sidebar="collapsed"] .layout { grid-template-columns: 0 1fr; }
-    aside.sidebar {
-      background: var(--surface-alt); border-right: 1px solid var(--border);
-      padding: 1.5rem 1rem; overflow-y: auto; white-space: nowrap;
-      /* Same fix, one nesting level deeper: aside is itself a .layout grid
-         item, so it needs its own min-height:0 for overflow-y:auto to
-         actually take effect instead of growing to content. */
-      min-height: 0;
-      transition: opacity 0.1s ease, padding 0.15s ease;
-    }
-    [data-sidebar="collapsed"] aside.sidebar { padding: 1.5rem 0; opacity: 0; pointer-events: none; }
-    aside.sidebar select#language-filter { margin-bottom: 1rem; }
-    /* sidebar-toggle's visual skin now lives in pf-button's own
-       component.css (variant="icon") — no page-layout hook needed, it has
-       no special positioning (default flex item, first in the header). */
-    /* sidebar nav link styling now lives in pf-tabs' own component.css
-       (orientation="vertical" — see phraseforge-spa-unified-shell). */
+    #sidebar select#language-filter { margin-bottom: 1rem; }
 
-    main.content { padding: 2rem 3rem; overflow-y: auto; min-height: 0; }
-    main.content h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
+    .content h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
 
-    /* centered login/signup page (no sidebar, no user session yet).
-       height:100% (not min-height:0) — it needs to actually fill body's
-       1fr row for its own centering (align-items/justify-content) to have
-       room to center within; overflow-y:auto guards a message long enough
-       to overflow, same defensive reasoning as main.content above. */
-    main.auth-page {
-      height: 100%; overflow-y: auto;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      padding: 2rem;
-      text-align: center;
-    }
-    main.auth-page h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
-    main.auth-page .form-card { width: 100%; max-width: 24rem; text-align: left; }
-    main.auth-page .switch-link { margin-top: 1rem; color: var(--muted); font-size: 0.95rem; }
-    main.auth-page .switch-link a { color: var(--link); text-decoration: none; }
-    main.auth-page .switch-link a:hover { text-decoration: underline; }
+    /* The Usage section: its filters above a table, and a heading with a button. */
+    .usage-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.5rem; margin-bottom: 1rem; }
+    .usage-filter { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; }
+    .usage-filter select { max-width: 16rem; }
+    .usage-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
+    .usage-heading h1 { margin: 0; }
+
+    /* login/signup page (no sidebar, no user session yet): dp-shell is given
+       the centered attribute, which centres its main area; this wrapper only
+       gives the page's CSS a hook, so its children are laid out as if they
+       were the shell's own. */
+    .auth-page { display: contents; } /* its children are laid out by dp-shell's centered main */
+    .auth-page h1 { font-size: 1.9rem; margin: 0 0 1.5rem; }
+    .auth-page .form-card { width: 100%; max-width: 24rem; text-align: left; }
+    .auth-page .switch-link { margin-top: 1rem; color: var(--muted); font-size: 0.95rem; }
+    .auth-page .switch-link a { color: var(--link); text-decoration: none; }
+    .auth-page .switch-link a:hover { text-decoration: underline; }
 
     /* card grid for the text list */
     .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 1.25rem; }
@@ -147,10 +93,22 @@
       background: var(--surface); border: 1px solid var(--border); border-radius: 0.6rem;
       padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
     }
-    .card h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
-    .card h2 a { color: var(--text); text-decoration: none; }
-    .card h2 a:hover { color: var(--link); }
-    .card .meta { color: var(--muted); font-size: 0.9rem; }
+    /* The content a page puts in the confirm dialog (the Jobs page's View
+       action, the review and export dialogs) is the page's own, in the light
+       DOM of dp-dialog, so the page styles it. dp-dialog spaces its direct
+       children evenly itself. */
+    dp-dialog h3 { margin: 0 0 0.35rem; font-size: 0.95rem; }
+    dp-dialog dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 0.75rem; margin: 0; }
+    dp-dialog dt { font-weight: 600; white-space: nowrap; }
+    dp-dialog dd { margin: 0; word-break: break-word; }
+    dp-dialog pre { margin: 0; padding: 0.6rem; background: var(--surface-alt); border-radius: 0.4rem; max-height: 24rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+
+    /* The content of a card is styled by the page: a dp-card's slotted
+       children stay in this document, so these rules reach them. */
+    .card h2, dp-card h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+    .card h2 a, dp-card h2 a { color: var(--text); text-decoration: none; }
+    .card h2 a:hover, dp-card h2 a:hover { color: var(--link); }
+    .card .meta, dp-card .meta { color: var(--muted); font-size: 0.9rem; }
     .empty-state { color: var(--muted); font-size: 1.1rem; }
     .empty-state a { color: var(--link); }
 
@@ -162,7 +120,7 @@
     }
     /* input[type=file]'s own browse button is a separate pseudo-element,
        untouched by the shared rule above (which only styles the input's
-       own box) — styled to match pf-button's secondary variant so it
+       own box) — styled to match dp-button's secondary variant so it
        doesn't look like a bare, unstyled OS-native button. */
     input[type=file]::file-selector-button {
       padding: 0.45rem 0.9rem; margin-right: 0.75rem; border: 1px solid var(--border); border-radius: 0.4rem;
@@ -182,7 +140,7 @@
     a.tag-link { color: var(--muted); text-decoration: none; margin-left: 0.35rem; }
     a.tag-link:hover { color: var(--link); background: var(--border); }
     .snippet-list { display: grid; gap: 1rem; }
-    table.admin-table pf-button button, .snippet-list pf-button button { padding: 0.35rem 0.9rem; font-size: 0.9rem; }
+    table.admin-table dp-button, .snippet-list dp-button { --dp-button-padding: 0.35rem 0.9rem; --dp-button-font-size: 0.9rem; }
     .snippet-list .form-actions { gap: 1rem; align-items: baseline; font-size: 0.9rem; }
     .snippet-title { margin: 0 0 0.75rem; font-size: 1.1rem; }
     .snippet-text { margin: 0 0 1rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; }
@@ -207,15 +165,6 @@
     .btn-danger { background: var(--danger); }
     .btn-danger:hover { background: var(--danger-hover); }
     .back-link { display: inline-block; margin-bottom: 1rem; color: var(--muted); text-decoration: none; }
-
-    /* footer grid row hosting pf-status-bar (SPA pages only, for now —
-       present but empty elsewhere, same pattern as pf-dialog). Distinct
-       from .status-bar below (the flash-message toast every still-
-       server-rendered page keeps using during the migration). */
-    .statusbar-footer {
-      border-top: 1px solid var(--border); background: var(--surface);
-      padding: 0 1.5rem;
-    }
 
     /* bottom status bar: every form's success/error feedback lands here,
        instead of each page picking its own inline spot for it. */
@@ -276,11 +225,6 @@
        the start of the RTL line). Adding row-reverse on top double-reverses
        it back to LTR-looking order — that was the earlier bug. */
 
-    @media (max-width: 760px) {
-      .layout { grid-template-columns: 1fr; }
-      aside.sidebar { display: none; }
-      main.content { padding: 1.5rem; }
-    }
 
     /* Source/Transcription/Translation editor tabs (new.html/edit.html) and
        their read-only counterpart (view.html). */
@@ -335,8 +279,8 @@
     .review-row { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; margin: 0.5rem 0; }
     .review-values dd.review-long { white-space: pre-wrap; max-height: 12rem; overflow: auto; }
     .actions-cell { white-space: nowrap; border-bottom: 1px solid var(--border); padding: 0.5rem; }
-    .vocab-items-table pf-button, .models-items-table pf-button { margin-right: 0.3rem; }
-    .vocab-items-table pf-button button, .models-items-table pf-button button, .vocab-hidden-toggle pf-button button { padding: 0.35rem 0.7rem; font-size: 0.9rem; }
+    .vocab-items-table dp-button, .models-items-table dp-button { margin-right: 0.3rem; }
+    .vocab-items-table dp-button, .models-items-table dp-button, .vocab-hidden-toggle dp-button { --dp-button-padding: 0.35rem 0.7rem; --dp-button-font-size: 0.9rem; }
     .vocab-hidden-toggle { margin-top: 1rem; }
     .vocab-items-table tr.vocab-hidden { display: none; }
     .vocab-items-table.show-hidden tr.vocab-hidden { display: table-row; opacity: 0.55; }
@@ -348,80 +292,41 @@
     .editor-tab-pane textarea.editor-enlarged { font-size: 1.4rem; } /* CJK/Arabic/Hebrew/Syriac need a bigger base size to read while typing */
   </style>
   {{block "extra_head" .}}{{end}}
-  <script src="/static/components/pf-button/component.js"></script>
-  <script src="/static/components/pf-field/component.js"></script>
-  <script src="/static/components/pf-card/component.js"></script>
-  <script src="/static/components/pf-dialog/component.js"></script>
-  <script src="/static/components/pf-status-bar/component.js"></script>
-  <script src="/static/components/pf-tabs/component.js"></script>
-  <script src="/static/components/pf-pager/component.js"></script>
+  <script type="module" src="/ui/dp-core.js"></script>
   <script src="/static/components/pf-tag-picker/component.js"></script>
-  <script src="/static/components/pf-llm-models/component.js"></script>
   <script src="/static/components/pf-llm-performance/component.js"></script>
-  <script src="/static/components/pf-llm-attempts/component.js"></script>
   <script src="/static/components/pf-llm-purge/component.js"></script>
 </head>
 <body>
-  <header class="topnav">
+  <dp-shell storage-key="phraseforge" theme-toggle theme-label="{{call .T "theme.toggle"}}"{{if not .User}} centered{{end}}>
+    <a slot="brand" class="brand" href="/">PhraseForge</a>
     {{if .User}}
-    <pf-button id="sidebarToggleBtn" variant="icon" onclick="phraseforgeToggleSidebar()">☰</pf-button>
-    {{end}}
-    <a class="brand" href="/">PhraseForge</a>
-    {{if .User}}
-    <div class="user">
+    <dp-tabs slot="header" id="mainNav" variant="underline"></dp-tabs>
+    <div slot="actions" class="user">
       <a id="userLink" href="#"></a>
       <a id="logoutLink" href="/logout"></a>
     </div>
-    {{end}}
-    <!-- aria-label/title stay server-rendered (not shell.js-driven, unlike
-         the rest of the chrome) because this button also appears on
-         login.html/signup.html, which never load shell.js. -->
-    <pf-button class="theme-toggle" variant="icon" onclick="phraseforgeToggleTheme()" aria-label="{{call .T "theme.toggle"}}" title="{{call .T "theme.toggle"}}">
-      <span id="theme-icon"></span>
-    </pf-button>
-  </header>
-  {{if .User}}
-  <div class="layout">
     <!-- Built entirely by shell.js from window.__PF_APP_BOOTSTRAP__.chrome —
          see specs/features/phraseforge-spa-unified-shell.md. -->
-    <aside class="sidebar" id="sidebar"></aside>
-    <main class="content">
+    <div slot="sidebar" id="sidebar"></div>
+    <div class="content">
       {{block "content" .}}{{end}}
-    </main>
-  </div>
-  {{else}}
-  <main class="auth-page">
-    {{block "content" .}}{{end}}
-  </main>
-  {{end}}
-  <footer class="statusbar-footer">
-    <pf-status-bar id="statusBar"></pf-status-bar>
-  </footer>
+    </div>
+    {{else}}
+    <div class="auth-page">
+      {{block "content" .}}{{end}}
+    </div>
+    {{end}}
+    <dp-status-bar slot="footer" id="statusBar"></dp-status-bar>
+  </dp-shell>
   {{if .Message}}
   <div class="status-bar {{.MessageType}}" id="status-bar" role="status">
     <span>{{.Message}}</span>
     <button type="button" class="status-close" onclick="document.getElementById('status-bar').remove()" aria-label="Dismiss">×</button>
   </div>
   {{end}}
-  <pf-dialog id="confirmDialog"></pf-dialog>
+  <dp-dialog id="confirmDialog"></dp-dialog>
   <script>
-    function phraseforgeSetIcon() {
-      var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-      document.getElementById('theme-icon').textContent = isDark ? '☀' : '☽'; // sun / crescent moon
-    }
-    function phraseforgeToggleTheme() {
-      var html = document.documentElement;
-      var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-      html.setAttribute('data-theme', next);
-      localStorage.setItem('phraseforge-theme', next);
-      phraseforgeSetIcon();
-    }
-    function phraseforgeToggleSidebar() {
-      var html = document.documentElement;
-      var next = html.getAttribute('data-sidebar') === 'collapsed' ? 'expanded' : 'collapsed';
-      html.setAttribute('data-sidebar', next);
-      localStorage.setItem('phraseforge-sidebar', next);
-    }
     function phraseforgeCopyMarkdown(id, button) {
       var source = document.getElementById(id);
       if (!source) { return; }
@@ -448,13 +353,12 @@
     }
     // The language filter is now built and driven entirely by shell.js
     // (phraseforge-spa-unified-shell) — no page-reload mechanism left here.
-    phraseforgeSetIcon();
     (function () {
       var bar = document.getElementById('status-bar');
       if (bar) { setTimeout(function () { bar.remove(); }, 5000); }
     })();
     // Replaces native confirm() for every form marked data-confirm: shows
-    // pf-dialog instead, and only actually submits if the user confirms.
+    // dp-dialog instead, and only actually submits if the user confirms.
     // confirm() is async (a Promise), which a synchronous onsubmit="return
     // confirm(...)" handler could never await — so this intercepts the real
     // submit event instead. form.submit() (the native method, NOT

@@ -8,14 +8,13 @@
 (function () {
   const STYLE_ID = "as-model-list-style";
   const DEFAULT_REFRESH_MS = 10000;
-  const COLUMNS = ["Model", "Provider", "Tags", "Priority", "Available"];
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-model-list/component.css";
+    link.href = "/static/components/as-model-list/component.css";
     document.head.appendChild(link);
   }
 
@@ -59,20 +58,14 @@
       if (this._built) return;
       this._built = true;
       this._seq = 0;
-      const wrap = el("div", "as-model-list-table-wrap");
-      const table = document.createElement("table");
-      table.className = "as-model-list-table";
-      const head = document.createElement("tr");
-      for (const name of COLUMNS) head.appendChild(el("th", "", name));
-      const thead = document.createElement("thead");
-      thead.appendChild(head);
-      this._body = document.createElement("tbody");
-      table.append(thead, this._body);
-      wrap.appendChild(table);
-      this._wrap = wrap;
+      // The table is the shared dp-model-table; this element loads and refreshes
+      // and hands it the rows.
+      this._table = document.createElement("dp-model-table");
+      this._table.setAttribute("empty-text", "No models are configured.");
+      this._table.rows = [];
       this._message = el("p", "as-model-list-message");
       this._message.setAttribute("role", "status");
-      this.append(wrap, this._message);
+      this.append(this._table, this._message);
     }
 
     async _load() {
@@ -103,35 +96,18 @@
     }
 
     _render(items) {
-      const f = window.asFormat;
       this._message.classList.remove("error");
-      this._message.textContent = items.length === 0 ? "No models are configured." : "";
-      this._wrap.hidden = items.length === 0;
-      this._body.textContent = "";
+      this._message.textContent = "";
       // Tried in this order: highest priority first, ties as in the file.
       const ordered = items.map((m, i) => [m, i]).sort((a, b) => b[0].priority - a[0].priority || a[1] - b[1]).map(([m]) => m);
-      for (const m of ordered) {
-        const available = el("td", m.available ? "as-model-available" : "as-model-unavailable");
-        const noCredentials = !m.available && m.unavailable_reason === "missing_credentials";
-        const badge = el("span", `as-badge ${m.available ? "as-model-up" : "as-model-down"}`, m.available ? "available" : noCredentials ? "no credentials" : "held out");
-        if (noCredentials) badge.title = "The provider needs a credential that is not set";
-        available.appendChild(badge);
-        if (!m.available && m.unavailable_until) {
-          const until = el("span", "as-model-until", ` until ${f.time(m.unavailable_until)}`);
-          until.title = m.unavailable_until;
-          available.appendChild(until);
-        }
-        const tr = document.createElement("tr");
-        tr.dataset.modelId = m.id;
-        tr.append(
-          el("td", "as-model-id", m.id),
-          el("td", "as-model-provider", m.provider),
-          el("td", "as-model-tags", (m.tags || []).join(", ") || f.DASH),
-          el("td", "as-model-priority", String(m.priority)),
-          available,
-        );
-        this._body.appendChild(tr);
-      }
+      this._table.rows = ordered.map((m) => ({
+        provider: m.provider,
+        model: m.id,
+        tags: m.tags || [],
+        priority: m.priority,
+        state: m.available ? "available" : m.unavailable_reason === "missing_credentials" ? "no_credentials" : "held_out",
+        until: !m.available && m.unavailable_until ? m.unavailable_until : undefined,
+      }));
     }
   }
 

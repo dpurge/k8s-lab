@@ -1,7 +1,7 @@
 /* Migrated from app.css's .item and .job-status* blocks (see
    specs/features/knowledge-workspace-redesign.md Step 2) and rescoped from
    those classes to the kb-job-card element and its own internal structure.
-   Unlike kb-card, this deliberately has no cursor:pointer/hover affordance
+   Unlike dp-card, this deliberately has no cursor:pointer/hover affordance
    — a job row has no detail view, only its own Retry/Delete buttons. */
 
 kb-job-card {

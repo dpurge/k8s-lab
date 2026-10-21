@@ -1,29 +1,6 @@
+/* The table is the shared dp-model-table; this is the page around it. */
 as-model-list {
   display: block;
-}
-
-as-model-list .as-model-list-table-wrap {
-  overflow-x: auto;
-}
-
-as-model-list .as-model-list-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.95rem;
-}
-
-as-model-list .as-model-list-table th,
-as-model-list .as-model-list-table td {
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-as-model-list .as-model-list-table th {
-  color: var(--muted);
-  font-weight: 600;
-  font-size: 0.85rem;
 }
 
 as-model-list .as-model-list-message {
@@ -32,26 +9,5 @@ as-model-list .as-model-list-message {
 }
 
 as-model-list .as-model-list-message.error {
-  color: var(--danger);
-}
-
-as-model-list .as-model-until {
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-as-model-list .as-badge {
-  display: inline-block;
-  padding: 0.1rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  border: 1px solid currentColor;
-}
-
-as-model-list .as-model-up {
-  color: var(--success);
-}
-
-as-model-list .as-model-down {
   color: var(--danger);
 }

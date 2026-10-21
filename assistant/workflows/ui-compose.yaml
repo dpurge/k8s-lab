@@ -1,0 +1,37 @@
+id: ui-compose
+version: 1
+description: You say in words what to ask or collect; a model writes it as an interface (a small form), you fill it in, and the model says back what it received. Tries a model composing interfaces; needs a model that can write JSON well.
+intents:
+  description: Writes a small form for something the user wants to ask or collect, shows it, and says back what was entered.
+  examples: ["make a form that asks for my name and email", "I need a quick poll with three options"]
+state_schema:
+  type: object
+  properties:
+    request: {type: string, description: "What the user wants to ask or collect, as they said it."}
+    received: {type: object, description: "The context of the button the user pressed: the values they entered."}
+    summary: {type: string, description: "One or two sentences saying what the user entered."}
+  required: [summary]
+  additionalProperties: false
+start: compose
+limits: {max_steps: 6, max_tokens: 30000, max_retries: 2, max_visits: 3}
+model_tags: [ui]
+ui:
+  catalogs: [basic]
+states:
+  compose:
+    instructions: >-
+      If the observation is a text, it is what the user wants to ask or collect:
+      record it in request and reply with the ask_user action, whose payload has a
+      short "question" and the interface under "ui" (see INTERFACES), with the
+      inputs the request needs and one Button. If the observation is an object
+      with "ui_action", the user pressed the button: record its context in
+      received and go to summarise.
+    next: [summarise]
+  summarise:
+    instructions: >-
+      Write one or two sentences saying what the user entered, using the values
+      in received, record them in summary and go to done.
+    next: [done]
+  done:
+    instructions: Finished.
+    end: true

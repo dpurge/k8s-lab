@@ -1,0 +1,64 @@
+/* The look the data tables share: a plain table in a box that scrolls sideways
+   when the page is too narrow, instead of squeezing the figures out. Themed
+   only through the tokens (each falls back to a literal). */
+:host {
+  display: block;
+}
+
+.wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border, #d7dae0);
+  white-space: nowrap;
+}
+
+th {
+  white-space: normal;
+  color: var(--muted, #6b7280);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.num {
+  text-align: right;
+}
+
+/* A long name gives way with an ellipsis; the full text is the tooltip. */
+.name {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty {
+  color: var(--muted, #6b7280);
+  margin: 0.75rem 0;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.good {
+  color: var(--success, #3f8a5c);
+}
+
+.bad {
+  color: var(--danger, #b3453f);
+}

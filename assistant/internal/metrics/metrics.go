@@ -33,6 +33,7 @@ type Metrics struct {
 	llmPurged       prometheus.Counter
 	traceErrors     prometheus.Counter
 	chatErrors      prometheus.Counter
+	a2uiRejected    *prometheus.CounterVec
 	availability    *availabilityCollector
 }
 
@@ -102,12 +103,19 @@ func New() *Metrics {
 		Name: "assistant_chat_notify_errors_total",
 		Help: "Assistant messages that could not be stored or delivered to a conversation.",
 	})
+	m.a2uiRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "assistant_a2ui_rejected_total",
+		Help: "A2UI messages refused by validation, by source: interface (a workflow's) or event (the page's).",
+	}, []string{"source"})
+	for _, source := range []string{"interface", "event"} {
+		m.a2uiRejected.WithLabelValues(source)
+	}
 	m.availability = newAvailabilityCollector()
 	m.registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.httpRequests, m.httpDuration, m.tasks, m.queueSeconds, m.execSeconds,
-		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.traceErrors, m.chatErrors, m.availability,
+		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.traceErrors, m.chatErrors, m.a2uiRejected, m.availability,
 	)
 	return m
 }
@@ -161,6 +169,10 @@ func (m *Metrics) TraceRecordError() { m.traceErrors.Inc() }
 // ChatNotifyError counts an assistant message that could not be stored or
 // delivered.
 func (m *Metrics) ChatNotifyError() { m.chatErrors.Inc() }
+
+// A2UIRejected counts an A2UI message that validation refused: source is
+// "interface" for one a workflow showed, "event" for one the page sent.
+func (m *Metrics) A2UIRejected(source string) { m.a2uiRejected.WithLabelValues(source).Inc() }
 
 // ModelAvailability is whether one model can take calls right now.
 type ModelAvailability struct {

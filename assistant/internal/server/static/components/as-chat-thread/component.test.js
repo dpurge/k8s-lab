@@ -334,3 +334,15 @@ test("loading marks the element busy until it is done", async () => {
   await flush();
   assert.equal(el.hasAttribute("aria-busy"), false);
 });
+
+test("the header says which workflow takes the turn when the run handed the request on, and nothing otherwise", async () => {
+  const handed = await mount({ conversations: [conversation({ id: C1, workflow_id: "orchestrator", task_id: TASK, task_status: "waiting", handled_by: "hello" })] });
+  assert.equal(handed.el.querySelector(".as-thread-status").textContent, "The assistant is waiting for your answer. Handled by hello.");
+  const own = await mount({ conversations: [conversation({ id: C1, workflow_id: "orchestrator", task_id: TASK, task_status: "waiting", handled_by: null })] });
+  assert.equal(own.el.querySelector(".as-thread-status").textContent, "The assistant is waiting for your answer.");
+});
+
+test("an info line of routing is shown like any other message of the assistant", async () => {
+  const { el } = await mount({ chatMessages: [chatMessage({ id: 1, kind: "info", text: "→ hello: you mentioned \"hello\"" })] });
+  assert.deepEqual(bubbles(el), [["as-msg-assistant as-kind-info", "→ hello: you mentioned \"hello\""]]);
+});

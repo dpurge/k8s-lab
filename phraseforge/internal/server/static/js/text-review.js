@@ -22,7 +22,7 @@
   }
 
   function button(label, variant, onClick) {
-    const b = el("pf-button", { variant, type: "button" }, label);
+    const b = el("dp-button", { variant, type: "button" }, label);
     b.addEventListener("click", onClick);
     return b;
   }

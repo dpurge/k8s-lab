@@ -7,6 +7,17 @@
 // Attributes: conversation-id, refresh-ms (default 1500 while working, 6000
 // otherwise; 0 turns polling off).
 // Events (bubbling): as-conversation-removed {id}, as-load {ok, message, live, at}.
+//
+// An assistant message of kind "ui" carries A2UI messages: the thread draws each
+// surface they create with <dp-a2ui-surface> (the renderer is loaded from
+// /ui/a2ui.js the first time one is needed, so a conversation without one never
+// downloads it). What the user does in it (a button, say) goes back through
+// POST /ui-events as the user's turn. An interface that a later action of the
+// user has answered stays visible but can no longer be used. The values the user
+// had entered when they acted travel with the action (in the action's metadata,
+// as the extension assistant_data_model) and are put back when the conversation
+// is opened again, so a submitted form still shows what was submitted. A surface
+// with a password field is never included: such a value is not stored.
 (function () {
   const STYLE_ID = "as-chat-thread-style";
   const WORKING = new Set(["pending", "running"]);
@@ -28,8 +39,32 @@
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-chat-thread/component.css";
+    link.href = "/static/components/as-chat-thread/component.css";
     document.head.appendChild(link);
+  }
+
+  // The key, among an action's metadata extensions, of the values entered.
+  const DATA_MODEL = "assistant_data_model";
+  const MAX_DATA_MODEL_BYTES = 64 * 1024;
+
+  // The id of the assistant's own catalog of functions; the server's
+  // schemas/a2ui/assistant_catalog.json has the same (a test keeps them equal).
+  const ASSISTANT_CATALOG = "https://assistant.k8s-lab.local/a2ui/catalog.json";
+
+  // The renderer is its own chunk (the browser keeps the module once loaded);
+  // window.asA2uiLoader lets a test stand in for it. The page's media hosts are
+  // asked for once per conversation opened.
+  async function loadA2ui() {
+    const mod = await (window.asA2uiLoader ? window.asA2uiLoader() : import("/ui/a2ui.js"));
+    let hosts = [];
+    try {
+      const config = await window.asApi.getJSON("/a2ui-config.json");
+      if (Array.isArray(config.media_hosts)) hosts = config.media_hosts;
+    } catch (e) {
+      /* no extra media hosts: only this server and data: URLs */
+    }
+    mod.setMediaHosts(hosts);
+    return mod;
   }
 
   function el(tag, className, text) {
@@ -63,6 +98,7 @@
     }
 
     disconnectedCallback() {
+      this._dropInterfaces();
       clearTimeout(this._timer);
       clearTimeout(this._armTimer);
       this._seq = (this._seq || 0) + 1;
@@ -125,8 +161,17 @@
       this.append(this._header, this._error, this._messages, composer, this._sendError);
     }
 
+    _dropInterfaces() {
+      this._gen = (this._gen || 0) + 1;
+      this._client = null;
+      this._surfaces = new Map();
+      this._historic = new Set();
+      this._chain = Promise.resolve();
+    }
+
     // _reset forgets the conversation that was shown.
     _reset() {
+      this._dropInterfaces();
       this._lastId = 0;
       this._view = null;
       this._messages.textContent = "";
@@ -203,7 +248,10 @@
       this._title.textContent = view.title || view.workflow_id;
       this._meta.textContent = `${view.title ? `${view.workflow_id} · ` : ""}${this._users.get(view.user_id) || window.asApi.shortId(view.user_id)}`;
       const status = view.task_status;
-      this._status.textContent = status ? STATE_TEXT[status] || status : "Write a message to start.";
+      const text = status ? STATE_TEXT[status] || status : "Write a message to start.";
+      // When the run handed the request to another workflow, it is that one that
+      // takes the turn.
+      this._status.textContent = view.handled_by ? `${text} Handled by ${view.handled_by}.` : text;
       this._status.className = `as-thread-status${status ? ` as-state-${status}` : ""}`;
       if (view.task_id) {
         this._taskLink.href = `#/tasks/${encodeURIComponent(view.task_id)}`;
@@ -220,16 +268,198 @@
     _append(items) {
       if (items.length === 0) return;
       const wasAtBottom = this._messages.scrollHeight - this._messages.scrollTop - this._messages.clientHeight < 40;
+      const historic = this._lastId === 0;
       for (const m of items) {
         if (m.id <= this._lastId) continue;
         this._lastId = m.id;
         const row = el("div", `as-msg as-msg-${m.role} as-kind-${m.kind}`);
         row.dataset.messageId = String(m.id);
+        if (m.kind === "ui") {
+          row.append(el("span", "as-msg-who", ROLE_LABEL[m.role] || m.role));
+          const body = el("div", "as-msg-ui");
+          row.append(body);
+          this._messages.appendChild(row);
+          this._drawInterface(m, body, row, historic);
+          continue;
+        }
+        if (m.kind === "ui_action") {
+          // Function calls and their answers are the page's and the assistant's
+          // business, not something the user said.
+          const traffic = m.ui && (m.ui.callAgentFunction || m.ui.rendererFunctionResponse);
+          if (traffic) continue;
+          this._answered();
+          this._restoreValues(m.ui);
+        }
         row.append(el("span", "as-msg-who", ROLE_LABEL[m.role] || m.role), el("div", "as-msg-text", m.text));
         row.appendChild(el("span", "as-msg-time", window.asFormat.time(m.created_at, { short: true })));
         this._messages.appendChild(row);
       }
       if (wasAtBottom) this._messages.scrollTop = this._messages.scrollHeight;
+    }
+
+    // _answered makes the interfaces shown so far read-only: the user has acted
+    // on one, so the run moved on.
+    _answered() {
+      for (const row of this._messages.querySelectorAll(".as-kind-ui:not([inert])")) {
+        row.setAttribute("inert", "");
+        row.classList.add("as-answered");
+      }
+    }
+
+    // _restoreValues puts back the values an action carried, once the surfaces
+    // before it are drawn.
+    _restoreValues(event) {
+      const extensions = event && event.action && event.action.metadata && event.action.metadata.extensions;
+      const saved = extensions && extensions[DATA_MODEL];
+      if (!saved || typeof saved !== "object") return;
+      const gen = this._gen;
+      this._chain = this._chain.then(async () => {
+        if (gen !== this._gen || !this._client) return;
+        for (const [surfaceId, value] of Object.entries(saved)) {
+          if (!this._surfaces.has(surfaceId)) continue;
+          try {
+            await this._client.receive([{ version: "v1.0", updateDataModel: { surfaceId, path: "/", value } }]);
+          } catch (err) {
+            console.warn(`Could not put back the values of ${surfaceId}: ${err.message}`);
+          }
+        }
+      });
+    }
+
+    // _dataModels are the values now in the surfaces, for an action to carry; a
+    // surface with a password field, or a very large one, is left out.
+    _dataModels() {
+      const out = {};
+      let size = 0;
+      for (const [surfaceId, node] of this._surfaces) {
+        const surface = node.surface;
+        if (!surface) continue;
+        const components = [...surface.componentsModel.values];
+        if (components.some((c) => c.properties && c.properties.variant === "obscured")) continue;
+        let value;
+        try {
+          value = JSON.parse(JSON.stringify(surface.dataModel.get("/") ?? {}));
+        } catch (e) {
+          continue;
+        }
+        if (!value || typeof value !== "object" || Object.keys(value).length === 0) continue;
+        size += JSON.stringify(value).length;
+        if (size > MAX_DATA_MODEL_BYTES) break;
+        out[surfaceId] = value;
+      }
+      return out;
+    }
+
+    // _drawInterface hands the message's A2UI messages to the renderer, in order
+    // (one message at a time, so a slow load never reorders them), and shows the
+    // surfaces they create.
+    _drawInterface(m, body, row, historic) {
+      const gen = this._gen;
+      this._chain = this._chain.then(async () => {
+        try {
+          const mod = await loadA2ui();
+          if (gen !== this._gen) return;
+          if (!this._client) this._client = this._newClient(mod);
+          const list = typeof m.ui === "string" ? JSON.parse(m.ui) : m.ui;
+          for (const msg of list) {
+            // A function call, or the answer to one, is an event of the moment, not
+            // state: replaying it from the history would run the function again
+            // and answer a call that was answered long ago.
+            if (historic && (msg.callRendererFunction || msg.agentFunctionResponse)) continue;
+            const created = msg.createSurface && msg.createSurface.surfaceId;
+            if (created && historic) this._historic.add(created);
+            await this._client.receive([msg]);
+            if (gen !== this._gen) return;
+            if (created) {
+              const surface = this._client.processor.getSurface(created);
+              if (!surface) continue;
+              const node = document.createElement("dp-a2ui-surface");
+              node.surface = surface;
+              this._surfaces.set(created, node);
+              body.appendChild(node);
+            }
+            const deleted = msg.deleteSurface && msg.deleteSurface.surfaceId;
+            if (deleted && this._surfaces.has(deleted)) {
+              this._surfaces.get(deleted).remove();
+              this._surfaces.delete(deleted);
+            }
+          }
+          if (!body.firstChild) row.hidden = true;
+        } catch (err) {
+          body.appendChild(el("p", "as-thread-error", `The interface could not be drawn: ${err.message}`));
+        }
+      });
+    }
+
+    // _newClient makes the renderer's client for this conversation, with the
+    // assistant's functions: viewport (the page runs it, and an agent may ask for
+    // it) and listWorkflows (the page asks the assistant, for the surface a
+    // binding is on or, failing that, the first one there is).
+    _newClient(mod) {
+      let client = null;
+      const catalog = mod.defineCatalog({
+        id: ASSISTANT_CATALOG,
+        functions: [
+          {
+            name: "viewport",
+            returnType: "object",
+            allowedCallers: "rendererOrAgent",
+            description: "The size of the window and its colour scheme.",
+            execute: () => ({
+              width: window.innerWidth,
+              height: window.innerHeight,
+              pixelRatio: window.devicePixelRatio || 1,
+              colorScheme: document.documentElement.getAttribute("data-theme") === "dark" || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches && document.documentElement.getAttribute("data-theme") !== "light") ? "dark" : "light",
+            }),
+          },
+          {
+            name: "listWorkflows",
+            returnType: "string",
+            description: "The workflows a user can start, asked of the assistant.",
+            execute: () => {
+              const surface = this._surfaces.keys().next().value;
+              if (!surface) return Promise.reject(new Error("there is no interface to ask from"));
+              return client.callAgentFunction(surface, { "@call": "listWorkflows", catalogId: ASSISTANT_CATALOG, args: {} });
+            },
+          },
+        ],
+      });
+      client = mod.createClient({ send: (message) => this._sendEvent(message), catalogs: [catalog] });
+      return client;
+    }
+
+    // _sendEvent sends what the renderer reports to the server. An action is the
+    // user's turn; an error from an interface that was already in the history
+    // when the conversation was opened was reported then, so it is not reported
+    // again at every reload.
+    async _sendEvent(message) {
+      const kind = message.action ? "action" : message.error ? "error" : message.callAgentFunction ? "call" : "reply";
+      if (kind === "error" && this._historic.has(message.error.surfaceId)) return;
+      if (kind === "action") {
+        this._sendError.hidden = true;
+        const models = this._dataModels();
+        if (Object.keys(models).length > 0) {
+          message = { ...message, action: { ...message.action, metadata: { extensions: { ...(message.action.metadata && message.action.metadata.extensions), [DATA_MODEL]: models } } } };
+        }
+      }
+      try {
+        const res = await fetch(`/api/v1/conversations/${encodeURIComponent(this.conversationId)}/ui-events`, {
+          method: "POST",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify(message),
+        });
+        if (!res.ok) {
+          const reason = await window.asApi.errorMessage(res);
+          if (kind === "action") this._failSend(`Could not send that: ${reason}`);
+          else console.warn(`The server did not take the interface's ${kind}: ${reason}`);
+          if (res.status === 502) this._load();
+          return;
+        }
+        // The answer to a call, or the next step of the run, is on the server now.
+        if (kind === "action" || kind === "call" || kind === "reply") await this._load();
+      } catch (err) {
+        if (kind === "action") this._failSend(`Could not send that: ${err.message}`);
+      }
     }
 
     _failSend(message) {

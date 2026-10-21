@@ -1,5 +1,7 @@
 as-chat-list {
   display: block;
+  /* The shell's sidebar does not wrap its text; conversation titles must. */
+  white-space: normal;
 }
 
 as-chat-list .as-chat-new {

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"assistant/internal/metrics"
+	"k8s-lab/shared/ui"
 )
 
 // Pinger checks that the database answers. *pgxpool.Pool implements it.
@@ -33,8 +34,11 @@ type Deps struct {
 	Workflows WorkflowCatalog
 	Chat      ChatService
 	Models    ModelStatuses
-	Metrics   *metrics.Metrics
-	Log       *slog.Logger
+	// A2UIMediaHosts are the extra hosts the page's policy lets chat interfaces
+	// load media from (config.Config.A2UIMediaHosts); none by default.
+	A2UIMediaHosts []string
+	Metrics        *metrics.Metrics
+	Log            *slog.Logger
 	// Now is the clock for derived times; nil means time.Now.
 	Now func() time.Time
 }
@@ -58,6 +62,8 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/metrics", d.Metrics.Handler().ServeHTTP)
 	d.mountAPI(r)
 	d.mountAdmin(r)
+	// The shared Lit component library (dp-* elements, tokens.css).
+	r.Get(ui.Prefix+"*", ui.Handler().ServeHTTP)
 	return r
 }
 

@@ -1,7 +1,10 @@
 package server
 
 import (
+	"assistant/internal/metrics"
+	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +26,7 @@ func adminGet(t *testing.T, h http.Handler, s *spec, route, path string) *httpte
 func TestAdminPageIsServedWithAStrictPolicy(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
 	s := loadSpec(t)
-	rec := adminGet(t, h, s, "/admin/{path}", "/admin/")
+	rec := adminGet(t, h, s, "/", "/")
 	if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Fatalf("status %d type %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
@@ -46,24 +49,27 @@ func TestAdminPageIsServedWithAStrictPolicy(t *testing.T) {
 	}
 }
 
-func TestAdminWithoutATrailingSlashRedirects(t *testing.T) {
+func TestOldAdminAddressesRedirectToTheRoot(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
-	rec := adminGet(t, h, loadSpec(t), "/admin", "/admin")
-	if rec.Code != 301 || rec.Header().Get("Location") != "/admin/" {
-		t.Errorf("status %d location %q", rec.Code, rec.Header().Get("Location"))
+	s := loadSpec(t)
+	for _, p := range []string{"/admin", "/admin/"} {
+		rec := adminGet(t, h, s, p, p)
+		if rec.Code != 301 || rec.Header().Get("Location") != "/" {
+			t.Errorf("%s: status %d location %q", p, rec.Code, rec.Header().Get("Location"))
+		}
 	}
 }
 
 func TestEveryFileThePageLoadsIsServedWithTheRightType(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
 	s := loadSpec(t)
-	index := adminGet(t, h, s, "/admin/{path}", "/admin/").Body.String()
-	refs := regexp.MustCompile(`(?:src|href)="(/admin/[^"]+)"`).FindAllStringSubmatch(index, -1)
+	index := adminGet(t, h, s, "/", "/").Body.String()
+	refs := regexp.MustCompile(`(?:src|href)="(/static/[^"]+)"`).FindAllStringSubmatch(index, -1)
 	if len(refs) < 12 {
 		t.Fatalf("found only %d references in the page", len(refs))
 	}
 	for _, m := range refs {
-		rec := adminGet(t, h, s, "/admin/{path}", m[1])
+		rec := adminGet(t, h, s, "/static/{path}", m[1])
 		want := map[string]string{".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}[filepath.Ext(m[1])]
 		if rec.Code != 200 || rec.Header().Get("Content-Type") != want {
 			t.Errorf("%s: status %d type %q, want %q", m[1], rec.Code, rec.Header().Get("Content-Type"), want)
@@ -81,14 +87,14 @@ func TestTestingAndToolingFilesAreNotServed(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
 	s := loadSpec(t)
 	for _, p := range []string{
-		"/admin/components/as-task-list/component.test.js",
-		"/admin/components/testenv.js",
-		"/admin/components/package.json",
-		"/admin/components/package-lock.json",
-		"/admin/components/node_modules/jsdom/package.json",
-		"/admin/theme.test.js",
+		"/static/components/as-task-list/component.test.js",
+		"/static/components/testenv.js",
+		"/static/components/package.json",
+		"/static/components/package-lock.json",
+		"/static/components/node_modules/jsdom/package.json",
+		"/static/theme.test.js",
 	} {
-		rec := adminGet(t, h, s, "/admin/{path}", p)
+		rec := adminGet(t, h, s, "/static/{path}", p)
 		if rec.Code != 404 {
 			t.Errorf("%s: status %d, want 404", p, rec.Code)
 		}
@@ -99,8 +105,8 @@ func TestPathTricksDoNotEscapeTheAssetTree(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
 	s := loadSpec(t)
 	for _, p := range []string{
-		"/admin/../server.go", "/admin/%2e%2e/server.go", "/admin/..%2fserver.go", "/admin/components/../../server.go",
-		"/admin//index.html", "/admin/./index.html", "/admin/components/", "/admin/components", `/admin/..\server.go`, "/admin/%00", "/admin/components/as-nav/",
+		"/static/../server.go", "/static/%2e%2e/server.go", "/static/..%2fserver.go", "/static/components/../../server.go",
+		"/static//index.html", "/static/./index.html", "/static/components/", "/static/components", `/static/..\server.go`, "/static/%00", "/static/components/as-nav/",
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", p, nil)
@@ -109,7 +115,7 @@ func TestPathTricksDoNotEscapeTheAssetTree(t *testing.T) {
 			t.Errorf("%s: served (%d) %.60q", p, rec.Code, rec.Body)
 		}
 		if rec.Code == 404 {
-			s.check("GET", "/admin/{path}", 404, rec.Header().Get("Content-Type"), rec.Body.Bytes())
+			s.check("GET", "/static/{path}", 404, rec.Header().Get("Content-Type"), rec.Body.Bytes())
 		}
 	}
 }
@@ -118,14 +124,14 @@ func TestUnknownAssetIsA404InTheErrorShape(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
 	s := loadSpec(t)
 	a := &api{t: t, h: h, spec: s}
-	a.wantError(adminGet(t, h, s, "/admin/{path}", "/admin/nope.js"), 404, "not_found", "no such file")
+	a.wantError(adminGet(t, h, s, "/static/{path}", "/static/nope.js"), 404, "not_found", "no such file")
 }
 
 func TestOnlyGETIsServed(t *testing.T) {
 	h, _ := newTestServer(t, fakePinger{})
 	for _, m := range []string{"POST", "PUT", "DELETE"} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(m, "/admin/", nil))
+		h.ServeHTTP(rec, httptest.NewRequest(m, "/", nil))
 		if rec.Code != 405 {
 			t.Errorf("%s: status %d", m, rec.Code)
 		}
@@ -172,8 +178,8 @@ func TestOnlyTheFilesThePageNeedsAreEmbedded(t *testing.T) {
 		if f == "index.html" {
 			continue
 		}
-		if !strings.Contains(corpus.String(), "/admin/"+f) {
-			t.Errorf("%s is embedded but nothing refers to it as /admin/%s", f, f)
+		if !strings.Contains(corpus.String(), "/static/"+f) {
+			t.Errorf("%s is embedded but nothing refers to it as /static/%s", f, f)
 		}
 	}
 	if len(embedded) < 19 {
@@ -208,7 +214,7 @@ func TestEveryComponentOnDiskIsEmbedded(t *testing.T) {
 func TestTheSPACallsOnlyDocumentedAPIOperations(t *testing.T) {
 	s := loadSpec(t)
 	documented := s.operations()
-	ref := regexp.MustCompile("[\"'`](/api/v1/[A-Za-z0-9_/]*)")
+	ref := regexp.MustCompile("[\"'`](/api/v1/[A-Za-z0-9_/-]*)")
 	found := 0
 	for _, f := range listEmbedded(t) {
 		if !strings.HasSuffix(f, ".js") {
@@ -236,5 +242,37 @@ func TestTheSPACallsOnlyDocumentedAPIOperations(t *testing.T) {
 	}
 	if found < 3 {
 		t.Errorf("found %d API calls in the scripts; the check is not looking at the right thing", found)
+	}
+}
+
+// base is the policy with no media hosts configured.
+const basePolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+func TestThePolicyIsFixedUnlessMediaHostsAreConfigured(t *testing.T) {
+	h, _ := newTestServer(t, fakePinger{})
+	if got := do(h, "GET", "/").Header().Get("Content-Security-Policy"); got != basePolicy {
+		t.Errorf("policy = %q\nwant     %q", got, basePolicy)
+	}
+}
+
+func TestConfiguredMediaHostsAreTheOnlyChangeToThePolicy(t *testing.T) {
+	h := NewRouter(Deps{DB: fakePinger{}, Metrics: metrics.New(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), A2UIMediaHosts: []string{"images.example.com", "media.example.com:8443"}})
+	want := "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: https://images.example.com https://media.example.com:8443; media-src 'self' data: https://images.example.com https://media.example.com:8443; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	for _, path := range []string{"/", "/static/app.js", "/a2ui-config.json"} {
+		if got := do(h, "GET", path).Header().Get("Content-Security-Policy"); got != want {
+			t.Errorf("%s: policy = %q\nwant %q", path, got, want)
+		}
+	}
+}
+
+func TestTheA2UIConfigListsTheMediaHosts(t *testing.T) {
+	h, _ := newTestServer(t, fakePinger{})
+	rec := do(h, "GET", "/a2ui-config.json")
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" || strings.TrimSpace(rec.Body.String()) != `{"media_hosts":[]}` {
+		t.Errorf("status %d type %q body %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+	h = NewRouter(Deps{DB: fakePinger{}, Metrics: metrics.New(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), A2UIMediaHosts: []string{"images.example.com"}})
+	if body := strings.TrimSpace(do(h, "GET", "/a2ui-config.json").Body.String()); body != `{"media_hosts":["images.example.com"]}` {
+		t.Errorf("body %q", body)
 	}
 }

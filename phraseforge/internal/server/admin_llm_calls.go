@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultAggregateWindow = 24 * time.Hour
-	defaultAttemptsLimit   = 50
+	defaultAttemptsLimit   = 25
 	maxAttemptsLimit       = 200
 	// maxPurgeDays keeps the cutoff arithmetic far from overflowing.
 	maxPurgeDays = 36500
@@ -48,8 +48,9 @@ func (s *Server) apiAdminLLMAggregates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"since": since.UTC().Format(time.RFC3339), "group_by": groupBy, "items": items})
 }
 
-// apiAdminLLMCalls lists the latest model attempts, newest first. It returns
-// the table's columns and nothing else: the table holds no prompt or reply.
+// apiAdminLLMCalls lists the model attempts, newest first, a page at a time. It
+// returns the table's columns and nothing else: the table holds no prompt or
+// reply.
 func (s *Server) apiAdminLLMCalls(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := defaultAttemptsLimit
@@ -60,6 +61,15 @@ func (s *Server) apiAdminLLMCalls(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		limit = n
+	}
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "validation_error", "offset must be an integer, 0 or more")
+			return
+		}
+		offset = n
 	}
 	filter := llmcalls.Filter{ModelID: q.Get("model_id"), Outcome: q.Get("outcome"), Kind: q.Get("kind")}
 	if v := q.Get("since"); v != "" {
@@ -74,7 +84,27 @@ func (s *Server) apiAdminLLMCalls(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation_error", "outcome must be one of ok, error, timeout, rate_limited, canceled")
 		return
 	}
-	items, err := s.llmCalls.List(r.Context(), filter, limit)
+	items, total, err := s.llmCalls.List(r.Context(), filter, limit, offset)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
+}
+
+// apiAdminLLMUsage sums the successful model attempts per user, provider and
+// model, from the time given as since (RFC 3339; all time without it).
+func (s *Server) apiAdminLLMUsage(w http.ResponseWriter, r *http.Request) {
+	var since *time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation_error", "since must be an RFC 3339 time, e.g. 2026-10-20T12:00:00Z")
+			return
+		}
+		since = &parsed
+	}
+	items, err := s.llmCalls.UsageByUserAndModel(r.Context(), since)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

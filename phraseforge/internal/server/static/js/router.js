@@ -1,18 +1,20 @@
 // router.js: hash routing for the unified SPA shell — see
 // specs/features/phraseforge-hash-navigation.md. A route is
-// {section, id, page, tag}, written as #/<section>[/<id>][?page=N&tag=T].
+// {section, id, sub, page, tag}, written as #/<section>[/<id>|/<sub>][?page=N&tag=T]:
+// an item's id is a number, a section's own page (#/usage/models) a lower-case word.
 // On a view route, page/tag are the list context the item was opened from,
 // so a view's back link can return to the same list page. parse/build are
 // pure (no window access) so they are unit-tested directly; only
 // navigate/replace/start touch the browser.
 (function (root) {
   function parse(hash) {
-    const route = { section: "", id: null, page: 1, tag: "" };
+    const route = { section: "", id: null, sub: "", page: 1, tag: "" };
     const text = String(hash || "").replace(/^#\/?/, "");
     const [pathPart, queryPart = ""] = text.split("?", 2);
     const [section, idPart] = pathPart.split("/");
     route.section = section || "";
     if (idPart && /^\d+$/.test(idPart)) route.id = Number(idPart);
+    else if (idPart && /^[a-z]+$/.test(idPart)) route.sub = idPart;
     const query = new URLSearchParams(queryPart);
     const page = Number(query.get("page"));
     if (Number.isInteger(page) && page > 1) route.page = page;
@@ -23,6 +25,7 @@
   function build(route) {
     let hash = "#/" + route.section;
     if (route.id != null) hash += "/" + route.id;
+    else if (route.sub) hash += "/" + route.sub;
     const query = new URLSearchParams();
     if (route.page && route.page > 1) query.set("page", String(route.page));
     if (route.tag) query.set("tag", route.tag);

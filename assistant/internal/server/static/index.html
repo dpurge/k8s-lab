@@ -4,39 +4,38 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Assistant</title>
-    <script src="/admin/theme.js"></script>
-    <link rel="stylesheet" href="/admin/theme.css" />
-    <link rel="stylesheet" href="/admin/app.css" />
-    <script src="/admin/format.js"></script>
-    <script src="/admin/api.js"></script>
-    <script src="/admin/components/as-nav/component.js"></script>
-    <script src="/admin/components/as-card/component.js"></script>
-    <script src="/admin/components/as-status-bar/component.js"></script>
-    <script src="/admin/components/as-pager/component.js"></script>
-    <script src="/admin/components/as-new-task/component.js"></script>
-    <script src="/admin/components/as-task-list/component.js"></script>
-    <script src="/admin/components/as-chat-list/component.js"></script>
-    <script src="/admin/components/as-chat-thread/component.js"></script>
-    <script src="/admin/components/as-task-actions/component.js"></script>
-    <script src="/admin/components/as-answer-box/component.js"></script>
-    <script src="/admin/components/as-run-trace/component.js"></script>
-    <script src="/admin/components/as-task-detail/component.js"></script>
-    <script src="/admin/components/as-usage/component.js"></script>
-    <script src="/admin/components/as-model-list/component.js"></script>
-    <script src="/admin/app.js"></script>
+    <script src="/ui/theme-init.js" data-key="as"></script>
+    <link rel="stylesheet" href="/ui/tokens.css" />
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="/static/format.js"></script>
+    <script src="/static/api.js"></script>
+    <script src="/static/components/as-new-task/component.js"></script>
+    <script src="/static/components/as-task-list/component.js"></script>
+    <script src="/static/components/as-chat-list/component.js"></script>
+    <script src="/static/components/as-chat-thread/component.js"></script>
+    <script src="/static/components/as-task-actions/component.js"></script>
+    <script src="/static/components/as-answer-box/component.js"></script>
+    <script src="/static/components/as-run-trace/component.js"></script>
+    <script src="/static/components/as-task-detail/component.js"></script>
+    <script src="/static/components/as-usage/component.js"></script>
+    <script src="/static/components/as-model-list/component.js"></script>
+    <script src="/static/components/as-attempts/component.js"></script>
+    <script type="module" src="/ui/dp-core.js"></script>
+    <script src="/static/app.js"></script>
   </head>
   <body>
-    <header>
-      <a class="brand" href="#/tasks">Assistant</a>
-      <as-nav id="mainNav" items='[{"key":"chat","href":"#/chat","label":"Chat"},{"key":"tasks","href":"#/tasks","label":"Tasks"},{"key":"usage","href":"#/usage","label":"Usage"}]' active="tasks"></as-nav>
-      <div class="spacer"></div>
-      <button id="themeToggle" class="as-icon-button" type="button" title="Toggle theme" aria-label="Toggle theme"><span id="theme-icon"></span></button>
-    </header>
-
-    <main id="view"></main>
-
-    <footer>
-      <as-status-bar id="statusBar"></as-status-bar>
-    </footer>
+    <dp-shell storage-key="as" theme-toggle theme-label="Toggle theme">
+      <a slot="brand" class="brand" href="#/tasks">Assistant</a>
+      <dp-tabs
+        slot="header"
+        id="mainNav"
+        variant="underline"
+        label="Main"
+        active="tasks"
+        items='[{"id":"chat","label":"Chat","href":"#/chat"},{"id":"tasks","label":"Tasks","href":"#/tasks"},{"id":"usage","label":"Usage","href":"#/usage"}]'
+      ></dp-tabs>
+      <div id="view"></div>
+      <dp-status-bar slot="footer" id="statusBar"></dp-status-bar>
+    </dp-shell>
   </body>
 </html>

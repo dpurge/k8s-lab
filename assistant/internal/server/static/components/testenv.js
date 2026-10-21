@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
 const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", {
-  url: "http://localhost/admin/",
+  url: "http://localhost/",
   pretendToBeVisual: true,
 });
 global.window = dom.window;
@@ -27,7 +27,7 @@ export async function load(...paths) {
 
 // runScript runs a classic script again every time it is called, which
 // import() would not do (it caches the module), for scripts that act when
-// they are loaded, such as theme.js.
+// they are loaded.
 export function runScript(path) {
   new Function(readFileSync(new URL(path, staticDir), "utf8"))();
 }
@@ -135,6 +135,8 @@ export function step(over = {}) {
     output_tokens: 60,
     duration_ms: 2500,
     at: "2026-10-16T12:00:03Z",
+    workflow_id: "learn-topic",
+    depth: 0,
     ...over,
   };
 }
@@ -160,6 +162,7 @@ export function conversation(over = {}) {
     last_text: null,
     last_at: "2026-10-16T12:00:00Z",
     messages: 0,
+    handled_by: null,
     ...over,
   };
 }
@@ -180,12 +183,17 @@ export function chatMessage(over = {}) {
 
 // usageRow is one row of GET /api/v1/usage.
 export function usageRow(over = {}) {
-  return { user_id: USER_ID, model_id: "big", calls: 2, input_tokens: 1500, output_tokens: 300, cost_usd: 3, ...over };
+  return { user_id: USER_ID, provider_id: "gpu", model_id: "big", calls: 2, input_tokens: 1500, output_tokens: 300, cost_usd: 3, ...over };
 }
 
 // modelInfo is one item of GET /api/v1/models.
 export function modelInfo(over = {}) {
   return { id: "big", provider: "gpu", tags: ["chat", "strong"], priority: 20, available: true, unavailable_until: null, ...over };
+}
+
+// attemptRow is one item of GET /api/v1/llm-calls.
+export function attemptRow(over = {}) {
+  return { id: "cccccccc-0000-4000-8000-000000000001", task_id: null, user_id: USER_ID, model_id: "big", provider_id: "gpu", model_name: "big:tag", tags: ["chat"], input_tokens: 100, output_tokens: 20, cost_usd: 0.5, started_at: "2026-10-16T12:00:00Z", duration_ms: 1500, outcome: "ok", error: null, ...over };
 }
 
 export { USER_ID };
@@ -194,10 +202,17 @@ export { USER_ID };
 // URL's query to a response body; by default it returns the given tasks.
 export function tasksApi({
   tasks = [], total, users = [user(USER_ID, "Ada")], usersStatus = 200, tasksStatus = 200, tasksBody,
-  calls = [], callsStatus = 200, steps = [], stepsStatus = 200, workflows = DEFAULT_WORKFLOWS, workflowsStatus = 200, conversations = [], conversationsStatus = 200, chatMessages = [], chatStatus = 200, usage = [], usageStatus = 200, models = [], modelsStatus = 200,
+  calls = [], callsStatus = 200, steps = [], stepsStatus = 200, workflows = DEFAULT_WORKFLOWS, workflowsStatus = 200, conversations = [], conversationsStatus = 200, chatMessages = [], chatStatus = 200, usage = [], usageStatus = 200, models = [], modelsStatus = 200, attempts = [], attemptsTotal, attemptsStatus = 200,
 } = {}) {
   const failure = (status) => jsonResponse(status, { error: { code: "internal", message: "internal error" } });
   return (url) => {
+    if (url.startsWith("/api/v1/llm-calls")) {
+      if (attemptsStatus !== 200) return failure(attemptsStatus);
+      const params = new URL(url, "http://x").searchParams;
+      const limit = Number(params.get("limit") || 25);
+      const offset = Number(params.get("offset") || 0);
+      return jsonResponse(200, { items: attempts.slice(offset, offset + limit), total: attemptsTotal ?? attempts.length, limit, offset });
+    }
     if (/^\/api\/v1\/tasks\/[^/?]+\/steps/.test(url)) return stepsStatus === 200 ? jsonResponse(200, { items: steps }) : failure(stepsStatus);
     if (/^\/api\/v1\/tasks\/[^/?]+\/llm-calls/.test(url)) return callsStatus === 200 ? jsonResponse(200, { items: calls }) : failure(callsStatus);
     const messagesUrl = url.match(/^\/api\/v1\/conversations\/([^/?]+)\/messages(\?after=(\d+))?/);

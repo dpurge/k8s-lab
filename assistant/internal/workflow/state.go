@@ -50,6 +50,27 @@ type Run struct {
 	// Language is the language code the prompts are specialised for. A string
 	// "language" key in State, if the model has recorded one, takes precedence.
 	Language string `json:"language,omitempty"`
+
+	// Child is the run this run has handed its request to (a subagent), while it
+	// is still going: the user's messages go to it, and when it ends its result
+	// comes back to this run as an observation.
+	Child *Run `json:"child,omitempty"`
+	// Depth is how many runs deep this one is: 0 for the run a task started.
+	Depth int `json:"depth,omitempty"`
+	// StepBase is added to Steps to number the trace: a child's steps continue
+	// the numbering of the run that delegated, so one trace reads in order.
+	StepBase int `json:"step_base,omitempty"`
+	// TokenCap bounds the tokens this run may use, when it was started by another
+	// run: the tokens the parent had left. 0 means no cap beyond the workflow's.
+	TokenCap int `json:"token_cap,omitempty"`
+	// Routing says why and what this run was started for, on a child.
+	Routing *Routing `json:"routing,omitempty"`
+}
+
+// Routing records a delegation: which workflow got the request and why.
+type Routing struct {
+	Workflow string `json:"workflow"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // Failure is why a run failed.
@@ -94,6 +115,14 @@ func RestoreRun(data []byte) (*Run, error) {
 	}
 	if r.Visits == nil {
 		r.Visits = map[string]int{}
+	}
+	for child := r.Child; child != nil; child = child.Child {
+		if child.State == nil {
+			child.State = map[string]any{}
+		}
+		if child.Visits == nil {
+			child.Visits = map[string]int{}
+		}
 	}
 	return &r, nil
 }

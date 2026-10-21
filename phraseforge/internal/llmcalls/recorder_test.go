@@ -348,3 +348,35 @@ func TestMetricsCountAttemptsAndTheAvailabilityGaugeFollowsTheBreaker(t *testing
 		}
 	}
 }
+
+func TestACallIsRecordedForTheUserInTheContextAndNoneWithoutOne(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+	var ada int64
+	if err := pool.QueryRow(ctx, `INSERT INTO users(username, password_hash) VALUES('ada', 'x') RETURNING id`).Scan(&ada); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, pool, map[string][]routertest.Result{"paid": {routertest.OK("x", 1, 1), routertest.OK("y", 1, 1)}})
+	if _, err := r.call(jobs.WithUserID(ctx, ada)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.call(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := pool.Query(ctx, `SELECT user_id FROM llm_calls ORDER BY started_at, id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Close()
+	var got []*int64
+	for res.Next() {
+		var u *int64
+		if err := res.Scan(&u); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, u)
+	}
+	if len(got) != 2 || got[0] == nil || *got[0] != ada || got[1] != nil {
+		t.Errorf("users = %v, want [%d, none]", got, ada)
+	}
+}

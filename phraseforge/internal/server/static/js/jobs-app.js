@@ -3,11 +3,11 @@
 // is an admin (see app.html/handleApp), same gating as admin-app.js. See
 // specs/features/phraseforge-jobs-menu.md.
 //
-// Own bootstrap/i18n comes from window.__PF_APP_BOOTSTRAP__.jobs, built by
+// Own bootstrap/i18n comes from window.__PF_APP_BOOTSTRAP__.tasks, built by
 // app.go's buildAppBootstrap (jobsAppI18n) the same way every other
 // section's own section-specific strings are — see admin-app.js's BOOT/T
 // pattern, which this mirrors exactly. Registers itself on
-// window.pfSections.jobs for shell.js to call into — see
+// window.pfSections.tasks for shell.js to call into — see
 // specs/features/phraseforge-spa-unified-shell.md.
 //
 // No auto-polling — a manual Refresh button only, matching this app's
@@ -16,9 +16,9 @@
 // feature's spec for the rationale.
 (function () {
   window.pfSections = window.pfSections || {};
-  let BOOT = window.__PF_APP_BOOTSTRAP__.jobs;
+  let BOOT = window.__PF_APP_BOOTSTRAP__.tasks;
   const T = (key) => (BOOT.i18n && BOOT.i18n[key]) || key;
-  const root = document.getElementById("jobs-app");
+  const root = document.getElementById("tasks-app");
   const statusBar = document.getElementById("statusBar");
 
   function esc(s) {
@@ -38,7 +38,7 @@
   // field appends one dt/dd pair to dl, using textContent throughout — this
   // is what makes the View dialog's showContent() call safe even though
   // job.payload/job.result can contain arbitrary user-derived text (see
-  // pf-dialog's showContent doc comment).
+  // dp-dialog's showContent doc comment).
   function field(dl, label, value) {
     const dt = document.createElement("dt");
     dt.textContent = label;
@@ -58,10 +58,10 @@
   }
 
   // buildJobView renders job's full detail as structured content for
-  // pf-dialog's showContent() — metadata fields, then Payload/Result each
+  // dp-dialog's showContent() — metadata fields, then Payload/Result each
   // in their own pretty-printed block, with Step/Progress/Error included
   // only when the job actually has one. Returns a DocumentFragment (not a wrapping
-  // <div>) so its pieces land as .pf-dialog-content's own direct
+  // <div>) so its pieces land as dp-dialog's own direct
   // children — that's what component.css's "> * + *" spacing rule
   // between blocks actually targets; nested one level deeper inside an
   // extra wrapper div, it would never match.
@@ -125,7 +125,7 @@
     // A bookmarked page that no longer exists (jobs cleared or deleted
     // since) lands on the last page instead of an empty one.
     if (page > data.pageCount) {
-      window.pfRouter.replace({ section: "jobs", page: data.pageCount });
+      window.pfRouter.replace({ section: "tasks", page: data.pageCount });
       return false;
     }
     render(data.items, data.pageCount);
@@ -178,8 +178,8 @@
       <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
         <h1 style="margin-bottom:0;">${esc(T("jobs.title"))}</h1>
         <div style="display:flex; gap:0.5rem;">
-          <pf-button variant="secondary" id="refreshJobsBtn">${esc(T("jobs.refresh"))}</pf-button>
-          <pf-button variant="secondary" id="clearJobsBtn">${esc(T("jobs.clear"))}</pf-button>
+          <dp-button variant="secondary" id="refreshJobsBtn">${esc(T("jobs.refresh"))}</dp-button>
+          <dp-button variant="secondary" id="clearJobsBtn">${esc(T("jobs.clear"))}</dp-button>
         </div>
       </div>
       <div class="card" style="margin-top:1.5rem;">
@@ -190,7 +190,7 @@
           </table>
         </div>
       </div>
-      ${pageCount > 1 ? '<pf-pager id="jobsPager" style="margin-top:1.5rem;"></pf-pager>' : ""}
+      ${pageCount > 1 ? '<dp-pager id="jobsPager" style="margin-top:1.5rem;"></dp-pager>' : ""}
     `;
 
     const pager = document.getElementById("jobsPager");
@@ -199,7 +199,7 @@
       pager.setAttribute("page-count", String(pageCount));
       pager.setAttribute("prev-label", T("texts.pagination_previous"));
       pager.setAttribute("next-label", T("texts.pagination_next"));
-      pager.addEventListener("pf-pager-select", (e) => window.pfRouter.navigate({ section: "jobs", page: e.detail.page }));
+      pager.addEventListener("dp-pager-select", (e) => window.pfRouter.navigate({ section: "tasks", page: e.detail.page }));
     }
 
     document.getElementById("refreshJobsBtn").addEventListener("click", () => loadAndRender());
@@ -243,7 +243,7 @@
         try {
           await apiFetch(`/api/v1/admin/jobs/${btn.dataset.cancelId}/cancel`, { method: "POST" });
           await loadAndRender();
-          statusBar.setMessage("Job cancelled.");
+          statusBar.setMessage("Task cancelled.");
         } catch (e) {
           statusBar.setMessage(e.message, true);
           btn.disabled = false;
@@ -276,7 +276,7 @@
           // bar to "" as its first step, which would otherwise immediately
           // wipe out a message set beforehand.
           await loadAndRender();
-          statusBar.setMessage("Job requeued.");
+          statusBar.setMessage("Task requeued.");
         } catch (e) {
           statusBar.setMessage(e.message, true);
           btn.disabled = false;
@@ -301,7 +301,7 @@
         try {
           await apiFetch(`/api/v1/admin/jobs/${btn.dataset.deleteId}`, { method: "DELETE" });
           await loadAndRender();
-          statusBar.setMessage("Job deleted.");
+          statusBar.setMessage("Task deleted.");
         } catch (e) {
           statusBar.setMessage(e.message, true);
           btn.disabled = false;
@@ -311,7 +311,7 @@
     });
   }
 
-  window.pfSections.jobs = {
+  window.pfSections.tasks = {
     setBootstrap(b) { BOOT = b; },
     show(route) {
       if (poll) poll.stop();

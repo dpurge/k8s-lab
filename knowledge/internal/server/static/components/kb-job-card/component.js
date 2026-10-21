@@ -1,15 +1,15 @@
 // kb-job-card: replaces renderJob()'s string-built markup (formerly
 // app.js's `.item` div with inline onclick="run(() => retryJob(...))"/
 // deleteJob(...) handlers) for a single /api/v1/jobs entry. Takes a `job`
-// property (setter-triggered render, matching kb-nav's `items` and
+// property (setter-triggered render, matching dp-tabs's `items` and
 // kb-message's `message` pattern) rather than attributes, since a job's
 // `error` field can be a multi-line string that's awkward and escape-prone
 // as an HTML attribute.
 //
-// Deliberately NOT built on kb-card: kb-card binds a click listener to
-// itself and fires kb-card-select on any click, including clicks on a
+// Deliberately NOT built on dp-card: dp-card binds a click listener to
+// itself and fires dp-card-select on any click, including clicks on a
 // nested action button, which would misroute a Retry/Delete click into
-// whatever handles kb-card-select. kb-card also implies clickability
+// whatever handles dp-card-select. dp-card also implies clickability
 // (pointer cursor, hover state) that a job row doesn't have (no detail
 // view). This component only ever emits kb-job-retry/kb-job-delete, and
 // only from their own buttons — it must never bind a listener on itself.
@@ -37,7 +37,7 @@
   }
 
   function makeActionButton(label, variant, eventName, job) {
-    const button = document.createElement("kb-button");
+    const button = document.createElement("dp-button");
     if (variant) button.setAttribute("variant", variant);
     button.textContent = label;
     button.addEventListener("click", () => {
@@ -64,7 +64,7 @@
       const job = this._job || {};
 
       // Clear any previously rendered content before re-rendering —
-      // matches kb-nav/kb-message's own re-render pattern (textContent =
+      // matches dp-tabs/kb-message's own re-render pattern (textContent =
       // "" rather than innerHTML = "").
       this.textContent = "";
 

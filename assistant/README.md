@@ -20,16 +20,22 @@ and memory come in later slices (see
 - **API** (`/api/v1`, described in `schemas/api/openapi.yaml`): `POST` and `GET`
   `/users`, `POST` and `GET` `/tasks` (paged, newest first, `status` filter),
   `GET /tasks/{id}` (with `usage`: calls, tokens, cost, models),
-  `GET /tasks/{id}/llm-calls`, `GET /usage?since=`, `GET /models`; also
+  `GET /tasks/{id}/llm-calls`, `GET /llm-calls?since=&limit=&offset=` (every attempt, a page at a time), `GET /usage?since=` (per user, provider and model), `GET /models`; also
   `/healthz` and `/metrics` (no login, shows model ids, provider ids, call counts, cost and Go/process info, never credentials or content; in production block it at the ingress or scrape the pod address directly; each scrape evaluates provider availability by reading credential and header files). Errors are always
   `{"error": {"code", "message"}}`. There is no authentication yet.
-- **Admin interface** at `/admin/`: a single-page app of native Web Components
+- **Admin interface** at `/` (its files under `/static/`; the former `/admin/` redirects): a single-page app of native Web Components
   (`as-*`, in `internal/server/static/`), embedded in the binary. It shows the
   queue with status filter and paging, counts waiting and running times up
   live, shows each task's model, tokens and cost, and on a task's page its
-  payload, result, error and every model call it made. The Usage page shows
-  calls, tokens and cost by user and model for a period, and the configured
-  models with their availability.
+  payload, result, error and every model call it made. The top menu is Chat,
+  Tasks and Usage; Usage has a side panel with three pages. Usage
+  (`#/usage?period=&group=`) shows user, provider, model, calls, input tokens,
+  output tokens and cost for a period, grouped by user, provider or model.
+  Models (`#/models`) lists provider, model, tags, priority and availability.
+  Attempts (`#/attempts?period=&page=`) lists every model call, newest first,
+  failed ones included, 25 per page with a pager and a period filter. The three
+  tables are the shared components `dp-usage-table`, `dp-model-table` and
+  `dp-attempt-table` from `shared/ui`; the page only loads and hands them rows.
 - **Metrics** for Prometheus: `assistant_tasks_total{source,workflow,status}`,
   `assistant_task_queue_seconds`, `assistant_task_execution_seconds` and
   `assistant_http_requests_total` / `_duration_seconds` by route template.
@@ -52,13 +58,13 @@ and memory come in later slices (see
 ```sh
 cp .env.example .env     # set ASSISTANT_DATABASE_URL
 go run . migrate         # apply the schema
-go run .                 # serve on :8080, admin at http://localhost:8080/admin/
+go run .                 # serve on :8080, admin at http://localhost:8080/
 ```
 
 In the dev cluster: `task deploy-assistant` (from the repository root) builds
 the image, creates the `assistant` database and its Secret, the `assistant-models`
 ConfigMap (from `models.dev.yaml`; the Ollama on the laptop), applies the schema
-and deploys to `http://assistant.localhost:8080/admin/`. Try it:
+and deploys to `http://assistant.localhost:8080/`. Try it:
 
 ```sh
 curl -H 'Host: assistant.localhost' localhost:8080/api/v1/users \
@@ -133,6 +139,73 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
   `assistant_llm_calls_total`, `_tokens_total{user,...}`, `_cost_usd_total`,
   `_call_duration_seconds` and `assistant_llm_model_available{model}`.
   No prompt or reply is logged or stored.
+- **Chat interfaces (A2UI)**: the page can draw interfaces that an agent
+  describes in A2UI v1.0 messages (renderer in `shared/ui`, loaded only when a
+  page draws one). `#/gallery` shows every example of the reference with the
+  messages beside it and what the page sent back (a development page).
+  Images, video and audio may come from this server and from `data:` URLs;
+  `ASSISTANT_A2UI_MEDIA_HOSTS` (comma-separated bare hosts such as
+  `images.example.com` or `media.example.com:8443`, https only, no wildcards,
+  empty by default) adds hosts to the page's `img-src` and `media-src`. An
+  entry that is not a bare host name stops startup, because it is written into
+  the Content-Security-Policy. `GET /a2ui-config.json` tells the page the hosts,
+  so a blocked image is explained instead of broken.
+- **Interfaces in a conversation**: a workflow shows an interface by putting
+  A2UI v1.0 messages under `"ui"` in the payload of an `ask_user` action (with
+  or without a `question`). They are validated (`internal/a2ui`: the vendored
+  schemas, the basic catalog, ids, references, cycles, depth and size) and stored
+  as a message of kind `ui`; an invalid interface is not stored and the
+  conversation says why. The page draws it and sends what the user does back
+  with `POST /api/v1/conversations/{id}/ui-events` (an A2UI action must come
+  from a component of a surface the conversation drew); the action is stored as
+  a `ui_action` message, shown as the user's turn, and handed to the run as
+  `{"ui_action": <the action>}`, the answer to the question it waits on. An
+  interface that a later action answered stays visible but is read-only. Function
+  calls go both ways, with the assistant's own catalog (`schemas/a2ui/assistant_catalog.json`):
+  a run may put a `callRendererFunction` for `viewport` (the window's size and
+  colour scheme) under `ui`, which gets a fresh id from the assistant, is run by
+  the page without a word to the user, and whose answer is the run's next
+  message, `{"ui_function_response": ...}` (or a `TIMEOUT` error after 15
+  seconds); and the page may ask the assistant for `listWorkflows`, answered in
+  the conversation. The values a user entered travel with an action and are put
+  back when the conversation is opened again (a surface with a password field is
+  never saved). Refused A2UI messages are counted in
+  `assistant_a2ui_rejected_total{source="interface"|"event"}`. The workflow
+  `ui-demo` (scripted by the demo model, so it needs no real model) shows every
+  component, asks the page for its window's size, and then shows a form:
+  start a conversation with it to try the interface.
+- **A model composes the interface**: a workflow that declares `ui: {catalogs: [basic]}`
+  gets a guide to the A2UI catalog in its system prompt (generated from the catalog,
+  about 5 KB: the rules, every component with its properties, one complete reply),
+  and an interface in the `ask_user` payload (`payload.ui`) is validated before the
+  reply is accepted; an invalid one is sent back with its problems (the first eight,
+  by path) and the model retries within `max_retries`. A surface id the model reuses
+  (it writes "main" every time) is renamed in the conversation. `ui-compose` is the
+  workflow for trying it (tag `ui`, which only the dev model `gemma4-12b-ui` has: the
+  same model with 2048 output tokens, because a form is much longer than a chat
+  reply). `go test ./internal/llm -run TestARealModelComposes` with
+  `UI_TRIAL_OLLAMA=http://localhost:11434` runs one workflow through a real model
+  in-process, with no cluster and no database.
+- **Delegation and the orchestrator**: a workflow that declares `intents`
+  (a description and example requests) is offered to the orchestrator; one without
+  is never offered (`GET /api/v1/workflows` shows each workflow's `intents`, null
+  when none). A state with `delegate: true` may reply with the `delegate` action,
+  `{"type": "delegate", "workflow": "<id>", "message": "<the request>", "reason":
+  "<why>"}`; its prompt then lists the offered workflows with their intents. The
+  workflow it names runs as a child of the run (a subagent), with its own state
+  and limits, in the same conversation: its questions and interfaces come out of
+  the run, the user's answers and actions go to it, and when it ends its final
+  state (or its failure) comes back to the parent as the next observation,
+  `{"delegate_result": ...}` or `{"delegate_error": ...}`. The child's steps
+  continue the numbering of the parent's trace (each step says its workflow and
+  depth), its tokens count against the parent's budget (it may use at most what
+  the parent had left), and delegation is nested at most 2 deep. The `orchestrator`
+  workflow (tag `orchestrator`) makes one model call per message to hand it to a
+  workflow, to answer itself, or to ask one short question; the conversation shows
+  a line `→ hello: <reason>` when it routes, and its header says `Handled by
+  <workflow>` while a delegated workflow has the turn. In the dev cluster the demo
+  model plays the orchestrator by keywords ("hello", "form", "interface"), so it
+  can be tried without a real model.
 - **Retention of model calls**: `llm_calls` rows older than
   `ASSISTANT_LLM_CALLS_RETENTION_DAYS` days (default 90, capped at 36500; 0 keeps them forever; a
   negative or non-numeric value stops startup) are deleted automatically, in
@@ -144,11 +217,12 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
 - Providers: `ollama`; `vertex` (Gemini on Vertex AI, REST `generateContent`),
   which authenticates with an OAuth access token that the provider's
   `api_key_from: file:/path` in `models.yaml` names, re-read on every call, so a
-  refreshed token needs no restart (dev: `task refresh-assistant-vertex-token`
-  writes it from your gcloud account into the Secret `assistant-vertex`, which
-  is mounted at `/etc/assistant-vertex/token`; `models.dev.yaml` sets
-  `api_key_from: file:/etc/assistant-vertex/token`; the token is valid about an
-  hour; production needs a service account, not yet built). Without a token the
+  refreshed token needs no restart (to try it in the dev cluster, add a `vertex`
+  provider as in `models.example.yaml` with `api_key_from:
+  file:/etc/assistant-vertex/token` and run `task refresh-assistant-vertex-token`,
+  which writes the token from your gcloud account into the Secret
+  `assistant-vertex`, mounted at `/etc/assistant-vertex/token`; the token is valid
+  about an hour; production needs a service account, not yet built). Without a token the
   Vertex provider is disabled (reason `missing_credentials`, one warning in the
   log), never a startup error; and `demo`, a deterministic stand-in that acts out `hello` instantly,
   to try the interface without a real model. `openai` (any OpenAI-compatible
@@ -203,13 +277,18 @@ per header, read on every call); the rules are in the phraseforge README,
 
 **How the dev deployment supplies them** (`k8s/deployment.yaml`, `models.dev.yaml`):
 
-- **Vertex (`gcp`):** `task refresh-assistant-vertex-token` writes a fresh
-  access token from your gcloud account into the Secret `assistant-vertex` (key
-  `token`, valid about an hour). The Deployment mounts that Secret, optional, at
-  `/etc/assistant-vertex`, and `models.dev.yaml` has `api_key_from:
-  file:/etc/assistant-vertex/token`. `task deploy-assistant` runs the refresh;
-  run it again when the token expires, no restart is needed.
-- **Ollama on the laptop (`ollama-cpu`):** `api_key_from: ""`, no credential.
+- **Ollama on the laptop (`ollama`):** `api_key_from: ""`, no credential. This is
+  the dev models file's only real provider, the same as phraseforge's dev
+  cluster: model `gemma4-12b` (`gemma4:12b`), tags `default`, `chat`, `review`
+  and `cheap`, priority 10. The GPU machine (`ollama-gpu`, preferred), Vertex
+  and OpenRouter are the prod cluster's; `models.example.yaml` shows them.
+- **Vertex (`gcp`), if you add it to try it:** `task refresh-assistant-vertex-token`
+  writes a fresh access token from your gcloud account into the Secret
+  `assistant-vertex` (key `token`, valid about an hour). The Deployment mounts
+  that Secret, optional, at `/etc/assistant-vertex`, so a provider with
+  `api_key_from: file:/etc/assistant-vertex/token` reads it. The task is not
+  part of `task deploy-assistant`; run it again when the token expires, no
+  restart is needed.
 - **`env:` keys:** the Deployment's `env` list has only `ASSISTANT_MODELS_FILE`,
   `ASSISTANT_WORKFLOWS_DIR` and `ASSISTANT_DATABASE_URL`; no provider key is set,
   so an `env:NAME` provider has no credential there. To supply one, create a

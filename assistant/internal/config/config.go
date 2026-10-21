@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,9 @@ const (
 	EnvWorkflowsDir = "ASSISTANT_WORKFLOWS_DIR"
 	// EnvLLMCallsRetentionDays is how many days the model-call history is kept.
 	EnvLLMCallsRetentionDays = "ASSISTANT_LLM_CALLS_RETENTION_DAYS"
+	// EnvA2UIMediaHosts lists, comma-separated, the hosts a chat interface may
+	// load images, video and audio from, besides this server and data: URLs.
+	EnvA2UIMediaHosts = "ASSISTANT_A2UI_MEDIA_HOSTS"
 )
 
 // DefaultLLMCallsRetentionDays is how long llm_calls rows are kept when
@@ -50,6 +54,33 @@ type Config struct {
 	// purged automatically, so usage and call history cover only this period.
 	// 0 keeps them forever. Tasks and their steps are not purged.
 	LLMCallsRetentionDays int
+	// A2UIMediaHosts are the hosts (lower case, with a port when it is not 443)
+	// that chat interfaces may load media from over https. Empty by default:
+	// only this server and data: URLs. Each host is added to the page's
+	// Content-Security-Policy, so an entry is validated as a bare host name.
+	A2UIMediaHosts []string
+}
+
+// mediaHost is a host name with an optional port, nothing else: it is put into
+// a Content-Security-Policy header, so no scheme, path, wildcard, space,
+// quote or semicolon may get through.
+var mediaHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$`)
+
+// ParseMediaHosts splits a comma-separated list of hosts, lower-cases them and
+// refuses anything that is not a bare host name (with an optional port).
+func ParseMediaHosts(raw string) ([]string, error) {
+	var hosts []string
+	for _, part := range strings.Split(raw, ",") {
+		host := strings.ToLower(strings.TrimSpace(part))
+		if host == "" {
+			continue
+		}
+		if !mediaHost.MatchString(host) {
+			return nil, fmt.Errorf("%s: %q is not a host name; use bare hosts such as images.example.com or media.example.com:8443 (https only, no wildcards)", EnvA2UIMediaHosts, host)
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
 }
 
 // Lookup reads one environment variable, like os.LookupEnv.
@@ -92,6 +123,15 @@ func Load(lookup Lookup) (Config, error) {
 			problems = append(problems, fmt.Errorf("%s must be a whole number of days from 0 (keep forever) to %d, got %q", EnvLLMCallsRetentionDays, retention.MaxDays, strings.TrimSpace(v)))
 		} else {
 			cfg.LLMCallsRetentionDays = days
+		}
+	}
+
+	if v, ok := lookup(EnvA2UIMediaHosts); ok {
+		hosts, err := ParseMediaHosts(v)
+		if err != nil {
+			problems = append(problems, err)
+		} else {
+			cfg.A2UIMediaHosts = hosts
 		}
 	}
 

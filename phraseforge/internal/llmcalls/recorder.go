@@ -62,6 +62,9 @@ func (r *Recorder) Observe(ctx context.Context, a router.Attempt) {
 	if id, ok := jobs.JobID(ctx); ok {
 		call.JobID = &id
 	}
+	if id, ok := jobs.UserID(ctx); ok {
+		call.UserID = &id
+	}
 	if a.Error != "" {
 		call.Error = &a.Error
 	}

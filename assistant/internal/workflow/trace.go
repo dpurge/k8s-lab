@@ -46,6 +46,9 @@ func FormatTrace(records []StepRecord) string {
 		if r.Attempt > 0 {
 			fmt.Fprintf(&b, " attempt %d", r.Attempt)
 		}
+		if r.Depth > 0 {
+			fmt.Fprintf(&b, " [%s, depth %d]", r.Workflow, r.Depth)
+		}
 		fmt.Fprintf(&b, " in %s: %s", r.State, r.Outcome)
 		if r.Attempt > 0 {
 			fmt.Fprintf(&b, " (%d in, %d out tokens, %s)", r.InputTokens, r.OutputTokens, r.Duration)
@@ -78,6 +81,12 @@ func describeAction(a *Action) string {
 		return "goto " + a.State
 	case ActionAskUser:
 		return "ask_user " + compactJSON(a.Payload)
+	case ActionDelegate:
+		out := "delegate to " + a.Workflow + " " + compactJSON(a.Message)
+		if a.Reason != "" {
+			out += " (" + a.Reason + ")"
+		}
+		return out
 	}
 	return string(a.Type)
 }

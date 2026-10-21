@@ -1,30 +1,35 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <script src="/theme.js"></script>
-    <script src="/components/kb-button/component.js"></script>
-    <script src="/components/kb-field/component.js"></script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Knowledge — Sign up</title>
-    <link rel="stylesheet" href="/theme.css" />
+    <script src="/ui/theme-init.js" data-key="kb"></script>
+    <link rel="stylesheet" href="/ui/tokens.css" />
     <link rel="stylesheet" href="/auth.css" />
+    <script type="module" src="/ui/dp-core.js"></script>
   </head>
   <body>
-    <kb-button class="top" variant="icon" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><span id="theme-icon"></span></kb-button>
-    <form id="form">
-      <h1>Sign up</h1>
-      <kb-field label="Email" for="email">
-        <input id="email" type="email" required autofocus />
-      </kb-field>
-      <kb-field label="Password" for="password">
-        <input id="password" type="password" required minlength="8" />
-      </kb-field>
-      <div class="muted">At least 8 characters.</div>
-      <div class="error" id="error"></div>
-      <kb-button type="submit">Sign up</kb-button>
-      <p class="muted">Already have an account? <a href="/login.html">Log in</a></p>
-    </form>
+    <dp-shell storage-key="kb" theme-toggle theme-label="Toggle theme" centered>
+      <a slot="brand" class="brand" href="/">Knowledge</a>
+      <div class="auth-page">
+        <h1>Sign up</h1>
+        <div class="form-card">
+          <form id="form">
+            <dp-field label="Email" for="email">
+              <input id="email" type="email" required autofocus />
+            </dp-field>
+            <dp-field label="Password" for="password">
+              <input id="password" type="password" required minlength="8" />
+            </dp-field>
+            <div class="muted">At least 8 characters.</div>
+            <div class="error" id="error"></div>
+            <dp-button variant="primary" type="submit" block>Sign up</dp-button>
+          </form>
+        </div>
+        <p class="switch-link">Already have an account? <a href="/login.html">Log in</a></p>
+      </div>
+    </dp-shell>
     <script src="/auth.js"></script>
     <script>
       wireAuthForm("/api/v1/auth/signup", "Sign up failed");

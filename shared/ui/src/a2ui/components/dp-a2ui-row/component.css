@@ -1,0 +1,12 @@
+:host {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--dp-a2ui-gap, 0.75rem);
+  min-width: 0;
+}
+
+/* A flexible child may shrink below its content instead of overflowing. */
+:host > * {
+  min-width: 0;
+}

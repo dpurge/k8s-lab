@@ -2,13 +2,16 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"assistant/internal/a2ui"
 	"assistant/internal/chat"
 )
 
@@ -17,6 +20,7 @@ import (
 type ChatService interface {
 	Start(ctx context.Context, userID, workflowID, title string) (chat.Conversation, error)
 	Send(ctx context.Context, conversationID, text string) (chat.Message, error)
+	Event(ctx context.Context, conversationID string, raw json.RawMessage) (chat.Message, error)
 	Get(ctx context.Context, id string) (chat.View, error)
 	List(ctx context.Context, userID string) ([]chat.View, error)
 	Messages(ctx context.Context, conversationID string, after int64) ([]chat.Message, error)
@@ -157,5 +161,38 @@ func (d Deps) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, codeInternal, err.Error())
 	default:
 		d.internalError(w, r, "send message", err)
+	}
+}
+
+// maxEventBytes bounds a request body before it is read; the validator then
+// applies its own, tighter limit to the message.
+const maxEventBytes = 1 << 20
+
+// postUIEvent is the page telling the assistant what happened in an interface
+// it drew: the user's action, an error, a function call or its answer. The body
+// is one renderer-to-agent A2UI message.
+func (d Deps) postUIEvent(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEventBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "the body could not be read or is over 1 MiB")
+		return
+	}
+	m, err := d.Chat.Event(r.Context(), chi.URLParam(r, "id"), raw)
+	var invalid *a2ui.ValidationError
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusCreated, m)
+	case errors.As(err, &invalid):
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, invalid.Error())
+	case errors.Is(err, chat.ErrNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, "conversation not found")
+	case errors.Is(err, chat.ErrBusy):
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, chat.ErrNoInterfaces), errors.Is(err, chat.ErrUnsupportedEvent):
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
+	case m.ID != 0:
+		writeError(w, http.StatusBadGateway, codeInternal, err.Error())
+	default:
+		d.internalError(w, r, "post interface event", err)
 	}
 }

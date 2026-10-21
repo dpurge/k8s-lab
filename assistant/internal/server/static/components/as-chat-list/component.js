@@ -17,7 +17,7 @@
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-chat-list/component.css";
+    link.href = "/static/components/as-chat-list/component.css";
     document.head.appendChild(link);
   }
 

@@ -1,0 +1,125 @@
+/* Shared by the input components; each is scoped to its own tag. */
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.errors {
+  margin-top: 0.25rem;
+  color: var(--danger, #b3261e);
+  font-size: 0.85rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.slider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.slider input {
+  flex: 1;
+  min-width: 0;
+}
+
+.slider output {
+  min-width: 2.5rem;
+  text-align: end;
+  color: var(--muted, #667);
+}
+
+.picker {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.picker legend {
+  padding: 0;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted, #667);
+}
+
+.picker .filter {
+  margin-bottom: 0.5rem;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.chips .options {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.chips .option {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--border, #d7dae0);
+  border-radius: 999px;
+  background: var(--surface, #fff);
+}
+
+.chips .option.on {
+  border-color: var(--link, #3b5bab);
+  background: var(--surface-alt, #f3f4f6);
+}
+
+/* The native control is still there and keyboard-reachable; the chip shows the state. */
+.chips .option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chips .option:focus-within {
+  outline: 2px solid var(--link, #3b5bab);
+  outline-offset: 1px;
+}
+
+/* The page styles its own controls; these are the A2UI components', so a model's
+   form looks the same in every app. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  color: var(--text, inherit);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d7dae0);
+  border-radius: 0.4rem;
+}
+
+textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--link, #3b5bab);
+  outline-offset: 1px;
+}
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--danger, #b3261e);
+}

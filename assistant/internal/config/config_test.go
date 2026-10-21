@@ -221,3 +221,27 @@ func TestLoadRejectsANegativeOrNonNumericLLMCallsRetention(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadReadsTheA2UIMediaHostsAndTheDefaultIsNone(t *testing.T) {
+	cfg, err := Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL}))
+	if err != nil || len(cfg.A2UIMediaHosts) != 0 {
+		t.Errorf("unset: got %v, %v; want none", cfg.A2UIMediaHosts, err)
+	}
+	cfg, err = Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvA2UIMediaHosts: " Images.Example.com, media.example.com:8443 ,, "}))
+	want := []string{"images.example.com", "media.example.com:8443"}
+	if err != nil || strings.Join(cfg.A2UIMediaHosts, "|") != strings.Join(want, "|") {
+		t.Errorf("got %v, %v; want %v", cfg.A2UIMediaHosts, err, want)
+	}
+}
+
+func TestLoadRejectsAMediaHostThatCouldChangeThePolicy(t *testing.T) {
+	for _, value := range []string{
+		"https://example.com", "example.com/path", "*.example.com", "example.com; script-src *", "example.com 'unsafe-inline'",
+		"exa mple.com", "example.com:", "example.com:123456", "-bad.com", "bad-.com", "a..b", "ex'ample.com", "http:", "'self'",
+	} {
+		_, err := Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvA2UIMediaHosts: value}))
+		if err == nil || !strings.Contains(err.Error(), "ASSISTANT_A2UI_MEDIA_HOSTS") {
+			t.Errorf("%q: err = %v, want it to name ASSISTANT_A2UI_MEDIA_HOSTS", value, err)
+		}
+	}
+}

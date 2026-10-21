@@ -1,0 +1,4 @@
+# shared is a Docker build context (--build-context shared=./shared): keep the
+# host's npm and build output out of it. The ui stage builds its own dist/.
+ui/node_modules
+ui/dist

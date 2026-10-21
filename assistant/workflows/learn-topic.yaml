@@ -6,6 +6,9 @@ description: >-
   level with a short series of questions, then give lessons and exercises
   while keeping an up-to-date picture of their level, what they know and
   where their gaps are, until the goal is reached.
+intents:
+  description: Teaches the user a language or a technology they want to learn, with a program, a level check and lessons.
+  examples: ["teach me Polish", "I want to learn Kubernetes", "help me practise Arabic verbs"]
 state_schema:
   type: object
   additionalProperties: false

@@ -1,0 +1,22 @@
+{
+  "name": "shared-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --import ./test-hooks.mjs --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@a2ui/web_core": "0.14.0",
+    "lit": "3.3.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/jsdom": "30.0.0",
+    "@types/node": "26.6.5",
+    "esbuild": "0.28.2",
+    "jsdom": "30.1.3",
+    "typescript": "7.0.2"
+  }
+}

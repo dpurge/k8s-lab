@@ -559,6 +559,24 @@ tasks:
       - npm install
       - npm test
 
+  # ── shared ui ────────────────────────────────────────────────────────────────
+
+  build-ui:
+    desc: Bundle shared/ui's TypeScript components into shared/ui/dist (not committed; apps embed it).
+    dir: shared/ui
+    cmds:
+      - npm ci
+      - npm run build
+
+  test-ui:
+    desc: Type-check and test shared/ui (Node+jsdom run directly on the TypeScript source), then its Go handler.
+    dir: shared/ui
+    cmds:
+      - npm ci
+      - npm run typecheck
+      - npm test
+      - go test ./...
+
   # ── phraseforge ──────────────────────────────────────────────────────────────
 
   test-phraseforge-frontend:
@@ -639,7 +657,6 @@ tasks:
       - task: _ensure-assistant-secret
       - task: _ensure-assistant-models
       - task: _ensure-assistant-workflows
-      - task: refresh-assistant-vertex-token
       - task: _ensure-database
         vars:
           DB: assistant
@@ -650,7 +667,7 @@ tasks:
       - '{{.KUBECTL}} apply -f assistant/k8s/'
       - '{{.KUBECTL}} rollout restart deployment/assistant -n app'
       - '{{.KUBECTL}} rollout status deployment/assistant -n app --timeout=120s'
-      - 'echo "assistant ready: http://assistant.localhost:{{.INGRESS_PORT}}/admin/"'
+      - 'echo "assistant ready: http://assistant.localhost:{{.INGRESS_PORT}}/"'
 
   delete-assistant:
     desc: Delete the assistant from the running cluster (its database is kept).
@@ -734,6 +751,8 @@ tasks:
   # gcloud account in ASSISTANT_VERTEX_ACCOUNT, written to a gitignored file and
   # projected as a Secret, which the pod re-reads on every call (no restart).
   # Run it again when a call fails with "401 ... token may have expired".
+  # Not part of `task deploy-assistant`: the dev models file does not use Vertex
+  # (the dev cluster mimics phraseforge: one Ollama on the laptop).
   refresh-assistant-vertex-token:
     desc: Write a fresh Vertex AI access token for the assistant into its Secret (valid about an hour).
     vars:

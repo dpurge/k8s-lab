@@ -68,6 +68,9 @@ type Job struct {
 	Progress  string          `json:"progress,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+	// UserID is who asked for the job; nil when no user did. Not part of the
+	// JSON the admin API returns.
+	UserID *int64 `json:"-"`
 }
 
 // HandlerFunc performs one job's actual work. It must not be called directly
@@ -227,7 +230,15 @@ func (s *Service) enqueue(ctx context.Context, kind string, priority Priority, p
 	if checkpointFrom != "" {
 		fromArg = checkpointFrom
 	}
-	_, err = s.db.Exec(ctx, "INSERT INTO jobs(id,kind,priority,status,payload,step,checkpoint) VALUES($1,$2,$3,'pending',$4,$5,(SELECT checkpoint FROM jobs WHERE id=$6::uuid))", id, kind, priority, payload, stepArg, fromArg)
+	// The job is for the user in ctx; a retry keeps the user of the job it
+	// retries, who the calls were made for, not the admin pressing Retry.
+	var userArg any
+	if uid, ok := UserID(ctx); ok {
+		userArg = uid
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO jobs(id,kind,priority,status,payload,step,checkpoint,user_id)
+		VALUES($1,$2,$3,'pending',$4,$5,(SELECT checkpoint FROM jobs WHERE id=$6::uuid),
+		       coalesce((SELECT user_id FROM jobs WHERE id=$6::uuid), $7::bigint))`, id, kind, priority, payload, stepArg, fromArg, userArg)
 	if err != nil {
 		return "", err
 	}
@@ -254,7 +265,7 @@ func (s *Service) nudge() {
 
 // jobColumns is the column list every full-row Job query scans, factored out
 // so Get/List/claim's RETURNING stay in sync by construction.
-const jobColumns = "id,kind,priority,status,payload,coalesce(result,'null'),coalesce(error,''),coalesce(step,''),coalesce(progress,''),created_at,updated_at"
+const jobColumns = "id,kind,priority,status,payload,coalesce(result,'null'),coalesce(error,''),coalesce(step,''),coalesce(progress,''),created_at,updated_at,user_id"
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -263,7 +274,7 @@ type scanner interface {
 func scanJob(row scanner) (Job, error) {
 	var j Job
 	var payload, result []byte
-	err := row.Scan(&j.ID, &j.Kind, &j.Priority, &j.Status, &payload, &result, &j.Error, &j.Step, &j.Progress, &j.CreatedAt, &j.UpdatedAt)
+	err := row.Scan(&j.ID, &j.Kind, &j.Priority, &j.Status, &payload, &result, &j.Error, &j.Step, &j.Progress, &j.CreatedAt, &j.UpdatedAt, &j.UserID)
 	if err != nil {
 		return Job{}, err
 	}
@@ -412,14 +423,14 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeleteAllDone bulk-removes every job row currently at status='done' —
-// deliberately narrower than Delete's own three terminal statuses: a
-// pending/running job is still doing something, and a failed/cancelled row
-// is left for the operator to inspect or Retry, so only 'done' is safe to
-// clear in bulk without an operator reviewing each row individually first
-// (see the Jobs page's Clear button). Returns the number of rows removed.
-func (s *Service) DeleteAllDone(ctx context.Context) (int64, error) {
-	tag, err := s.db.Exec(ctx, "DELETE FROM jobs WHERE status = 'done'")
+// DeleteCompletedAndCancelled bulk-removes every job row currently at
+// status='done' or 'cancelled' — deliberately narrower than Delete's own three
+// terminal statuses: a pending/running job is still doing something, and a
+// failed row is left for the operator to inspect or Retry. A cancelled job was
+// stopped on purpose, so it needs no review (see the Tasks page's Clear
+// button). Returns the number of rows removed.
+func (s *Service) DeleteCompletedAndCancelled(ctx context.Context) (int64, error) {
+	tag, err := s.db.Exec(ctx, "DELETE FROM jobs WHERE status IN ('done','cancelled')")
 	if err != nil {
 		return 0, err
 	}
@@ -627,7 +638,11 @@ func (s *Service) runOne(ctx context.Context) bool {
 	}
 
 	start := time.Now()
-	result, runErr := fn(WithJobID(checkpoint.With(jobCtx, jobCheckpoint{db: s.db, id: j.ID}), j.ID), j.ID, j.Payload)
+	handlerCtx := WithJobID(checkpoint.With(jobCtx, jobCheckpoint{db: s.db, id: j.ID}), j.ID)
+	if j.UserID != nil {
+		handlerCtx = WithUserID(handlerCtx, *j.UserID)
+	}
+	result, runErr := fn(handlerCtx, j.ID, j.Payload)
 	outcome := "success"
 	switch {
 	case errors.Is(runErr, ErrSkipped):

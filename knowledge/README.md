@@ -7,7 +7,9 @@
 RAG. It provides:
 
 - a browser GUI at `http://knowledge.localhost:8080/`, gated behind sign-up/login, with a dark/light
-  theme toggle that remembers your last choice
+  theme toggle that remembers your last choice. The top bar has three items: Documents, Chat and
+  Tasks (shown as "Tasks (N)"). The sidebar of the Documents page lists two pages, Documents and
+  Drafts (shown as "Drafts (N)")
 - a JSON REST API under `/api/v1`
 - semantic/vector search backed by Qdrant
 - chat with your knowledge, with chat history stored in Postgres
@@ -68,7 +70,7 @@ One knowledge item = one Qdrant point:
 written to Qdrant. Each draft has an `id`, `job_id` (reference to the ingest job), `source_kind`
 (url/text), `source_ref` (the URL or filename), `chunk_index`, `title`, `summary`, `body`, `tags`,
 and timestamps. Drafts are purely for human review and staging — they never appear in search or
-chat results until explicitly promoted into Qdrant (via the Ingest tab).
+chat results until explicitly promoted into Qdrant (by approving them on the GUI's Drafts page).
 
 The embedded text is:
 
@@ -506,7 +508,7 @@ anywhere in the file rejects the whole request (`400 invalid_yaml`) — YAML's i
 sensitivity makes this more likely than with JSON, so a syntax mistake near a `delete: true` row
 can reject rows that were otherwise fine.
 
-In the GUI, use Export/Import in the Knowledge tab; Export has its own tags field (separate from
+In the GUI, use Export/Import in the sidebar of the Documents page; Export has its own tags field (separate from
 the search filter) — leave it empty to export everything, or list tags to scope the export. Import
 reads a local `.yaml`/`.yml` file (the same shape Export produces) and reports how many rows were
 imported, deleted, unchanged, and failed.
@@ -601,10 +603,13 @@ empty `body` returns `400 validation_failed` without calling the model.
 
 ### Ingest
 
+In the GUI, the Drafts page (under Documents) has the ingest form (a URL field, or a file upload)
+and the draft list; opening a draft lets you edit, approve (promote to a document) or discard it.
+
 Ingest a URL or text file into the knowledge base as draft chunks pending human review. Both endpoints
 start an async job and return `202` with the job status. The job processes the source, chunks it,
 translates and generates a title/summary for each chunk, and stores the results in a staging table
-(never written to Qdrant until explicitly approved via the Ingest tab).
+(never written to Qdrant until explicitly approved on the GUI's Drafts page).
 
 **Ingest a URL:**
 
@@ -780,6 +785,9 @@ curl -sS -w '\n%{http_code}\n' -b cookies.txt "$BASE/jobs/current"
 running; `204` with no body otherwise.
 
 ### Job history, retry, and delete
+
+In the GUI this is the Tasks tab: the list of background tasks (the jobs below), with retry and
+delete per task. The API paths keep the name `jobs`.
 
 Unlike `/jobs/current`, this lists every job regardless of status (most recent first, capped at
 500), so a failed job's error stays visible after it stops running:

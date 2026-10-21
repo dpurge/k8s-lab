@@ -1,23 +1,23 @@
 // admin-app.js: client-side rendering for the Admin section of the unified
 // SPA shell (app.html) — only present in the page at all when the current
 // user is an admin (see app.html/handleApp). Unlike the resource sections,
-// Admin is a single-page dashboard, not a list-plus-items resource — it has
-// no New/View/Edit navigation states. Instead it's split into four tabs
-// (Permissions, IME, LLM, Config) via the pf-tabs component, replacing
-// admin.html's old single scroll of five stacked cards. Every mutation
+// Config is a single-page dashboard, not a list-plus-items resource — it has
+// no New/View/Edit navigation states. Instead it's split into pages
+// (Permissions, IME, LLM, Languages, Export/import), listed in the sidebar
+// and named by the address (#/config/ime). Every mutation
 // re-fetches the whole aggregate (GET /api/v1/admin) and re-renders the
-// current tab — this app's established "things can shift under you, always
-// re-fetch" habit, generalized to independent tabs instead of item
-// positions. Registers itself on window.pfSections.admin for shell.js to
+// current page — this app's established "things can shift under you, always
+// re-fetch" habit, generalized to independent pages instead of item
+// positions. Registers itself on window.pfSections.config for shell.js to
 // call into — see specs/features/phraseforge-spa-unified-shell.md.
 (function () {
   window.pfSections = window.pfSections || {};
-  let BOOT = window.__PF_APP_BOOTSTRAP__.admin;
+  let BOOT = window.__PF_APP_BOOTSTRAP__.config;
   const T = (key) => (BOOT.i18n && BOOT.i18n[key]) || key;
-  const root = document.getElementById("admin-app");
+  const root = document.getElementById("config-app");
   const statusBar = document.getElementById("statusBar");
 
-  const TABS = ["grants", "ime", "llm", "languages", "config"];
+  const TABS = ["grants", "ime", "llm", "languages", "transfer"];
   let activeTab = "grants";
   let data = null;
   // In-page "which row, if any, is being edited" state for IME/LLM — pure
@@ -99,42 +99,35 @@
   function render(tab) {
     activeTab = tab;
     root.innerHTML = `
-      <h1>${esc(T("admin.title"))}</h1>
-      <pf-tabs id="adminTabs" style="margin-bottom:1.5rem;"></pf-tabs>
+      <h1>${esc(T("admin.tab_" + activeTab))}</h1>
       <div id="tabGrants"></div>
       <div id="tabIme"></div>
       <div id="tabLlm"></div>
       <div id="tabLanguages"></div>
-      <div id="tabConfig"></div>
+      <div id="tabTransfer"></div>
     `;
-    const tabs = document.getElementById("adminTabs");
-    tabs.items = [
-      { id: "grants", label: T("admin.tab_grants") },
-      { id: "ime", label: T("admin.tab_ime") },
-      { id: "llm", label: T("admin.tab_llm") },
-      { id: "languages", label: T("admin.tab_languages") },
-      { id: "config", label: T("admin.tab_config") },
-    ];
-    tabs.active = activeTab;
-    tabs.addEventListener("pf-tabs-select", (e) => {
-      showTab(e.detail.id);
-      if (e.detail.id === "llm") {
-        usage.purgeResult = "";
-        loadUsage();
-      }
-    });
 
     renderGrantsTab();
     renderIMETab();
     renderLLMTab();
     renderLanguagesTab();
-    renderConfigTab();
+    renderTransferTab();
     showTab(activeTab);
   }
 
+  // sidebarNav is the list of this section's pages for the sidebar; shell.js
+  // calls it on every route change.
+  function sidebarNav(route) {
+    const tabs = document.createElement("dp-tabs");
+    tabs.setAttribute("orientation", "vertical");
+    tabs.setAttribute("label", T("nav.config"));
+    tabs.items = TABS.map((id) => ({ id, label: T("admin.tab_" + id) }));
+    tabs.active = TABS.includes(route.sub) ? route.sub : TABS[0];
+    tabs.addEventListener("dp-tabs-select", (e) => window.pfRouter.navigate({ section: "config", sub: e.detail.id === TABS[0] ? "" : e.detail.id }));
+    return tabs;
+  }
+
   function showTab(id) {
-    activeTab = id;
-    document.getElementById("adminTabs").active = id;
     for (const t of TABS) {
       document.getElementById("tab" + t[0].toUpperCase() + t.slice(1)).style.display = t === id ? "" : "none";
     }
@@ -151,7 +144,7 @@
         <td>${esc(g.username)}</td>
         <td>${esc(T("role." + g.role))}</td>
         <td>${g.language ? `${esc(g.languageName)} (${esc(g.language)})` : `<em>${esc(T("admin.site_wide"))}</em>`}</td>
-        <td><pf-button variant="danger" data-revoke-id="${g.id}">${esc(T("texts.delete"))}</pf-button></td>
+        <td><dp-button variant="danger" data-revoke-id="${g.id}">${esc(T("texts.delete"))}</dp-button></td>
       </tr>`,
         )
         .join("") || `<tr><td colspan="4"><em>${esc(T("admin.no_grants"))}</em></td></tr>`;
@@ -161,21 +154,21 @@
         <h2 style="margin-top:0;">${esc(T("admin.grant_heading"))}</h2>
         <form id="grantForm">
           <div class="field-row">
-            <pf-field label="${esc(T("admin.user"))}" for="grant-user">
+            <dp-field label="${esc(T("admin.user"))}" for="grant-user">
               <select id="grant-user" required>${users.map((u) => `<option value="${u.id}">${esc(u.username)}</option>`).join("")}</select>
-            </pf-field>
-            <pf-field label="${esc(T("admin.role"))}" for="grant-role">
+            </dp-field>
+            <dp-field label="${esc(T("admin.role"))}" for="grant-role">
               <select id="grant-role" required>
                 <option value="admin">${esc(T("profile.role_admin"))}</option>
                 <option value="teacher">${esc(T("role.teacher"))}</option>
                 <option value="student">${esc(T("role.student"))}</option>
               </select>
-            </pf-field>
-            <pf-field label="${esc(T("admin.language_scoped"))}" for="grant-language">
+            </dp-field>
+            <dp-field label="${esc(T("admin.language_scoped"))}" for="grant-language">
               <select id="grant-language">${languageOptions()}</select>
-            </pf-field>
+            </dp-field>
           </div>
-          <pf-button variant="primary" type="submit">${esc(T("admin.grant"))}</pf-button>
+          <dp-button variant="primary" type="submit">${esc(T("admin.grant"))}</dp-button>
         </form>
       </div>
       <div class="card">
@@ -242,8 +235,8 @@
         <td>${c.transcription_ime ? esc(c.transcription_ime) : `<em>${esc(T("admin.ime_none"))}</em>`}</td>
         <td>${c.needs_transcription ? "✓" : "—"}</td>
         <td style="white-space:nowrap;">
-          <pf-button data-edit-ime="${esc(key)}">${esc(T("texts.edit"))}</pf-button>
-          <pf-button variant="danger" data-delete-ime="${esc(key)}">${esc(T("texts.delete"))}</pf-button>
+          <dp-button data-edit-ime="${esc(key)}">${esc(T("texts.edit"))}</dp-button>
+          <dp-button variant="danger" data-delete-ime="${esc(key)}">${esc(T("texts.delete"))}</dp-button>
         </td>
       </tr>`;
         })
@@ -254,34 +247,34 @@
         <h2 style="margin-top:0;">${esc(T("admin.ime_heading"))}</h2>
         <form id="imeForm">
           <div class="field-row">
-            <pf-field label="${esc(T("texts.field_language"))}" for="ime-language">
+            <dp-field label="${esc(T("texts.field_language"))}" for="ime-language">
               <select id="ime-language" required>${languageOptions()}</select>
-            </pf-field>
-            <pf-field label="${esc(T("texts.field_script"))}" for="ime-script">
+            </dp-field>
+            <dp-field label="${esc(T("texts.field_script"))}" for="ime-script">
               <select id="ime-script" required>${scriptOptions()}</select>
-            </pf-field>
+            </dp-field>
           </div>
           <div class="field-row">
-            <pf-field label="${esc(T("admin.ime_source"))}" for="ime-source">
+            <dp-field label="${esc(T("admin.ime_source"))}" for="ime-source">
               <select id="ime-source">
                 <option value="">${esc(T("admin.ime_none"))}</option>
                 ${imePresetOptions()}
               </select>
-            </pf-field>
-            <pf-field label="${esc(T("admin.ime_transcription"))}" for="ime-transcription">
+            </dp-field>
+            <dp-field label="${esc(T("admin.ime_transcription"))}" for="ime-transcription">
               <select id="ime-transcription">
                 <option value="">${esc(T("admin.ime_none"))}</option>
                 ${imePresetOptions()}
               </select>
-            </pf-field>
+            </dp-field>
           </div>
           <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
             <input type="checkbox" id="ime-needs-transcription" style="width:auto; margin:0;">
             ${esc(T("admin.ime_needs_transcription"))}
           </label>
           <div class="form-actions">
-            <pf-button variant="primary" type="submit">${esc(T("admin.ime_save"))}</pf-button>
-            ${editingIme ? `<pf-button id="imeCancelEdit">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
+            <dp-button variant="primary" type="submit">${esc(T("admin.ime_save"))}</dp-button>
+            ${editingIme ? `<dp-button id="imeCancelEdit">${esc(T("vocabulary.cancel_edit"))}</dp-button>` : ""}
           </div>
         </form>
       </div>
@@ -380,8 +373,8 @@
         <td>${p.think ? "✓" : "—"}</td>
         <td>${p.timeout_seconds ? esc(String(p.timeout_seconds)) : `<em>${esc(T("admin.llm_timeout_default"))}</em>`}</td>
         <td style="white-space:nowrap;">
-          <pf-button data-edit-llm="${esc(key)}">${esc(T("texts.edit"))}</pf-button>
-          <pf-button variant="danger" data-delete-llm="${esc(key)}">${esc(T("texts.delete"))}</pf-button>
+          <dp-button data-edit-llm="${esc(key)}">${esc(T("texts.edit"))}</dp-button>
+          <dp-button variant="danger" data-delete-llm="${esc(key)}">${esc(T("texts.delete"))}</dp-button>
         </td>
       </tr>`;
         })
@@ -392,34 +385,34 @@
         <h2 style="margin-top:0;">${esc(T("admin.llm_heading"))}</h2>
         <form id="llmForm">
           <div class="field-row">
-            <pf-field label="${esc(T("admin.llm_kind"))}" for="llm-kind">
+            <dp-field label="${esc(T("admin.llm_kind"))}" for="llm-kind">
               <select id="llm-kind" required>${llmKindOptions()}</select>
-            </pf-field>
-            <pf-field label="${esc(T("admin.llm_source_language"))}" for="llm-source-language">
+            </dp-field>
+            <dp-field label="${esc(T("admin.llm_source_language"))}" for="llm-source-language">
               <select id="llm-source-language" required>${languageOptions()}</select>
-            </pf-field>
-            <pf-field id="llm-target-field" label="${esc(T("admin.llm_target_language"))}" for="llm-target-language">
+            </dp-field>
+            <dp-field id="llm-target-field" label="${esc(T("admin.llm_target_language"))}" for="llm-target-language">
               <select id="llm-target-language" required>${siteLanguageOptions()}</select>
-            </pf-field>
+            </dp-field>
           </div>
-          <pf-field label="${esc(T("admin.llm_model_tags"))}">
+          <dp-field label="${esc(T("admin.llm_model_tags"))}">
             ${(data.tags || []).length
               ? `<pf-tag-picker id="llm-model-tags" aria-label="${esc(T("admin.llm_model_tags"))}"></pf-tag-picker>
             <p class="muted" id="llm-model-tags-hint" style="margin:0.4rem 0 1rem;"></p>`
               : `<p class="muted" style="margin:0 0 1rem;">${esc(T("admin.llm_model_tags_none"))}</p>`}
-          </pf-field>
+          </dp-field>
           <div class="field-row" style="margin-bottom:1rem; align-items:center;">
             <label style="display:flex; align-items:center; gap:0.5rem;">
               <input type="checkbox" id="llm-think" style="width:auto; margin:0;">
               ${esc(T("admin.llm_think"))}
             </label>
-            <pf-field label="${esc(T("admin.llm_timeout_seconds"))}" for="llm-timeout-seconds">
+            <dp-field label="${esc(T("admin.llm_timeout_seconds"))}" for="llm-timeout-seconds">
               <input type="number" id="llm-timeout-seconds" min="1" max="3600" placeholder="${esc(T("admin.llm_timeout_placeholder"))}">
-            </pf-field>
+            </dp-field>
           </div>
           <div class="form-actions">
-            <pf-button variant="primary" type="submit">${esc(T("admin.llm_save"))}</pf-button>
-            ${editingLlm ? `<pf-button id="llmCancelEdit">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
+            <dp-button variant="primary" type="submit">${esc(T("admin.llm_save"))}</dp-button>
+            ${editingLlm ? `<dp-button id="llmCancelEdit">${esc(T("vocabulary.cancel_edit"))}</dp-button>` : ""}
           </div>
         </form>
       </div>
@@ -437,13 +430,12 @@
           </table>
         </div>
       </div>
-      <div id="llmUsage"></div>
     `;
 
     const kindSelect = document.getElementById("llm-kind");
     const targetField = document.getElementById("llm-target-field");
     const targetSelect = document.getElementById("llm-target-language");
-    // pf-field's own CSS sets `display: block` unconditionally (an author
+    // dp-field's own CSS sets `display: block` unconditionally (an author
     // rule, which beats the UA [hidden] rule regardless of specificity), so
     // toggling the `hidden` attribute on it would silently do nothing —
     // must set inline style directly instead, same as admin.html's original
@@ -565,168 +557,6 @@
         }
       });
     });
-
-    renderLLMUsage();
-  }
-
-  // The LLM tab's usage sections: the configured models, the performance of
-  // the attempts in a period, the latest attempts, and the purge of old attempt
-  // records. Their state outlives renderLLMTab (every prompt save re-renders
-  // the tab), and the numbers are fetched when the tab is opened, not on every
-  // re-render.
-  const ATTEMPTS_LIMIT = 50;
-  const usage = { window: "24h", groupBy: "model", modelId: "", outcome: "", aggregates: [], attempts: [], purgeResult: "" };
-  let aggregatesRequest = 0;
-  let attemptsRequest = 0;
-
-  function usageElement(id) {
-    return document.getElementById(id);
-  }
-
-  function renderLLMUsage() {
-    document.getElementById("llmUsage").innerHTML = `
-      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-models id="llmModels"></pf-llm-models></div>
-      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-performance id="llmPerformance"></pf-llm-performance></div>
-      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-attempts id="llmAttempts"></pf-llm-attempts></div>
-      <div class="card" style="margin-bottom:1.5rem;"><pf-llm-purge id="llmPurge"></pf-llm-purge></div>
-    `;
-    const models = usageElement("llmModels");
-    models.labels = {
-      heading: T("admin.llm_models_heading"), refresh: T("admin.llm_models_refresh"), colModel: T("admin.llm_col_model"),
-      colProvider: T("admin.llm_col_provider"), colTags: T("admin.llm_model_tags"), colPriority: T("admin.llm_col_priority"),
-      colAvailability: T("admin.llm_col_availability"), available: T("admin.llm_available"), unavailable: T("admin.llm_unavailable"),
-      reasons: { cooldown: T("admin.llm_reason_cooldown"), missing_credentials: T("admin.llm_reason_no_credentials") },
-      none: T("admin.llm_models_none"),
-    };
-    models.locale = BOOT.locale;
-    models.addEventListener("pf-llm-models-refresh", refreshModels);
-
-    const outcomeLabels = {
-      outcomeOk: T("admin.llm_outcome_ok"), outcomeError: T("admin.llm_outcome_error"), outcomeTimeout: T("admin.llm_outcome_timeout"),
-      outcomeRateLimited: T("admin.llm_outcome_rate_limited"), outcomeCanceled: T("admin.llm_outcome_canceled"),
-    };
-    const performance = usageElement("llmPerformance");
-    performance.labels = {
-      ...outcomeLabels,
-      heading: T("admin.llm_perf_heading"), period: T("admin.llm_perf_period"), groupBy: T("admin.llm_perf_group"),
-      hint: T("admin.llm_perf_hint"), none: T("admin.llm_perf_none"),
-      window1h: T("admin.llm_window_1h"), window24h: T("admin.llm_window_24h"), window7d: T("admin.llm_window_7d"),
-      window30d: T("admin.llm_window_30d"), windowAll: T("admin.llm_window_all"),
-      groupModel: T("admin.llm_group_model"), groupKindModel: T("admin.llm_group_kind_model"),
-      colModel: T("admin.llm_col_model"), colCalls: T("admin.llm_short_calls"), colSuccess: T("admin.llm_short_success"),
-      colTime: T("admin.llm_short_time"), colTokens: T("admin.llm_short_tokens"),
-      colTokensPerSecond: T("admin.llm_short_tokens_per_second"), colCost: T("admin.llm_short_cost"),
-      tipCalls: T("admin.llm_col_calls"), tipSuccess: T("admin.llm_col_success"), tipTime: T("admin.llm_col_time_stats"),
-      tipTokens: T("admin.llm_col_tokens"), tipTokensPerSecond: T("admin.llm_col_tokens_per_second"), tipCost: T("admin.llm_col_cost"),
-    };
-    performance.locale = BOOT.locale;
-    performance.kindLabel = llmKindLabel;
-    performance.windowValue = usage.window;
-    performance.groupBy = usage.groupBy;
-    performance.addEventListener("pf-llm-performance-change", (e) => {
-      usage.window = e.detail.window;
-      usage.groupBy = e.detail.groupBy;
-      loadAggregates();
-    });
-
-    const attempts = usageElement("llmAttempts");
-    attempts.labels = {
-      ...outcomeLabels,
-      heading: T("admin.llm_attempts_heading"), filterModel: T("admin.llm_col_model"), filterOutcome: T("admin.llm_col_outcome"),
-      filterAll: T("admin.llm_attempts_filter_all"), none: T("admin.llm_attempts_none"),
-      colTime: T("admin.llm_col_time"), colPurpose: T("admin.llm_col_purpose"), colModel: T("admin.llm_col_model"),
-      colOutcome: T("admin.llm_col_outcome"), colDuration: T("admin.llm_col_duration"), colTokens: T("admin.llm_short_tokens"),
-      colHttp: T("admin.llm_col_http"), request: T("admin.llm_attempt_request"),
-      tipTokens: T("admin.llm_col_tokens"),
-    };
-    attempts.locale = BOOT.locale;
-    attempts.kindLabel = llmKindLabel;
-    attempts.addEventListener("pf-llm-attempts-filter", (e) => {
-      usage.modelId = e.detail.modelId;
-      usage.outcome = e.detail.outcome;
-      loadAttempts();
-    });
-
-    const purge = usageElement("llmPurge");
-    purge.labels = {
-      heading: T("admin.llm_purge_heading"), label: T("admin.llm_purge_label"), option7: T("admin.llm_purge_option_7"),
-      option30: T("admin.llm_purge_option_30"), option90: T("admin.llm_purge_option_90"), optionAll: T("admin.llm_purge_option_all"),
-      button: T("admin.llm_purge_button"), confirmDays: T("admin.llm_purge_confirm_days"), confirmAll: T("admin.llm_purge_confirm_all"),
-      confirmButton: T("admin.llm_purge_confirm_button"), cancel: T("admin.llm_purge_cancel"), hint: T("admin.llm_purge_hint"),
-    };
-    purge.addEventListener("pf-llm-purge-confirm", (e) => purgeAttempts(e.detail.olderThanDays));
-
-    applyUsage();
-  }
-
-  // applyUsage hands the current state to whichever usage elements are on the
-  // page; a response that arrives after the tab was re-rendered still lands.
-  function applyUsage() {
-    const models = usageElement("llmModels");
-    if (!models) return;
-    models.models = data.models || [];
-    usageElement("llmPerformance").items = usage.aggregates;
-    const attempts = usageElement("llmAttempts");
-    const modelIds = new Set([...(data.models || []).map((m) => m.id), ...usage.aggregates.map((a) => a.model_id)]);
-    attempts.modelIds = [...modelIds].sort();
-    attempts.items = usage.attempts;
-    usageElement("llmPurge").result = usage.purgeResult;
-  }
-
-  async function loadAggregates() {
-    const request = ++aggregatesRequest;
-    const since = customElements.get("pf-llm-performance").sinceFor(usage.window, new Date());
-    try {
-      const body = await apiFetch(`/api/v1/admin/llm-aggregates?since=${encodeURIComponent(since)}&group_by=${usage.groupBy}`);
-      if (request !== aggregatesRequest) return;
-      usage.aggregates = body.items || [];
-    } catch (e) {
-      statusBar.setMessage(e.message, true);
-      return;
-    }
-    applyUsage();
-  }
-
-  async function loadAttempts() {
-    const request = ++attemptsRequest;
-    const query = new URLSearchParams({ limit: String(ATTEMPTS_LIMIT) });
-    if (usage.modelId) query.set("model_id", usage.modelId);
-    if (usage.outcome) query.set("outcome", usage.outcome);
-    try {
-      const body = await apiFetch(`/api/v1/admin/llm-calls?${query}`);
-      if (request !== attemptsRequest) return;
-      usage.attempts = body.items || [];
-    } catch (e) {
-      statusBar.setMessage(e.message, true);
-      return;
-    }
-    applyUsage();
-  }
-
-  async function refreshModels() {
-    try {
-      const body = await apiFetch("/api/v1/admin/models");
-      data.models = body.models || [];
-    } catch (e) {
-      statusBar.setMessage(e.message, true);
-      return;
-    }
-    applyUsage();
-  }
-
-  function loadUsage() {
-    return Promise.all([loadAggregates(), loadAttempts()]);
-  }
-
-  async function purgeAttempts(olderThanDays) {
-    try {
-      const body = await apiFetch(`/api/v1/admin/llm-calls?older_than_days=${olderThanDays}`, { method: "DELETE" });
-      usage.purgeResult = T("admin.llm_purge_done").replace("%s", new Intl.NumberFormat(BOOT.locale).format(body.deleted));
-    } catch (e) {
-      statusBar.setMessage(e.message, true);
-      return;
-    }
-    await Promise.all([loadUsage(), refreshModels()]);
   }
 
   function languageName(code) {
@@ -771,14 +601,14 @@
         .map((r) => {
           const key = `${r.language}|${r.field.id}`;
           return `
-      <pf-card>
+      <dp-card>
         <h3 class="snippet-title">${esc(languageName(r.language))} · ${esc(T(r.field.label))}</h3>
         <pre class="snippet-text">${esc(r.text)}</pre>
         <div class="form-actions">
-          <pf-button data-edit-snippet="${esc(key)}">${esc(T("texts.edit"))}</pf-button>
-          <pf-button variant="danger" data-delete-snippet="${esc(key)}">${esc(T("texts.delete"))}</pf-button>
+          <dp-button data-edit-snippet="${esc(key)}">${esc(T("texts.edit"))}</dp-button>
+          <dp-button variant="danger" data-delete-snippet="${esc(key)}">${esc(T("texts.delete"))}</dp-button>
         </div>
-      </pf-card>`;
+      </dp-card>`;
         })
         .join("") || `<p><em>${esc(T("admin.sections_no_configs"))}</em></p>`;
     document.getElementById("tabLanguages").innerHTML = `
@@ -787,19 +617,19 @@
         <p class="muted">${esc(T("admin.sections_hint"))}</p>
         <form id="snippetForm">
           <div class="field-row">
-            <pf-field label="${esc(T("texts.field_language"))}" for="snippet-language">
+            <dp-field label="${esc(T("texts.field_language"))}" for="snippet-language">
               <select id="snippet-language" required>${languageOptions()}</select>
-            </pf-field>
-            <pf-field label="${esc(T("admin.snippet_field"))}" for="snippet-field">
+            </dp-field>
+            <dp-field label="${esc(T("admin.snippet_field"))}" for="snippet-field">
               <select id="snippet-field" required>${SNIPPET_FIELDS.map((f) => `<option value="${f.id}">${esc(T(f.label))}</option>`).join("")}</select>
-            </pf-field>
+            </dp-field>
           </div>
-          <pf-field label="${esc(T("admin.snippet_text"))}" for="snippet-text">
+          <dp-field label="${esc(T("admin.snippet_text"))}" for="snippet-text">
             <textarea id="snippet-text" required style="height:14rem;"></textarea>
-          </pf-field>
+          </dp-field>
           <div class="form-actions">
-            <pf-button variant="primary" type="submit">${esc(T("admin.sections_save"))}</pf-button>
-            ${editingSnippet ? `<pf-button id="snippetCancelEdit">${esc(T("vocabulary.cancel_edit"))}</pf-button>` : ""}
+            <dp-button variant="primary" type="submit">${esc(T("admin.sections_save"))}</dp-button>
+            ${editingSnippet ? `<dp-button id="snippetCancelEdit">${esc(T("vocabulary.cancel_edit"))}</dp-button>` : ""}
           </div>
         </form>
       </div>
@@ -883,8 +713,8 @@
     });
   }
 
-  function renderConfigTab() {
-    document.getElementById("tabConfig").innerHTML = `
+  function renderTransferTab() {
+    document.getElementById("tabTransfer").innerHTML = `
       <div class="card">
         <h2 style="margin-top:0;">${esc(T("admin.config_heading"))}</h2>
         <p class="muted">${esc(T("admin.config_import_hint"))}</p>
@@ -893,7 +723,7 @@
           <form id="importForm" style="display:flex; align-items:center; gap:0.75rem; margin:0;">
             <label class="field-label" for="admin-config-file" style="margin:0;">${esc(T("admin.config_import_file"))}</label>
             <input type="file" id="admin-config-file" accept="application/json,.json" required style="margin:0; width:auto;">
-            <pf-button variant="primary" type="submit">${esc(T("admin.config_import"))}</pf-button>
+            <dp-button variant="primary" type="submit">${esc(T("admin.config_import"))}</dp-button>
           </form>
         </div>
       </div>
@@ -922,15 +752,16 @@
           throw new Error(message);
         }
         statusBar.setMessage("Configuration imported.");
-        await loadAndRender("config");
+        await loadAndRender("transfer");
       } catch (err) {
         statusBar.setMessage(err.message, true);
       }
     });
   }
 
-  window.pfSections.admin = {
+  window.pfSections.config = {
     setBootstrap(b) { BOOT = b; },
-    show() { loadAndRender("grants"); },
+    sidebarNav,
+    show(route) { return loadAndRender(TABS.includes(route.sub) ? route.sub : TABS[0]); },
   };
 })();

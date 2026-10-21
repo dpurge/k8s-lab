@@ -19,55 +19,50 @@ async function mount(attrs = {}, handler = tasksApi({ models: [modelInfo()] })) 
   return { el, calls };
 }
 
-const rows = (el) => [...el.querySelectorAll("tbody tr")];
-const cells = (tr) => [...tr.children].map((td) => td.textContent);
+// The table itself is the shared dp-model-table (tested in shared/ui); what is
+// checked here is the rows this element hands to it.
+const table = (el) => el.querySelector("dp-model-table");
+const rows = (el) => table(el).rows;
 const modelCalls = (calls) => calls.filter((u) => u.startsWith("/api/v1/models"));
 
 test("one row per model with its provider, tags, priority and availability", async () => {
   const { el } = await mount({}, tasksApi({ models: [modelInfo(), modelInfo({ id: "small", provider: "laptop", tags: ["chat"], priority: 10 })] }));
-  assert.deepEqual(rows(el).map(cells), [
-    ["big", "gpu", "chat, strong", "20", "available"],
-    ["small", "laptop", "chat", "10", "available"],
+  assert.deepEqual(rows(el), [
+    { provider: "gpu", model: "big", tags: ["chat", "strong"], priority: 20, state: "available", until: undefined },
+    { provider: "laptop", model: "small", tags: ["chat"], priority: 10, state: "available", until: undefined },
   ]);
-  assert.deepEqual([...el.querySelectorAll("thead th")].map((th) => th.textContent), ["Model", "Provider", "Tags", "Priority", "Available"]);
-  assert.equal(rows(el)[0].dataset.modelId, "big");
+  assert.equal(table(el).getAttribute("empty-text"), "No models are configured.");
 });
 
 test("models are listed in the order they are tried: priority, then file order", async () => {
   const { el } = await mount({}, tasksApi({
     models: [modelInfo({ id: "low", priority: 1 }), modelInfo({ id: "first-tie", priority: 5 }), modelInfo({ id: "high", priority: 9 }), modelInfo({ id: "second-tie", priority: 5 })],
   }));
-  assert.deepEqual(rows(el).map((tr) => cells(tr)[0]), ["high", "first-tie", "second-tie", "low"]);
+  assert.deepEqual(rows(el).map((r) => r.model), ["high", "first-tie", "second-tie", "low"]);
 });
 
-test("a model the breaker holds out says so and when it returns", async () => {
+test("a model the breaker holds out is held out, with the time it returns", async () => {
   const until = "2026-10-16T12:01:00Z";
   const { el } = await mount({}, tasksApi({ models: [modelInfo({ available: false, unavailable_until: until })] }));
-  const td = el.querySelector("td.as-model-unavailable");
-  assert.match(td.textContent, /^held out until .*2026/);
-  assert.equal(td.querySelector(".as-model-until").title, until);
-  assert.equal(td.querySelector(".as-badge").className, "as-badge as-model-down");
-  assert.equal(el.querySelector("td.as-model-available"), null);
+  assert.equal(rows(el)[0].state, "held_out");
+  assert.equal(rows(el)[0].until, until);
 });
 
-test("a model whose provider lacks a credential says so and shows no return time", async () => {
+test("a model whose provider lacks a credential has that state and no return time", async () => {
   const { el } = await mount({}, tasksApi({ models: [modelInfo({ available: false, unavailable_until: null, unavailable_reason: "missing_credentials" })] }));
-  const td = el.querySelector("td.as-model-unavailable");
-  assert.equal(td.textContent, "no credentials");
-  assert.equal(td.querySelector(".as-model-until"), null);
-  assert.equal(td.querySelector(".as-badge").className, "as-badge as-model-down");
+  assert.equal(rows(el)[0].state, "no_credentials");
+  assert.equal(rows(el)[0].until, undefined);
 });
 
-test("an available model shows no return time", async () => {
-  const { el } = await mount();
-  assert.equal(el.querySelector(".as-model-until"), null);
-  assert.equal(el.querySelector(".as-badge").className, "as-badge as-model-up");
+test("an available model has no return time, even if the server sent one", async () => {
+  const { el } = await mount({}, tasksApi({ models: [modelInfo({ available: true, unavailable_until: "2026-10-16T12:01:00Z" })] }));
+  assert.equal(rows(el)[0].state, "available");
+  assert.equal(rows(el)[0].until, undefined);
 });
 
-test("no models says so and shows no table", async () => {
+test("no models hands the table no rows", async () => {
   const { el } = await mount({}, tasksApi({ models: [] }));
-  assert.equal(el.querySelector(".as-model-list-table-wrap").hidden, true);
-  assert.equal(el.querySelector(".as-model-list-message").textContent, "No models are configured.");
+  assert.deepEqual(rows(el), []);
 });
 
 test("it refreshes itself, since availability changes without anyone acting", async () => {
@@ -79,7 +74,7 @@ test("it refreshes itself, since availability changes without anyone acting", as
   mock.timers.tick(10000);
   await flush();
   assert.equal(modelCalls(calls).length, 2);
-  assert.equal(el.querySelector(".as-badge").className, "as-badge as-model-down");
+  assert.equal(rows(el)[0].state, "held_out");
 });
 
 test("refresh-ms 0 turns refreshing off, and removing the element stops it", async () => {
@@ -117,8 +112,9 @@ test("an error shows the server's message and a later success clears it", async 
   assert.equal(events[1].ok, true);
 });
 
-test("model, provider and tag names reach the page as text, never as markup", async () => {
+test("model, provider and tag names are handed over as plain strings; the table draws them as text", async () => {
   const { el } = await mount({}, tasksApi({ models: [modelInfo({ id: "<img src=x onerror=alert(1)>", tags: ["<b>x</b>"] })] }));
   assert.equal(el.querySelector("img"), null);
   assert.equal(el.querySelector("b"), null);
+  assert.deepEqual([rows(el)[0].model, rows(el)[0].tags], ["<img src=x onerror=alert(1)>", ["<b>x</b>"]]);
 });

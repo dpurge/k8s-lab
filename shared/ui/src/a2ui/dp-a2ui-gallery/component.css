@@ -1,0 +1,48 @@
+:host {
+  display: grid;
+  gap: 1rem;
+}
+
+.description {
+  margin: 0 0 0.75rem;
+  color: var(--muted, #667);
+}
+
+.pair {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 900px) {
+  .pair {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.drawn {
+  min-width: 0;
+}
+
+.side {
+  min-width: 0;
+  display: grid;
+  gap: 0.5rem;
+  align-content: start;
+}
+
+.side summary {
+  cursor: pointer;
+  color: var(--muted, #667);
+}
+
+pre {
+  margin: 0.5rem 0 0;
+  max-height: 24rem;
+  overflow: auto;
+  font-size: 0.8rem;
+  background: var(--surface-alt, #f3f4f6);
+  border: 1px solid var(--border, #d7dae0);
+  border-radius: 0.4rem;
+  padding: 0.6rem;
+}

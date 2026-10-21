@@ -34,6 +34,11 @@ const maxRetryReplyBytes = 2000
 // the result of the previous action (a tool result, an error, the user's
 // message) or nil. retry is non-nil when this is a retry of the same step.
 func BuildRequest(p *Prompts, wf *Workflow, run *Run, tools ToolLookup, observation any, retry *Retry) (Request, error) {
+	return buildRequest(p, wf, run, tools, observation, retry, nil)
+}
+
+// buildRequest is BuildRequest with the workflows a state may delegate to.
+func buildRequest(p *Prompts, wf *Workflow, run *Run, tools ToolLookup, observation any, retry *Retry, intents []IntentInfo) (Request, error) {
 	state, ok := wf.States[run.StateName]
 	if !ok {
 		return Request{}, fmt.Errorf("run is in unknown state %q of workflow %q", run.StateName, wf.ID)
@@ -60,6 +65,12 @@ func BuildRequest(p *Prompts, wf *Workflow, run *Run, tools ToolLookup, observat
 		RunState:       nonNilObject(run.State),
 		Observation:    observation,
 	}
+	if state.Delegate {
+		if intents == nil {
+			intents = []IntentInfo{}
+		}
+		in.Delegates = &intents
+	}
 	if retry != nil {
 		r := *retry
 		if len(r.Reply) > maxRetryReplyBytes {
@@ -76,8 +87,15 @@ func BuildRequest(p *Prompts, wf *Workflow, run *Run, tools ToolLookup, observat
 	if err != nil {
 		return Request{}, err
 	}
+	system := p.System(run.language(), state.Output)
+	if wf.UI != nil && p.UIGuide != "" {
+		system += "\n\n" + p.UIGuide
+	}
+	if state.Delegate {
+		system += "\n\n" + delegateGuide
+	}
 	return Request{
-		System: p.System(run.language(), state.Output),
+		System: system,
 		Input:  string(input),
 		Schema: schema,
 		Tags:   wf.TagsFor(run.StateName),
@@ -94,6 +112,16 @@ type stepInput struct {
 	RunState       map[string]any `json:"run_state"`
 	Observation    any            `json:"observation,omitempty"`
 	Retry          *Retry         `json:"retry,omitempty"`
+	// Delegates are the workflows the delegate action may name, with what each is
+	// for; present only in a state that may delegate.
+	Delegates *[]IntentInfo `json:"delegates,omitempty"`
+}
+
+// IntentInfo is what the model sees of a workflow it may delegate to.
+type IntentInfo struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	Examples    []string `json:"examples,omitempty"`
 }
 
 type workflowInfo struct {
@@ -189,6 +217,20 @@ func ReplySchema(wf *Workflow, stateName string, tools ToolLookup) (map[string]a
 		},
 	})
 
+	if state.Delegate {
+		actions = append(actions, map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"type", "workflow", "message"},
+			"properties": map[string]any{
+				"type":     map[string]any{"const": "delegate"},
+				"workflow": map[string]any{"type": "string"},
+				"message":  map[string]any{},
+				"reason":   map[string]any{"type": "string"},
+			},
+		})
+	}
+
 	return map[string]any{
 		"$schema":              "https://json-schema.org/draft/2020-12/schema",
 		"type":                 "object",
@@ -200,3 +242,7 @@ func ReplySchema(wf *Workflow, stateName string, tools ToolLookup) (map[string]a
 		},
 	}, nil
 }
+
+// delegateGuide teaches the delegate action to a model in a state that has it.
+const delegateGuide = `DELEGATION
+This state may hand the user's request to another workflow, which then talks to the user: {"type":"delegate","workflow":"<an id from delegates>","message":"<the request, in the user's words>","reason":"<a few words on why this workflow>"}. The input's "delegates" lists the workflows you may name and what each is for, with example requests. Choose by what the user asks for, not by the words of the example. When that workflow finishes, its final state comes back as your next observation, {"delegate_result":{"workflow":"<id>","state":{...}}}, or {"delegate_error":{...}} if it failed. If no workflow fits, do not delegate: ask one short question with ask_user, or answer yourself.`

@@ -2,15 +2,11 @@ import { test, mock, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { load, staticDir, reset, mockFetch, jsonResponse, flush, task, tasksApi, user, usageRow, modelInfo, conversation, chatMessage, USER_ID } from "./testenv.js";
+import { load, staticDir, reset, mockFetch, jsonResponse, flush, task, tasksApi, user, usageRow, modelInfo, attemptRow, conversation, chatMessage, USER_ID } from "./testenv.js";
 
 await load(
   "format.js",
   "api.js",
-  "components/as-nav/component.js",
-  "components/as-card/component.js",
-  "components/as-status-bar/component.js",
-  "components/as-pager/component.js",
   "components/as-new-task/component.js",
   "components/as-chat-list/component.js",
   "components/as-chat-thread/component.js",
@@ -21,9 +17,34 @@ await load(
   "components/as-task-detail/component.js",
   "components/as-usage/component.js",
   "components/as-model-list/component.js",
+  "components/as-attempts/component.js",
   "app.js",
 );
 const App = window.AssistantApp;
+
+// dp-status-bar is the shared Lit component (tested in shared/ui), which this
+// jsdom does not load. A stand-in with its two methods, drawing the same two
+// spans, keeps the page's calls to it working and its messages readable.
+window.customElements.define(
+  "dp-status-bar",
+  class extends window.HTMLElement {
+    connectedCallback() {
+      if (this.firstChild) return;
+      this._job = document.createElement("span");
+      this._job.className = "as-status-job";
+      this._message = document.createElement("span");
+      this._message.className = "as-status-message";
+      this.append(this._job, this._message);
+    }
+    setJobStatus(text) {
+      this._job.textContent = text || "";
+    }
+    setMessage(text, isError) {
+      this._message.textContent = text || "";
+      this._message.classList.toggle("error", !!isError);
+    }
+  },
+);
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const indexHtml = readFileSync(new URL("index.html", staticDir), "utf8");
@@ -49,7 +70,6 @@ async function boot(hash = "", handler = tasksApi({ tasks: [task()] }), { fakeTi
   await tick();
   if (fakeTimers) mock.timers.enable({ apis: ["setTimeout"] });
   const calls = mockFetch(handler);
-  window.toggleTheme = mock.fn();
   stop = App.start();
   await flush();
   return { calls, view: document.getElementById("view") };
@@ -97,8 +117,8 @@ test("hashFor leaves defaults out and round-trips", () => {
 
 test("opens on the task list inside a card", async () => {
   const { view, calls } = await boot("");
-  assert.deepEqual([...view.querySelectorAll("as-card")].map((c) => c.getAttribute("heading")), ["New task", "Tasks"]);
-  const card = view.querySelectorAll("as-card")[1];
+  assert.deepEqual([...view.querySelectorAll("dp-card")].map((c) => c.getAttribute("heading")), ["New task", "Tasks"]);
+  const card = view.querySelectorAll("dp-card")[1];
   const list = card.querySelector("as-task-list");
   assert.equal(list.getAttribute("status"), "");
   assert.equal(list.getAttribute("page"), "1");
@@ -146,7 +166,7 @@ test("the status filter of the real list drives the address end to end", async (
 
 test("a task's address shows the task in a card, and Back returns to the list", async () => {
   const { view } = await boot(`#/tasks/${ID}`, (url) => (url.startsWith("/api/v1/tasks/") ? jsonResponse(200, task()) : tasksApi({ tasks: [task()] })(url)));
-  assert.equal(view.querySelector("as-card").getAttribute("heading"), "Task");
+  assert.equal(view.querySelector("dp-card").getAttribute("heading"), "Task");
   const detail = view.querySelector("as-task-detail");
   assert.equal(detail.getAttribute("task-id"), ID);
   assert.equal(view.querySelector("a.as-task-detail-back").getAttribute("href"), "#/tasks");
@@ -167,7 +187,7 @@ test("going from one task to another reuses the detail element", async () => {
 
 test("an unknown address shows a not-found page with a way back", async () => {
   const { view, calls } = await boot("#/nonsense");
-  assert.equal(view.querySelector("as-card").getAttribute("heading"), "Not found");
+  assert.equal(view.querySelector("dp-card").getAttribute("heading"), "Not found");
   assert.match(view.querySelector(".as-not-found").textContent, /Page not found/);
   assert.equal(view.querySelector(".as-not-found a").getAttribute("href"), "#/tasks");
   assert.equal(calls.length, 0, "nothing is fetched for a page that does not exist");
@@ -211,10 +231,12 @@ test("a later good load clears the error in the status bar", async () => {
   assert.equal(document.querySelector(".as-status-message").classList.contains("error"), false);
 });
 
-test("the theme button toggles the theme", async () => {
-  await boot("");
-  document.getElementById("themeToggle").click();
-  assert.equal(window.toggleTheme.mock.callCount(), 1);
+test("stopping takes the chat sidebar out of the page", async () => {
+  await boot("#/chat", tasksApi({ conversations: [] }));
+  assert.ok(document.getElementById("chatSidebar"));
+  stop();
+  stop = null;
+  assert.equal(document.getElementById("chatSidebar"), null);
 });
 
 test("stopping detaches every listener", async () => {
@@ -227,8 +249,6 @@ test("stopping detaches every listener", async () => {
   assert.equal(list.getAttribute("status"), "", "no more routing");
   list.dispatchEvent(new window.CustomEvent("as-list-change", { detail: { status: "failed", page: 2 }, bubbles: true }));
   assert.equal(window.location.hash, "#/tasks?status=failed", "no more handling of list changes");
-  document.getElementById("themeToggle").click();
-  assert.equal(window.toggleTheme.mock.callCount(), 0);
 });
 
 test("the page works without a status bar or a nav", async () => {
@@ -243,13 +263,17 @@ test("the page works without a status bar or a nav", async () => {
 
 // ── index.html ───────────────────────────────────────────────────────────────
 
-test("index.html loads only files that exist, from the admin prefix", () => {
+test("index.html loads only files that exist, from the static prefix", () => {
   const dom = new JSDOM(indexHtml);
   const refs = [...dom.window.document.querySelectorAll("script[src], link[rel=stylesheet]")].map((n) => n.getAttribute("src") || n.getAttribute("href"));
   assert.ok(refs.length >= 12, `${refs.length} references`);
   for (const ref of refs) {
-    assert.ok(ref.startsWith("/admin/"), `${ref} must be under /admin/`);
-    assert.ok(existsSync(new URL(ref.slice("/admin/".length), staticDir)), `${ref} does not exist`);
+    // The shared component library is built from shared/ui and embedded by the
+    // server's /ui/ route; it is not among these static files, so only the
+    // path is checked (the Go tests fetch it).
+    if (ref.startsWith("/ui/")) continue;
+    assert.ok(ref.startsWith("/static/"), `${ref} must be under /static/ or /ui/`);
+    assert.ok(existsSync(new URL(ref.slice("/static/".length), staticDir)), `${ref} does not exist`);
   }
 });
 
@@ -269,7 +293,9 @@ test("every custom element index.html uses is defined by a script it loads", () 
   const doc = dom.window.document;
   const scripts = [...doc.querySelectorAll("script[src]")].map((s) => s.getAttribute("src"));
   for (const tag of new Set([...doc.querySelectorAll("*")].map((n) => n.localName).filter((n) => n.includes("-")))) {
-    assert.ok(scripts.some((s) => s.includes(`/${tag}/component.js`)), `${tag} is used but its component.js is not loaded`);
+    // dp-* elements are all defined by the shared core bundle.
+    const loaded = tag.startsWith("dp-") ? scripts.includes("/ui/dp-core.js") : scripts.some((s) => s.includes(`/${tag}/component.js`));
+    assert.ok(loaded, `${tag} is used but its component.js is not loaded`);
   }
   assert.equal(doc.documentElement.lang, "en");
   assert.ok(doc.querySelector('meta[name="viewport"]'));
@@ -278,9 +304,11 @@ test("every custom element index.html uses is defined by a script it loads", () 
 test("every component script is loaded by index.html, so none is dead", () => {
   const dom = new JSDOM(indexHtml);
   const scripts = [...dom.window.document.querySelectorAll("script[src]")].map((s) => s.getAttribute("src"));
-  for (const tag of ["as-nav", "as-card", "as-status-bar", "as-pager", "as-new-task", "as-chat-list", "as-chat-thread", "as-task-actions", "as-task-list", "as-task-detail", "as-answer-box", "as-run-trace", "as-usage", "as-model-list"]) {
-    assert.ok(scripts.includes(`/admin/components/${tag}/component.js`), tag);
+  for (const tag of ["as-new-task", "as-chat-list", "as-chat-thread", "as-task-actions", "as-task-list", "as-task-detail", "as-answer-box", "as-run-trace", "as-usage", "as-model-list", "as-attempts"]) {
+    assert.ok(scripts.includes(`/static/components/${tag}/component.js`), tag);
   }
+  assert.ok(scripts.includes("/ui/dp-core.js"), "the shared components (dp-shell, dp-tabs, dp-card, dp-pager, dp-status-bar)");
+  assert.ok(scripts.includes("/ui/theme-init.js"), "the early theme script");
 });
 
 test("the task page asks for its own task once, never for a task with no id", async () => {
@@ -295,44 +323,103 @@ test("the list page asks for its page once, with the address's status and page a
 
 // ── usage page ───────────────────────────────────────────────────────────────
 
-test("parseHash: the usage page, with a period that must be known", () => {
-  assert.deepEqual(App.parseHash("#/usage"), { view: "usage", period: "all" });
-  assert.deepEqual(App.parseHash("#/usage?period=7d"), { view: "usage", period: "7d" });
-  assert.deepEqual(App.parseHash("#/usage?period=24h"), { view: "usage", period: "24h" });
-  assert.deepEqual(App.parseHash("#/usage?period=bogus"), { view: "usage", period: "all" });
+test("parseHash: the usage page, with a period and a group that must be known", () => {
+  assert.deepEqual(App.parseHash("#/usage"), { view: "usage", period: "all", group: "" });
+  assert.deepEqual(App.parseHash("#/usage?period=7d"), { view: "usage", period: "7d", group: "" });
+  assert.deepEqual(App.parseHash("#/usage?period=24h&group=model"), { view: "usage", period: "24h", group: "model" });
+  assert.deepEqual(App.parseHash("#/usage?period=bogus&group=bogus"), { view: "usage", period: "all", group: "" });
   assert.deepEqual(App.parseHash("#/usage/extra"), { view: "notfound" });
 });
 
-test("hashFor: the usage page leaves the default period out and round-trips", () => {
-  assert.equal(App.hashFor({ view: "usage", period: "all" }), "#/usage");
+test("hashFor: the usage page leaves the defaults out and round-trips", () => {
+  assert.equal(App.hashFor({ view: "usage", period: "all", group: "" }), "#/usage");
   assert.equal(App.hashFor({ view: "usage", period: "30d" }), "#/usage?period=30d");
-  for (const route of [{ view: "usage", period: "all" }, { view: "usage", period: "7d" }]) {
+  assert.equal(App.hashFor({ view: "usage", period: "all", group: "provider" }), "#/usage?group=provider");
+  for (const route of [{ view: "usage", period: "all", group: "" }, { view: "usage", period: "7d", group: "user" }]) {
     assert.deepEqual(App.parseHash(App.hashFor(route)), route);
   }
 });
 
-test("the usage page shows the usage and the models, each in a card", async () => {
-  const { view, calls } = await boot("#/usage?period=7d", tasksApi({ usage: [usageRow()], models: [modelInfo()] }));
-  assert.deepEqual([...view.querySelectorAll("as-card")].map((c) => c.getAttribute("heading")), ["Usage", "Models"]);
+test("parseHash and hashFor: the models and attempts pages", () => {
+  assert.deepEqual(App.parseHash("#/models"), { view: "models" });
+  assert.deepEqual(App.parseHash("#/models/x"), { view: "notfound" });
+  assert.deepEqual(App.parseHash("#/attempts"), { view: "attempts", period: "all", page: 1 });
+  assert.deepEqual(App.parseHash("#/attempts?period=7d&page=3"), { view: "attempts", period: "7d", page: 3 });
+  assert.deepEqual(App.parseHash("#/attempts?period=x&page=0"), { view: "attempts", period: "all", page: 1 });
+  assert.equal(App.hashFor({ view: "models" }), "#/models");
+  assert.equal(App.hashFor({ view: "attempts", period: "all", page: 1 }), "#/attempts");
+  assert.equal(App.hashFor({ view: "attempts", period: "7d", page: 3 }), "#/attempts?period=7d&page=3");
+  for (const route of [{ view: "attempts", period: "all", page: 1 }, { view: "attempts", period: "30d", page: 2 }]) {
+    assert.deepEqual(App.parseHash(App.hashFor(route)), route);
+  }
+});
+
+test("the usage page shows the usage in a card, with the group and period from the address", async () => {
+  const { view, calls } = await boot("#/usage?period=7d&group=model", tasksApi({ usage: [usageRow()], models: [modelInfo()] }));
+  assert.deepEqual([...view.querySelectorAll("dp-card")].map((c) => c.getAttribute("heading")), ["Usage"]);
   assert.equal(view.querySelector("as-usage").getAttribute("period"), "7d");
-  assert.equal(view.querySelectorAll("as-usage tbody tr").length, 1);
-  assert.equal(view.querySelectorAll("as-model-list tbody tr").length, 1);
+  assert.equal(view.querySelector("as-usage").getAttribute("group"), "model");
+  assert.equal(view.querySelector("dp-usage-table").rows.length, 1);
+  assert.equal(view.querySelector("as-model-list"), null, "the models have a page of their own");
   assert.equal(calls.filter((u) => u.startsWith("/api/v1/usage")).length, 1, "the period from the address is applied before the first load");
   assert.match(calls.find((u) => u.startsWith("/api/v1/usage")), /since=/);
   assert.equal(calls.some((u) => u.startsWith("/api/v1/tasks")), false);
+});
+
+test("the models page shows the models in a card", async () => {
+  const { view, calls } = await boot("#/models", tasksApi({ models: [modelInfo()] }));
+  assert.deepEqual([...view.querySelectorAll("dp-card")].map((c) => c.getAttribute("heading")), ["Models"]);
+  assert.equal(view.querySelector("dp-model-table").rows.length, 1);
+  assert.equal(calls.some((u) => u.startsWith("/api/v1/usage")), false);
+});
+
+test("the attempts page asks for its page once, with the address's period and page already applied", async () => {
+  const { view, calls } = await boot("#/attempts?period=7d&page=2", tasksApi({ attempts: Array.from({ length: 40 }, () => attemptRow()) }));
+  assert.deepEqual([...view.querySelectorAll("dp-card")].map((c) => c.getAttribute("heading")), ["Attempts"]);
+  const asked = calls.filter((u) => u.startsWith("/api/v1/llm-calls"));
+  assert.equal(asked.length, 1);
+  const params = new URL(asked[0], "http://x").searchParams;
+  assert.equal(params.get("offset"), "25");
+  assert.ok(params.get("since"));
+  assert.equal(view.querySelector("dp-attempt-table").rows.length, 15);
+});
+
+test("the Usage side panel lists Usage, Models and Attempts and marks the current page", async () => {
+  await boot("#/models");
+  const links = () => [...document.querySelectorAll("#chatSidebar .as-section-nav a")];
+  assert.deepEqual(links().map((a) => [a.textContent, a.getAttribute("href")]), [["Usage", "#/usage"], ["Models", "#/models"], ["Attempts", "#/attempts"]]);
+  assert.deepEqual(links().filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent), ["Models"]);
+  window.location.hash = "#/attempts";
+  await tick();
+  assert.deepEqual(links().filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent), ["Attempts"]);
+  assert.equal(document.querySelectorAll("#chatSidebar").length, 1, "one panel, replaced");
 });
 
 test("the nav marks Usage active on its page and Tasks everywhere else", async () => {
   await boot("#/usage");
   const nav = document.getElementById("mainNav");
   assert.equal(nav.getAttribute("active"), "usage");
-  assert.deepEqual([...nav.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href")]), [["Chat", "#/chat"], ["Tasks", "#/tasks"], ["Usage", "#/usage"]]);
+  assert.deepEqual(JSON.parse(nav.getAttribute("items")).map((i) => [i.label, i.href]), [["Chat", "#/chat"], ["Tasks", "#/tasks"], ["Usage", "#/usage"]]);
   window.location.hash = `#/tasks/${ID}`;
   await tick();
   assert.equal(nav.getAttribute("active"), "tasks");
   window.location.hash = "#/usage";
   await tick();
   assert.equal(nav.getAttribute("active"), "usage");
+});
+
+test("picking a grouping on the usage page changes the address", async () => {
+  const { view } = await boot("#/usage?period=7d");
+  view.querySelector("as-usage").dispatchEvent(new window.CustomEvent("as-list-change", { detail: { period: "7d", group: "provider" }, bubbles: true }));
+  assert.equal(window.location.hash, "#/usage?period=7d&group=provider");
+});
+
+test("picking a page or a period on the attempts page changes the address", async () => {
+  const { view } = await boot("#/attempts");
+  view.querySelector("as-attempts").dispatchEvent(new window.CustomEvent("as-list-change", { detail: { period: "all", page: 3 }, bubbles: true }));
+  assert.equal(window.location.hash, "#/attempts?page=3");
+  await tick();
+  assert.equal(view.querySelector("as-attempts").getAttribute("page"), "3");
 });
 
 test("picking a period on the usage page changes the address", async () => {
@@ -363,12 +450,13 @@ test("a usage failure is reported in the status bar", async () => {
 test("an error stays in the status bar until the component that raised it loads well", async () => {
   await boot("#/usage", tasksApi({ usageStatus: 500, models: [modelInfo()] }));
   const message = () => document.querySelector(".as-status-message");
-  assert.match(message().textContent, /^Could not load usage/, "the models loading well must not hide it");
-  assert.ok(message().classList.contains("error"));
-  // The models load again, well, while the usage still has not.
-  document.querySelector("as-model-list")._load();
-  await flush();
   assert.match(message().textContent, /^Could not load usage/);
+  assert.ok(message().classList.contains("error"));
+  // Another component loads well while the usage still has not.
+  const models = document.createElement("as-model-list");
+  document.getElementById("view").append(models);
+  await flush();
+  assert.match(message().textContent, /^Could not load usage/, "the models loading well must not hide it");
 });
 
 test("when the failing component loads well the error goes", async () => {
@@ -422,14 +510,42 @@ test("hashFor: the chat page round-trips", () => {
   for (const route of [{ view: "chat", id: "" }, { view: "chat", id: CONV }]) assert.deepEqual(App.parseHash(App.hashFor(route)), route);
 });
 
-test("the chat page shows the conversations and the open one side by side, and marks Chat in the nav", async () => {
+test("the chat page puts the conversations in the shell's sidebar and the open one in the page, and marks Chat in the nav", async () => {
   const { view } = await boot(`#/chat/${CONV}`, tasksApi({ conversations: [conversation({ id: CONV, title: "Try" })], chatMessages: [chatMessage({ id: 1, text: "hello" })] }));
-  assert.deepEqual([...view.querySelectorAll("as-card")].map((c) => c.getAttribute("heading")), ["Conversations", "Chat"]);
+  const sidebar = document.getElementById("chatSidebar");
+  assert.equal(sidebar.getAttribute("slot"), "sidebar");
+  assert.equal(sidebar.parentElement, document.querySelector("dp-shell"), "a child of the shell, in its sidebar slot");
+  assert.equal(sidebar.querySelector("as-chat-list").getAttribute("active"), CONV);
+  assert.equal(sidebar.querySelectorAll("li.as-chat-item").length, 1);
+  assert.equal(view.querySelector("as-chat-list"), null, "the list is not in the page's content");
+  assert.equal(view.querySelector("dp-card"), null, "the thread fills the page, not a card");
   assert.equal(view.querySelector("as-chat-thread").getAttribute("conversation-id"), CONV);
-  assert.equal(view.querySelector("as-chat-list").getAttribute("active"), CONV);
-  assert.equal(view.querySelectorAll("as-chat-list li.as-chat-item").length, 1);
   assert.equal(view.querySelectorAll("as-chat-thread .as-msg").length, 1);
+  assert.equal(view.classList.contains("as-chat-page"), true);
+  assert.equal(document.querySelector("dp-shell").hasAttribute("data-chat"), true);
   assert.equal(document.getElementById("mainNav").getAttribute("active"), "chat");
+});
+
+test("the sidebar holds the conversations on the chat page and the Usage pages on theirs: leaving removes it and coming back makes it again", async () => {
+  const { view } = await boot("#/chat", tasksApi({ conversations: [conversation({ id: CONV })], tasks: [task()] }));
+  assert.ok(document.getElementById("chatSidebar"));
+  window.location.hash = "#/tasks";
+  await tick();
+  assert.equal(document.getElementById("chatSidebar"), null);
+  assert.equal(document.querySelector("dp-shell").hasAttribute("data-chat"), false);
+  assert.equal(view.classList.contains("as-chat-page"), false);
+  assert.equal(view.querySelectorAll("dp-card").length, 2);
+  window.location.hash = "#/usage";
+  await tick();
+  assert.equal(document.querySelectorAll("#chatSidebar as-chat-list").length, 0, "the Usage pages have their own panel");
+  assert.ok(document.querySelector("#chatSidebar .as-section-nav"));
+  window.location.hash = "#/tasks";
+  await tick();
+  assert.equal(document.getElementById("chatSidebar"), null);
+  window.location.hash = "#/chat";
+  await tick();
+  assert.equal(document.querySelectorAll("#chatSidebar").length, 1);
+  assert.ok(document.querySelector("#chatSidebar as-chat-list"));
 });
 
 test("with no conversation open the thread asks to pick one", async () => {
@@ -440,7 +556,7 @@ test("with no conversation open the thread asks to pick one", async () => {
 
 test("starting a conversation opens it, and deleting one goes back to the empty chat", async () => {
   const { view } = await boot("#/chat", tasksApi({ conversations: [] }));
-  view.querySelector("as-chat-list").dispatchEvent(new window.CustomEvent("as-conversation-created", { detail: { conversation: { id: CONV } }, bubbles: true }));
+  document.querySelector("as-chat-list").dispatchEvent(new window.CustomEvent("as-conversation-created", { detail: { conversation: { id: CONV } }, bubbles: true }));
   assert.equal(window.location.hash, `#/chat/${CONV}`);
   await tick();
   assert.equal(view.querySelector("as-chat-thread").getAttribute("conversation-id"), CONV);
@@ -472,4 +588,12 @@ test("the task page's retry opens the new task and its remove goes back to the l
   await tick();
   view.querySelector("as-task-detail").dispatchEvent(new window.CustomEvent("as-task-removed", { detail: { id: ID }, bubbles: true }));
   assert.equal(window.location.hash, "#/tasks");
+});
+
+// ── a2ui gallery ─────────────────────────────────────────────────────────────
+
+test("parseHash and hashFor: the A2UI gallery page", () => {
+  assert.deepEqual(App.parseHash("#/gallery"), { view: "gallery" });
+  assert.deepEqual(App.parseHash("#/gallery/extra"), { view: "notfound" });
+  assert.equal(App.hashFor({ view: "gallery" }), "#/gallery");
 });

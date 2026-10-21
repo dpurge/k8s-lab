@@ -12,7 +12,6 @@ global.customElements = dom.window.customElements;
 global.HTMLElement = dom.window.HTMLElement;
 global.CustomEvent = dom.window.CustomEvent;
 
-await import("../kb-button/component.js");
 await import("./component.js");
 
 function makeCard(job) {
@@ -57,7 +56,7 @@ test("failed status", () => {
 
 test("failed job renders Retry and Delete buttons", () => {
   const card = makeCard({ id: "1", kind: "ingest", status: "failed" });
-  const buttons = card.querySelectorAll(".actions kb-button");
+  const buttons = card.querySelectorAll(".actions dp-button");
   assert.equal(buttons.length, 2);
   assert.equal(buttons[0].textContent, "Retry");
   assert.equal(buttons[0].hasAttribute("variant"), false);
@@ -67,7 +66,7 @@ test("failed job renders Retry and Delete buttons", () => {
 
 test("done (non-running, non-failed) job renders only a Delete button", () => {
   const card = makeCard({ id: "1", kind: "ingest", status: "done" });
-  const buttons = card.querySelectorAll(".actions kb-button");
+  const buttons = card.querySelectorAll(".actions dp-button");
   assert.equal(buttons.length, 1);
   assert.equal(buttons[0].textContent, "Delete");
   assert.equal(buttons[0].getAttribute("variant"), "danger");
@@ -97,8 +96,8 @@ test("clicking Retry emits a bubbling kb-job-retry event with the job id", () =>
   const seen = [];
   document.body.addEventListener("kb-job-retry", (event) => seen.push(event.detail.id));
 
-  const retryButton = card.querySelectorAll(".actions kb-button")[0];
-  retryButton.querySelector("button").click();
+  const retryButton = card.querySelectorAll(".actions dp-button")[0];
+  retryButton.click();
 
   assert.deepEqual(seen, ["job-42"]);
 });
@@ -108,8 +107,8 @@ test("clicking Delete emits a bubbling kb-job-delete event with the job id", () 
   const seen = [];
   document.body.addEventListener("kb-job-delete", (event) => seen.push(event.detail.id));
 
-  const deleteButton = card.querySelectorAll(".actions kb-button")[1];
-  deleteButton.querySelector("button").click();
+  const deleteButton = card.querySelectorAll(".actions dp-button")[1];
+  deleteButton.click();
 
   assert.deepEqual(seen, ["job-42"]);
 });
@@ -129,8 +128,8 @@ test("clicking an action button never fires a generic card-select-style event", 
     genericSelectFired = true;
   });
 
-  card.querySelectorAll(".actions kb-button")[0].querySelector("button").click();
-  card.querySelectorAll(".actions kb-button")[1].querySelector("button").click();
+  card.querySelectorAll(".actions dp-button")[0].click();
+  card.querySelectorAll(".actions dp-button")[1].click();
 
   assert.equal(genericSelectFired, false);
 });

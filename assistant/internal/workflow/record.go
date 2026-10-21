@@ -28,6 +28,10 @@ type StepRecord struct {
 	Step    int // 1-based number of the step this attempt belongs to
 	Attempt int // 1-based attempt within the step; 0 for a failure with no model call
 	State   string
+	// Workflow is the workflow the step ran in, and Depth how deep that run was:
+	// a step of a delegated workflow has the child's id and a depth above 0.
+	Workflow string
+	Depth    int
 
 	RequestDigest string // short hash of the request, to spot changes without storing prompts
 	Reply         string // the model's raw reply

@@ -2,7 +2,9 @@
 // contracts, so code can validate against the same files a human reads.
 package schemas
 
-import _ "embed"
+import (
+	"embed"
+)
 
 // Workflow is the JSON Schema of a workflow YAML file.
 //
@@ -18,3 +20,11 @@ var DB string
 //
 //go:embed api/openapi.yaml
 var OpenAPI []byte
+
+// A2UI holds the vendored A2UI v1.0 JSON schemas (see a2ui/v1_0/SOURCE.md for
+// where they come from): the messages in both directions, the common types and
+// the basic catalog; and the assistant's own catalog of functions
+// (a2ui/assistant_catalog.json).
+//
+//go:embed a2ui/v1_0/*.json a2ui/assistant_catalog.json
+var A2UI embed.FS

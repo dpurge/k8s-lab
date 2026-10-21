@@ -27,6 +27,16 @@ type Engine struct {
 	Prompts  *Prompts
 	Recorder Recorder // optional
 	Clock    Clock    // optional, defaults to the real clock
+	// UI checks the interface in an ask_user payload of a workflow that
+	// declares ui; optional (without it the interface is checked when it is
+	// shown, and a model that got it wrong is not told).
+	UI InterfaceChecker
+	// Delegates finds the workflows a state that may delegate can hand a request
+	// to; optional (without it no delegation is possible).
+	Delegates Delegates
+	// MaxDepth is how many runs may be nested: a run at this depth cannot
+	// delegate. Zero means 2.
+	MaxDepth int
 
 	// ToolTimeout bounds one tool call; zero means 30 seconds.
 	ToolTimeout time.Duration
@@ -50,6 +60,12 @@ type Result struct {
 	Status  Status
 	Ask     map[string]any // the ask_user payload when Status is StatusWaiting
 	Failure *Failure       // set when Status is StatusFailed
+	// Workflow is the workflow that is asking, when Status is StatusWaiting: the
+	// run's own, or the one it delegated to (the deepest one that is going).
+	Workflow string
+	// Routed is set when this call handed a request to another workflow: which,
+	// and why.
+	Routed *Routing
 }
 
 // ErrNotWaiting is returned by Resume for a run that is not waiting.
@@ -81,12 +97,16 @@ func (e *Engine) Start(ctx context.Context, wf *Workflow, runID string, in Input
 	run.Language = in.Language
 	run.Observation = message
 
+	res, err := e.begin(ctx, wf, run, v)
+	return run, e.named(wf, res), err
+}
+
+// begin drives a new run from its start state.
+func (e *Engine) begin(ctx context.Context, wf *Workflow, run *Run, v *StateValidator) (Result, error) {
 	if wf.States[wf.Start].End {
-		res, err := e.finish(ctx, wf, run, v)
-		return run, res, err
+		return e.finish(ctx, wf, run, v)
 	}
-	res, err := e.drive(ctx, wf, run, v)
-	return run, res, err
+	return e.drive(ctx, wf, run, v)
 }
 
 // Resume continues a waiting run with the user's message as the observation
@@ -109,9 +129,21 @@ func (e *Engine) Resume(ctx context.Context, wf *Workflow, run *Run, message any
 	if err != nil {
 		return Result{}, err
 	}
+	if run.Child != nil {
+		return e.resumeChild(ctx, wf, run, v, message)
+	}
 	run.Status = StatusRunning
 	run.Observation = message
-	return e.drive(ctx, wf, run, v)
+	res, err := e.drive(ctx, wf, run, v)
+	return e.named(wf, res), err
+}
+
+// named says, for a run that waits, which workflow is asking.
+func (e *Engine) named(wf *Workflow, res Result) Result {
+	if res.Status == StatusWaiting && res.Workflow == "" {
+		res.Workflow = wf.ID
+	}
+	return res
 }
 
 func (e *Engine) check(wf *Workflow) error {
@@ -165,6 +197,7 @@ type stepFailure struct {
 }
 
 func (e *Engine) drive(ctx context.Context, wf *Workflow, run *Run, v *StateValidator) (Result, error) {
+	var routed *Routing // set when this drive handed a request to another workflow
 	for {
 		if err := ctx.Err(); err != nil {
 			return e.fail(ctx, run, Failure{FailCancelled, "context ended: " + err.Error()}, false), nil
@@ -172,8 +205,8 @@ func (e *Engine) drive(ctx context.Context, wf *Workflow, run *Run, v *StateVali
 		if run.Steps >= wf.Limits.MaxSteps {
 			return e.fail(ctx, run, Failure{FailMaxSteps, fmt.Sprintf("run used its %d steps", wf.Limits.MaxSteps)}, false), nil
 		}
-		if run.Tokens >= wf.Limits.MaxTokens {
-			return e.fail(ctx, run, Failure{FailMaxTokens, fmt.Sprintf("run used its %d tokens", wf.Limits.MaxTokens)}, false), nil
+		if limit := tokenLimit(wf, run); run.Tokens >= limit {
+			return e.fail(ctx, run, Failure{FailMaxTokens, fmt.Sprintf("run used its %d tokens", limit)}, false), nil
 		}
 
 		state := wf.States[run.StateName]
@@ -226,7 +259,20 @@ func (e *Engine) drive(ctx context.Context, wf *Workflow, run *Run, v *StateVali
 			run.Status = StatusWaiting
 			run.Observation = nil
 			e.emit(ctx, pending)
-			return Result{Status: StatusWaiting, Ask: reply.Action.Payload}, nil
+			return Result{Status: StatusWaiting, Ask: reply.Action.Payload, Routed: routed}, nil
+		case ActionDelegate:
+			run.Observation = nil
+			e.emit(ctx, pending)
+			res, err := e.delegate(ctx, wf, run, v, reply.Action)
+			if err != nil {
+				return Result{}, err
+			}
+			if res.Routed != nil {
+				routed = res.Routed
+			}
+			if res.done {
+				return res.Result, nil
+			}
 		}
 	}
 }
@@ -285,7 +331,7 @@ func (e *Engine) fail(ctx context.Context, run *Run, f Failure, recorded bool) R
 	run.Failure = &f
 	if !recorded {
 		e.emit(ctx, StepRecord{
-			RunID: run.RunID, Step: run.Steps + 1, State: run.StateName,
+			RunID: run.RunID, Step: run.StepBase + run.Steps + 1, State: run.StateName, Depth: run.Depth,
 			Outcome: OutcomeFailed, Error: fmt.Sprintf("%s: %s", f.Reason, f.Message),
 			At: e.clock().Now(),
 		})
@@ -302,16 +348,16 @@ func (e *Engine) emit(ctx context.Context, rec StepRecord) {
 // emitted because the action's outcome is still to be added.
 func (e *Engine) attemptStep(ctx context.Context, wf *Workflow, run *Run, v *StateValidator) (*Reply, StepRecord, *stepFailure, error) {
 	var retry *Retry
-	step := run.Steps + 1
+	step := run.StepBase + run.Steps + 1
 	for attempt := 1; ; attempt++ {
-		req, err := BuildRequest(e.Prompts, wf, run, e.Tools, run.Observation, retry)
+		req, err := buildRequest(e.Prompts, wf, run, e.Tools, run.Observation, retry, e.intentsFor(wf, run))
 		if err != nil {
 			return nil, StepRecord{}, nil, err
 		}
 		start := e.clock().Now()
 		resp, err := e.LLM.Complete(ctx, req)
 		rec := StepRecord{
-			RunID: run.RunID, Step: step, Attempt: attempt, State: run.StateName,
+			RunID: run.RunID, Step: step, Attempt: attempt, State: run.StateName, Workflow: wf.ID, Depth: run.Depth,
 			RequestDigest: digestRequest(req), Reply: resp.Text,
 			InputTokens: resp.InputTokens, OutputTokens: resp.OutputTokens,
 			Duration: e.clock().Now().Sub(start), At: start,
@@ -325,10 +371,10 @@ func (e *Engine) attemptStep(ctx context.Context, wf *Workflow, run *Run, v *Sta
 			return nil, rec, &stepFailure{Failure{FailLLM, err.Error()}, true}, nil
 		}
 		run.Tokens += resp.InputTokens + resp.OutputTokens
-		if run.Tokens > wf.Limits.MaxTokens {
-			rec.Outcome, rec.Error = OutcomeFailed, fmt.Sprintf("%s: run used %d of %d tokens", FailMaxTokens, run.Tokens, wf.Limits.MaxTokens)
+		if limit := tokenLimit(wf, run); run.Tokens > limit {
+			rec.Outcome, rec.Error = OutcomeFailed, fmt.Sprintf("%s: run used %d of %d tokens", FailMaxTokens, run.Tokens, limit)
 			e.emit(ctx, rec)
-			return nil, rec, &stepFailure{Failure{FailMaxTokens, fmt.Sprintf("run used %d tokens, over its %d", run.Tokens, wf.Limits.MaxTokens)}, true}, nil
+			return nil, rec, &stepFailure{Failure{FailMaxTokens, fmt.Sprintf("run used %d tokens, over its %d", run.Tokens, limit)}, true}, nil
 		}
 
 		reply, refusal := e.parseAndApply(wf, run, v, resp.Text)
@@ -357,6 +403,12 @@ func (e *Engine) parseAndApply(wf *Workflow, run *Run, v *StateValidator, text s
 	reply, err := ParseReply(wf, run.StateName, e.Tools, text)
 	if err != nil {
 		return nil, err.Error()
+	}
+	if refusal := e.checkInterface(wf, reply); refusal != "" {
+		return nil, refusal
+	}
+	if refusal := e.checkDelegate(run, reply); refusal != "" {
+		return nil, refusal
 	}
 	complete := reply.Action.Type == ActionGoto && wf.States[reply.Action.State].End
 	if err := run.ApplyPatch(v, reply.StatePatch, complete); err != nil {
@@ -470,4 +522,39 @@ func normalizeObject(obj map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return v.(map[string]any), nil
+}
+
+// InterfaceChecker validates the A2UI messages of an interface on their own
+// (the assistant's validator implements it).
+type InterfaceChecker interface {
+	CheckInterface(messages []json.RawMessage) error
+}
+
+// checkInterface refuses a reply whose ask_user payload holds an interface that
+// is not valid, in words the model can act on. Only workflows that declare ui
+// are checked here.
+func (e *Engine) checkInterface(wf *Workflow, reply *Reply) string {
+	if wf.UI == nil || e.UI == nil || reply.Action.Type != ActionAskUser {
+		return ""
+	}
+	raw, present := reply.Action.Payload["ui"]
+	if !present {
+		return ""
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return `payload.ui must be an array of A2UI messages, each an object with "version": "v1.0"`
+	}
+	messages := make([]json.RawMessage, len(list))
+	for i, item := range list {
+		b, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Sprintf("payload.ui[%d] cannot be encoded: %v", i, err)
+		}
+		messages[i] = b
+	}
+	if err := e.UI.CheckInterface(messages); err != nil {
+		return "the interface in payload.ui is not valid A2UI: " + err.Error()
+	}
+	return ""
 }

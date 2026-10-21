@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "catalogId": "https://assistant.k8s-lab.local/a2ui/catalog.json",
+  "protocolVersion": "1.0",
+  "title": "The assistant's functions",
+  "description": "Functions of the assistant that the basic catalog does not have. They are about the assistant and the page it runs in, not about components, so a surface still uses the basic catalog for its components. The page implements viewport itself; listWorkflows asks the assistant (callAgentFunction), so the page can show what a user may start.",
+  "functions": {
+    "viewport": {
+      "type": "object",
+      "description": "The size of the page's window and its colour scheme, as an object {width, height, pixelRatio, colorScheme}: width and height in CSS pixels, colorScheme \"light\" or \"dark\". An agent may call it to fit what it shows to the screen.",
+      "returnType": "object",
+      "allowedCallers": "rendererOrAgent",
+      "properties": {
+        "@call": { "const": "viewport" },
+        "args": { "type": "object", "properties": {}, "unevaluatedProperties": false }
+      },
+      "required": ["@call"]
+    },
+    "listWorkflows": {
+      "type": "object",
+      "description": "The workflows a user can start in a conversation, as a string such as \"hello: Asks for a name. ui-demo: ...\" (one entry per workflow). The page asks the assistant for it, so it is always the current list.",
+      "returnType": "string",
+      "allowedCallers": "rendererOnly",
+      "properties": {
+        "@call": { "const": "listWorkflows" },
+        "args": { "type": "object", "properties": {}, "unevaluatedProperties": false }
+      },
+      "required": ["@call"]
+    }
+  }
+}

@@ -63,6 +63,12 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- the top bar is now Documents, Chat and Tasks; the ingest drafts and the ingest form moved under Documents
+  as a Drafts page (in the sidebar next to Documents), and Jobs are called Tasks and have their own tab. The
+  menu shows the number of tasks and drafts.
+- the shared UI library (`shared/ui`) gained usage, model and attempt tables and shared number/time
+  formatting; this app does not show them yet.
+- The embedded shared UI library now also carries the on-demand A2UI renderer files (`a2ui.js`, `a2ui-gallery.js` and a shared chunk, about 200 KB gzipped together); no page of this app loads them, so nothing changes on screen.
 - the interface now matches phraseforge's look: its color palette and CSS variable names (light and dark),
   the theme toggle showing ☽ in light mode and ☀ in dark (was a static 🌓), phraseforge's top bar with a
   bold **Knowledge** brand, phraseforge's button styles, and its 17px system font; the login/signup form is a

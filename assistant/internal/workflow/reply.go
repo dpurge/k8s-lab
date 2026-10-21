@@ -20,6 +20,8 @@ const (
 	ActionTool    ActionType = "tool"
 	ActionGoto    ActionType = "goto"
 	ActionAskUser ActionType = "ask_user"
+	// ActionDelegate hands a request to another workflow.
+	ActionDelegate ActionType = "delegate"
 )
 
 // Action is the parsed action of a reply. Only the fields of its Type are set.
@@ -29,6 +31,10 @@ type Action struct {
 	Args    map[string]any // ActionTool
 	State   string         // ActionGoto
 	Payload map[string]any // ActionAskUser
+
+	Workflow string // ActionDelegate: the workflow to hand the request to
+	Message  any    // ActionDelegate: the request, the first observation of the child
+	Reason   string // ActionDelegate: why, in a few words, shown to the user
 }
 
 // Reply is a validated model reply: a state patch plus one action.
@@ -87,13 +93,15 @@ func ParseReply(wf *Workflow, stateName string, tools ToolLookup, text string) (
 func parseAction(raw map[string]any, stateName string, state State, tools ToolLookup) (*Action, error) {
 	typ, ok := raw["type"].(string)
 	if !ok {
-		return nil, refuse(`action needs a "type" string: one of "tool", "goto", "ask_user"`)
+		return nil, refuse(`action needs a "type" string: one of "tool", "goto", "ask_user"%s`, delegateHint(state))
 	}
 	switch ActionType(typ) {
 	case ActionTool:
 		return parseToolAction(raw, stateName, state, tools)
 	case ActionGoto:
 		return parseGotoAction(raw, stateName, state)
+	case ActionDelegate:
+		return parseDelegateAction(raw, stateName, state)
 	case ActionAskUser:
 		if err := checkKeys(raw, []string{"type", "payload"}, []string{"type", "payload"}, "action"); err != nil {
 			return nil, err
@@ -104,8 +112,38 @@ func parseAction(raw map[string]any, stateName string, state State, tools ToolLo
 		}
 		return &Action{Type: ActionAskUser, Payload: payload}, nil
 	default:
-		return nil, refuse("unknown action type %q; use one of \"tool\", \"goto\", \"ask_user\"", typ)
+		return nil, refuse("unknown action type %q; use one of \"tool\", \"goto\", \"ask_user\"%s", typ, delegateHint(state))
 	}
+}
+
+func delegateHint(state State) string {
+	if state.Delegate {
+		return `, "delegate"`
+	}
+	return ""
+}
+
+func parseDelegateAction(raw map[string]any, stateName string, state State) (*Action, error) {
+	if !state.Delegate {
+		return nil, refuse("state %q cannot delegate to another workflow", stateName)
+	}
+	if err := checkKeys(raw, []string{"type", "workflow", "message", "reason"}, []string{"type", "workflow", "message"}, "action"); err != nil {
+		return nil, err
+	}
+	name, ok := raw["workflow"].(string)
+	if !ok || name == "" {
+		return nil, refuse("delegate workflow must be the id of a workflow, got %s", describeKind(raw["workflow"]))
+	}
+	reason := ""
+	if r, present := raw["reason"]; present {
+		if reason, ok = r.(string); !ok {
+			return nil, refuse("delegate reason must be a string, got %s", describeKind(r))
+		}
+	}
+	if raw["message"] == nil {
+		return nil, refuse("delegate message must not be null: it is the request the other workflow starts from")
+	}
+	return &Action{Type: ActionDelegate, Workflow: name, Message: raw["message"], Reason: strings.TrimSpace(reason)}, nil
 }
 
 func parseToolAction(raw map[string]any, stateName string, state State, tools ToolLookup) (*Action, error) {

@@ -21,7 +21,7 @@
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-task-list/component.css";
+    link.href = "/static/components/as-task-list/component.css";
     document.head.appendChild(link);
   }
 
@@ -140,8 +140,8 @@
 
       this._message = el("p", "as-task-list-message");
       this._message.setAttribute("role", "status");
-      this._pager = document.createElement("as-pager");
-      this._pager.addEventListener("as-pager-select", (e) => {
+      this._pager = document.createElement("dp-pager");
+      this._pager.addEventListener("dp-pager-select", (e) => {
         e.stopPropagation();
         this.dispatchEvent(new CustomEvent("as-list-change", { detail: { status: this.status, page: e.detail.page }, bubbles: true }));
       });

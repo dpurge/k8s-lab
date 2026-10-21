@@ -289,7 +289,7 @@ test("a non-string error value is shown as text", async () => {
 
 test("injects its stylesheet once", async () => {
   await mount();
-  assert.equal(document.getElementById("as-task-detail-style").getAttribute("href"), "/admin/components/as-task-detail/component.css");
+  assert.equal(document.getElementById("as-task-detail-style").getAttribute("href"), "/static/components/as-task-detail/component.css");
 });
 
 test("without a task-id it asks for nothing and shows nothing", async () => {

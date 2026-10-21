@@ -134,7 +134,7 @@ func TestUsageIsGroupedByUserAndModelAndSkipsFailures(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items = %+v", items)
 	}
-	want := llmcalls.Usage{UserID: ada.ID, ModelID: "big", Calls: 2, InputTokens: 1500, OutputTokens: 300, CostUSD: 3.0}
+	want := llmcalls.Usage{UserID: ada.ID, ProviderID: "box", ModelID: "big", Calls: 2, InputTokens: 1500, OutputTokens: 300, CostUSD: 3.0}
 	if items[0] != want {
 		t.Errorf("first = %+v, want %+v", items[0], want)
 	}
@@ -162,6 +162,58 @@ func TestUsageRejectsABadSince(t *testing.T) {
 	a := newAPI(t)
 	for _, v := range []string{"yesterday", "2026-10-05", "1"} {
 		a.wantError(a.call("GET", "/api/v1/usage", "/api/v1/usage?since="+v, nil), 400, "invalid_request", "since must be a timestamp")
+	}
+}
+
+// ── attempts ─────────────────────────────────────────────────────────────────
+
+func TestAttemptsArePagedNewestFirstAndIncludeFailures(t *testing.T) {
+	a := newAPI(t)
+	ada := a.newUser("Ada")
+	at := fixedNow.Add(-48 * time.Hour)
+	for i := 0; i < 5; i++ {
+		outcome := "ok"
+		if i == 4 {
+			outcome = "error"
+		}
+		a.addCall(nil, ada.ID, "big", outcome, 10, 1, 0.1, at.Add(time.Duration(i)*time.Hour))
+	}
+
+	first := decode[attemptList](t, a.call("GET", "/api/v1/llm-calls", "/api/v1/llm-calls?limit=2", nil))
+	if first.Total != 5 || first.Limit != 2 || first.Offset != 0 || len(first.Items) != 2 {
+		t.Fatalf("first page = %+v", first)
+	}
+	if first.Items[0].Outcome != "error" || !first.Items[0].StartedAt.After(first.Items[1].StartedAt) {
+		t.Errorf("newest first, failures included: %+v", first.Items)
+	}
+	last := decode[attemptList](t, a.call("GET", "/api/v1/llm-calls", "/api/v1/llm-calls?limit=2&offset=4", nil))
+	if last.Total != 5 || len(last.Items) != 1 {
+		t.Errorf("last page = %+v", last)
+	}
+	since := decode[attemptList](t, a.call("GET", "/api/v1/llm-calls", "/api/v1/llm-calls?since="+at.Add(3*time.Hour).Format(time.RFC3339), nil))
+	if since.Total != 2 || since.Limit != defaultAttemptsLimit {
+		t.Errorf("since keeps the later calls and the default limit applies: %+v", since)
+	}
+}
+
+func TestNoAttemptsIsAnEmptyList(t *testing.T) {
+	a := newAPI(t)
+	got := decode[attemptList](t, a.call("GET", "/api/v1/llm-calls", "/api/v1/llm-calls", nil))
+	if got.Items == nil || len(got.Items) != 0 || got.Total != 0 {
+		t.Errorf("%+v", got)
+	}
+}
+
+func TestAttemptsRejectABadQuery(t *testing.T) {
+	a := newAPI(t)
+	for query, message := range map[string]string{
+		"since=yesterday": "since must be a timestamp",
+		"limit=0":         "limit must be a number from 1 to 200",
+		"limit=201":       "limit must be a number from 1 to 200",
+		"limit=x":         "limit must be a number from 1 to 200",
+		"offset=-1":       "offset must be a number, 0 or more",
+	} {
+		a.wantError(a.call("GET", "/api/v1/llm-calls", "/api/v1/llm-calls?"+query, nil), 400, "invalid_request", message)
 	}
 }
 
@@ -215,6 +267,9 @@ func (failingCalls) ForTask(context.Context, string) ([]llmcalls.Call, error) { 
 func (failingCalls) UsageByUserAndModel(context.Context, *time.Time) ([]llmcalls.Usage, error) {
 	return nil, errSecret
 }
+func (failingCalls) Attempts(context.Context, *time.Time, int, int) ([]llmcalls.Call, int, error) {
+	return nil, 0, errSecret
+}
 func (failingCalls) UsageForTasks(context.Context, []string) (map[string]llmcalls.TaskUsage, error) {
 	return nil, errSecret
 }
@@ -237,6 +292,7 @@ func TestCallStoreFailuresAreAnswered500WithoutLeakingTheCause(t *testing.T) {
 	for _, rq := range []struct{ route, path string }{
 		{"/api/v1/tasks/{id}/llm-calls", "/api/v1/tasks/" + id + "/llm-calls"},
 		{"/api/v1/usage", "/api/v1/usage"},
+		{"/api/v1/llm-calls", "/api/v1/llm-calls"},
 		{"/api/v1/tasks/{id}", "/api/v1/tasks/" + id},
 		{"/api/v1/tasks", "/api/v1/tasks"},
 	} {

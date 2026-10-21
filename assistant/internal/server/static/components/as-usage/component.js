@@ -1,22 +1,26 @@
-// as-usage: what each user used of each model: calls, tokens and cost, highest
-// cost first, with a period filter. It loads its own data from the JSON API.
-// Only successful calls count; a failed attempt has no tokens and no cost.
+// as-usage: what each user used of each model of each provider: calls, tokens
+// and cost, highest cost first, with a period filter and a grouping. It loads
+// its own data from the JSON API. Only successful calls count; a failed attempt
+// has no tokens and no cost.
 //
-// Attribute: period ("all", "24h", "7d" or "30d"; default "all").
-// Events (bubbling): as-list-change {period} when the user picks a period,
+// Attributes: period ("all", "24h", "7d" or "30d"; default "all"); group
+// ("user", "provider" or "model" sums the rows over the other two; anything
+// else, the default, shows one row per user, provider and model).
+// Events (bubbling): as-list-change {period, group} when the user picks one,
 // as-load {ok, message, live: false, at} after every load. It never changes
 // its own attributes: the host decides what a change means.
 (function () {
   const STYLE_ID = "as-usage-style";
   const PERIODS = { all: ["All time", 0], "24h": ["Last 24 hours", 24 * 3600], "7d": ["Last 7 days", 7 * 24 * 3600], "30d": ["Last 30 days", 30 * 24 * 3600] };
-  const COLUMNS = ["User", "Model", "Calls", "Input tokens", "Output tokens", "Cost"];
+  // The groupings the select offers; dp-usage-table sums the rows for each.
+  const GROUPS = { "": "User, provider and model", user: "User", provider: "Provider", model: "Model" };
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const link = document.createElement("link");
     link.id = STYLE_ID;
     link.rel = "stylesheet";
-    link.href = "/admin/components/as-usage/component.css";
+    link.href = "/static/components/as-usage/component.css";
     document.head.appendChild(link);
   }
 
@@ -29,7 +33,12 @@
 
   class AsUsage extends HTMLElement {
     static get observedAttributes() {
-      return ["period"];
+      return ["period", "group"];
+    }
+
+    get group() {
+      const v = this.getAttribute("group") || "";
+      return Object.prototype.hasOwnProperty.call(GROUPS, v) ? v : "";
     }
 
     get period() {
@@ -50,6 +59,11 @@
     attributeChangedCallback(name, oldValue, newValue) {
       if (!this._built || oldValue === newValue || !this.isConnected) return;
       this._select.value = this.period;
+      this._groupSelect.value = this.group;
+      if (name === "group") {
+        this._table.groupBy = this.group;
+        return;
+      }
       this._load();
     }
 
@@ -71,31 +85,41 @@
         select.appendChild(option);
       }
       select.addEventListener("change", () => {
-        this.dispatchEvent(new CustomEvent("as-list-change", { detail: { period: select.value }, bubbles: true }));
+        this.dispatchEvent(new CustomEvent("as-list-change", { detail: { period: select.value, group: this.group }, bubbles: true }));
       });
       label.append(select);
+      const groupLabel = el("label", "as-usage-filter");
+      groupLabel.append(el("span", "", "Group by "));
+      const groupSelect = document.createElement("select");
+      groupSelect.className = "as-usage-group";
+      for (const [value, text] of Object.entries(GROUPS)) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = text;
+        groupSelect.appendChild(option);
+      }
+      groupSelect.addEventListener("change", () => {
+        this.dispatchEvent(new CustomEvent("as-list-change", { detail: { period: this.period, group: groupSelect.value }, bubbles: true }));
+      });
+      groupLabel.append(groupSelect);
+      this._groupSelect = groupSelect;
       this._summary = el("span", "as-usage-summary");
-      controls.append(label, this._summary);
+      controls.append(label, groupLabel, this._summary);
 
-      const wrap = el("div", "as-usage-table-wrap");
-      const table = document.createElement("table");
-      table.className = "as-usage-table";
-      const head = document.createElement("tr");
-      for (const name of COLUMNS) head.appendChild(el("th", "", name));
-      const thead = document.createElement("thead");
-      thead.appendChild(head);
-      this._body = document.createElement("tbody");
-      table.append(thead, this._body);
-      wrap.appendChild(table);
-      this._wrap = wrap;
+      // The table is the shared dp-usage-table; this element loads the rows and
+      // hands them over, with the grouping.
+      this._table = document.createElement("dp-usage-table");
+      this._table.setAttribute("empty-text", "No model calls in this period.");
+      this._table.rows = [];
 
       this._message = el("p", "as-usage-message");
       this._message.setAttribute("role", "status");
       this._select = select;
       // The history is purged after ASSISTANT_LLM_CALLS_RETENTION_DAYS (default 90).
       const note = el("p", "as-usage-note", "Covers only the retained call history (90 days by default).");
-      this.append(controls, wrap, this._message, note);
+      this.append(controls, this._table, this._message, note);
       select.value = this.period;
+      groupSelect.value = this.group;
     }
 
     _since() {
@@ -134,28 +158,25 @@
     _render(items) {
       const f = window.asFormat;
       this._message.classList.remove("error");
-      this._body.textContent = "";
-      this._wrap.hidden = items.length === 0;
-      this._message.textContent = items.length === 0 ? "No model calls in this period." : "";
+      this._message.textContent = "";
 
       let calls = 0;
       let cost = 0;
       for (const row of items) {
         calls += row.calls;
         cost += row.cost_usd;
-        const user = el("td", "as-usage-user", this._users.get(row.user_id) || window.asApi.shortId(row.user_id));
-        user.title = row.user_id;
-        const tr = document.createElement("tr");
-        tr.append(
-          user,
-          el("td", "as-usage-model", row.model_id),
-          el("td", "as-usage-calls", f.tokens(row.calls)),
-          el("td", "as-usage-input", f.tokens(row.input_tokens)),
-          el("td", "as-usage-output", f.tokens(row.output_tokens)),
-          el("td", "as-usage-cost", f.cost(row.cost_usd)),
-        );
-        this._body.appendChild(tr);
       }
+      this._table.groupBy = this.group;
+      this._table.rows = items.map((row) => ({
+        user: this._users.get(row.user_id) || window.asApi.shortId(row.user_id),
+        userId: row.user_id,
+        provider: row.provider_id,
+        model: row.model_id,
+        calls: row.calls,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+        costUsd: row.cost_usd,
+      }));
       this._summary.textContent = items.length === 0 ? "" : `${calls === 1 ? "1 call" : `${f.tokens(calls)} calls`} · ${f.cost(cost)}`;
     }
   }

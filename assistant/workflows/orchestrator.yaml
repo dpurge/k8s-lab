@@ -1,0 +1,30 @@
+id: orchestrator
+version: 1
+description: Routes what the user writes to the workflow that handles it (a subagent), or answers itself, or asks one short question. The conversation to start when you do not know which workflow you want.
+state_schema:
+  type: object
+  properties:
+    reply: {type: string, description: "What the assistant says at the end: the answer itself, or one or two sentences on what the workflow it handed the request to did."}
+  required: [reply]
+  additionalProperties: false
+start: route
+limits: {max_steps: 10, max_tokens: 40000, max_retries: 2, max_visits: 3}
+model_tags: [orchestrator]
+states:
+  route:
+    instructions: >-
+      Read the observation. If it is the user's message or their answer to your
+      question: when one of the delegates fits what they ask for, reply with the
+      delegate action (workflow: its id; message: what the user asked, in their
+      own words; reason: a few words on why it fits). When none fits and the
+      request is unclear, reply with ask_user and one short clarifying question.
+      When none fits and you can answer yourself, record the answer in reply and
+      go to done. If the observation is an object with delegate_result, the
+      workflow finished: record in reply one or two sentences saying what it did,
+      using its state, and go to done. If it has delegate_error, record a short
+      apology and what went wrong in reply and go to done.
+    delegate: true
+    next: [done]
+  done:
+    instructions: Finished.
+    end: true
