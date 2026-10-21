@@ -142,3 +142,4 @@
 2026-10-20T20:28:37Z [gotcha] After a long stop task start-k8s can fail once while the k3d server restarts; wait for k3s and re-run it, never recreate the cluster (dev databases would be lost).
 2026-10-20T20:28:38Z [convention] api_key_from "" suits ollama and openai; anthropic and vertex without a credential are skipped with a warning; env: needs a restart, file: is re-read per call.
 2026-10-20T20:28:39Z [gotcha] The router migration drops llm_prompts.provider and model (now model_tags); values cannot be converted, so count the rows read-only before migrating a real database.
+2026-10-21T22:05:00Z [gotcha] A gitignored embed directory still needs a tracked placeholder: shared/ui/ui.go uses //go:embed all:dist, so a fresh checkout without dist/.gitkeep fails `go test` with "pattern all:dist: no matching files found" even though Docker builds dist later. Keep shared/ui/dist/.gitkeep committed.

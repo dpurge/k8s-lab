@@ -2,7 +2,7 @@
 
 The Lit component library shared by every app (`dp-*` custom elements) and the
 Go package that serves it. TypeScript source in `src/`, bundled by esbuild into
-`dist/` (not committed), embedded by `ui.go`.
+`dist/` (built, not committed except for the `dist/.gitkeep` placeholder), embedded by `ui.go`.
 
 ## Use it in an app
 

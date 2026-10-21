@@ -7,8 +7,9 @@
 import { build } from "esbuild";
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const dist = new URL("./dist/", import.meta.url).pathname;
+const dist = fileURLToPath(new URL("./dist/", import.meta.url));
 
 await mkdir(dist, { recursive: true });
 for (const name of await readdir(dist)) {
@@ -49,7 +50,7 @@ const themeInit = await build({
 });
 Object.assign(result.metafile.outputs, themeInit.metafile.outputs);
 
-await copyFile(new URL("./src/tokens.css", import.meta.url).pathname, join(dist, "tokens.css"));
+await copyFile(fileURLToPath(new URL("./src/tokens.css", import.meta.url)), join(dist, "tokens.css"));
 
 for (const file of Object.keys(result.metafile.outputs).sort()) {
   const { size } = await stat(file);

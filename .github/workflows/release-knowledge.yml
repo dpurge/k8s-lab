@@ -65,6 +65,19 @@ jobs:
         with:
           go-version-file: knowledge/go.mod
 
+      # shared/ui is embedded by the Go build; a clean checkout has only its
+      # .gitkeep placeholder, so compile the real bundle before go test.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: shared/ui/package-lock.json
+
+      - name: Build shared UI
+        working-directory: shared/ui
+        run: npm ci && npm run build
+
       - name: Test
         run: go test ./...
 
