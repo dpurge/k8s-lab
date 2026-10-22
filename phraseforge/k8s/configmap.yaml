@@ -520,26 +520,3 @@ data:
         {{vocabulary}}
 
         Answer:
-  models.yaml: |
-    # The providers and models PhraseForge can call (PHRASEFORGE_MODELS_FILE,
-    # default /etc/phraseforge/models.yaml). A purpose in config.yaml lists
-    # model_tags; a call goes to the highest-priority available model that has all
-    # of them, and falls back to a lower one when it fails.
-    providers:
-      - id: ollama
-        type: ollama
-        base_url: http://host.docker.internal:11434
-        api_key_from: ""
-    models:
-      - id: gemma4-12b
-        provider: ollama
-        model: gemma4:12b
-        tags: [default]
-        priority: 10
-        options:
-          # The most this model is run with; a purpose's numCtx must not exceed it.
-          num_ctx: 16384
-          # Streaming no-progress limits: wait for the first output (model load +
-          # prompt eval), then the longest gap between outputs.
-          first_token_timeout_seconds: 300
-          idle_timeout_seconds: 60

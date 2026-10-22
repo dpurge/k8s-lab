@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"k8s-lab/shared/llm"
 	"knowledge/internal/config"
+	"knowledge/internal/modelrouter"
 	"knowledge/internal/qdrant"
 	"knowledge/internal/queue"
 )
@@ -24,12 +24,13 @@ type Service struct {
 	db    *pgxpool.Pool
 	kb    *qdrant.Client
 	cfg   config.Config
-	llm   *llm.Client
+	llm   modelrouter.Completer
 	queue *queue.Service
 }
 
-func New(db *pgxpool.Pool, kb *qdrant.Client, cfg config.Config, q *queue.Service) *Service {
-	return &Service{db: db, kb: kb, cfg: cfg, queue: q, llm: llm.New(cfg.LLM(cfg.Chat))}
+// New builds the service over c, the model call for the chat purpose.
+func New(db *pgxpool.Pool, kb *qdrant.Client, cfg config.Config, q *queue.Service, c modelrouter.Completer) *Service {
+	return &Service{db: db, kb: kb, cfg: cfg, queue: q, llm: c}
 }
 
 // replyPayload is the queue.Operation payload for a KindReply operation. It
@@ -206,7 +207,7 @@ func (s *Service) HandleReply(ctx context.Context, rawPayload json.RawMessage) (
 	if err != nil {
 		outcome = "error"
 	}
-	slog.Info("chat llm call", "model", s.cfg.Chat.Model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("chat llm call", "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
 	if err != nil {
 		return nil, err
 	}
@@ -297,16 +298,16 @@ func (s *Service) answer(ctx context.Context, history []Message, question string
 	}
 	ctxText := strings.Join(bodies, "\n\n")
 	userMsg := ctxText + "\n\nQuestion: " + question
-	messages := []llm.Message{{Role: "system", Content: sys}}
+	messages := []modelrouter.Message{{Role: "system", Content: sys}}
 	for _, m := range history {
-		messages = append(messages, llm.Message{Role: m.Role, Content: m.Content})
+		messages = append(messages, modelrouter.Message{Role: m.Role, Content: m.Content})
 	}
-	messages = append(messages, llm.Message{Role: "user", Content: userMsg})
-	resp, err := s.llm.Chat(ctx, messages, nil)
+	messages = append(messages, modelrouter.Message{Role: "user", Content: userMsg})
+	reply, err := s.llm.Complete(ctx, messages)
 	if err != nil {
 		return "", err
 	}
-	return appendReferences(resp.Content, sources), nil
+	return appendReferences(reply, sources), nil
 }
 
 // truncateBody cuts body at the nearest whitespace at or before maxChars, so

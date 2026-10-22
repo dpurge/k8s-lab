@@ -83,7 +83,7 @@ export class DpAttemptTable extends LitElement {
             (r) => html`<tr>
               <td title=${r.startedAt}>${compactTime(r.startedAt)}</td>
               <td class="name" title=${r.userId ?? nothing}>${r.user}</td>
-              <td>${r.provider}</td>
+              <td class="name" title=${r.provider}>${r.provider}</td>
               <td class="name" title=${r.model}>${r.model}</td>
               <td><span class="badge ${r.outcome === "ok" ? "good" : "bad"}" title=${r.error ?? nothing}>${r.outcome}</span></td>
               <td class="num">${tokens(r.inputTokens)}</td>

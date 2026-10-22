@@ -51,6 +51,18 @@
 //	overall_timeout_seconds                    every type that calls a model
 //
 // A provider ignores the options that do not apply to it.
+//
+// # Embedding models
+//
+// A model with embedding_space and dimension (both or neither) is an embedding
+// model: embedding_space names the vector space it produces and dimension is the
+// length of its vectors. Models of one space may stand in for each other (the
+// same model on two machines); models of different spaces never do, not even
+// with the same dimension, because their vectors cannot be compared. Only
+// ollama and openai providers have an embeddings endpoint, so an embedding model
+// on another type is refused. The router never sends a chat call to an embedding
+// model, and an embedding call (Router.Embed) only to models of the requested
+// space.
 package modelcfg
 
 import (
@@ -119,7 +131,16 @@ type Model struct {
 	Priority int      `yaml:"priority"`
 	Options  Options  `yaml:"options"`
 	Price    Price    `yaml:"price"`
+	// EmbeddingSpace marks an embedding model and names the vector space it
+	// produces; Dimension is the length of its vectors. Both or neither. The
+	// router never sends a chat call to an embedding model, and an embedding call
+	// only to models of one space.
+	EmbeddingSpace string `yaml:"embedding_space"`
+	Dimension      int    `yaml:"dimension"`
 }
+
+// IsEmbedding reports whether the model produces embeddings.
+func (m Model) IsEmbedding() bool { return m.EmbeddingSpace != "" }
 
 // Options are Ollama's settings for a model; zero means "not set".
 type Options struct {
@@ -252,12 +273,14 @@ func lint(c *Config) []yamlschema.Finding {
 	}
 
 	providers := map[string]bool{}
+	providerTypes := map[string]string{}
 	for i, p := range c.Providers {
 		at := strconv.Itoa(i)
 		if providers[p.ID] {
 			add(fmt.Sprintf("provider id %q is used more than once", p.ID), "providers", at, "id")
 		}
 		providers[p.ID] = true
+		providerTypes[p.ID] = p.Type
 		hasKey := providerHasKey(c.root, i, "api_key_from")
 		lintCredential(p, hasKey, func(onKey bool, msg string) {
 			if onKey {
@@ -302,6 +325,15 @@ func lint(c *Config) []yamlschema.Finding {
 		if !providers[m.Provider] {
 			add(fmt.Sprintf("model %q is on provider %q, which is not listed under providers", m.ID, m.Provider), "models", at, "provider")
 		}
+		switch {
+		case m.EmbeddingSpace != "" && m.Dimension == 0:
+			add(fmt.Sprintf("model %q has embedding_space but no dimension: say how long its vectors are", m.ID), "models", at, "dimension")
+		case m.EmbeddingSpace == "" && m.Dimension != 0:
+			add(fmt.Sprintf("model %q has dimension but no embedding_space: name the vector space it produces", m.ID), "models", at, "embedding_space")
+		}
+		if m.EmbeddingSpace != "" && providers[m.Provider] && !hasEmbeddingsEndpoint(providerTypes[m.Provider]) {
+			add(fmt.Sprintf("model %q is an embedding model, but provider %q has type %q, which has no embeddings endpoint (ollama and openai do)", m.ID, m.Provider, providerTypes[m.Provider]), "models", at, "provider")
+		}
 	}
 
 	sort.SliceStable(found, func(i, j int) bool {
@@ -311,6 +343,12 @@ func lint(c *Config) []yamlschema.Finding {
 		return found[i].Path < found[j].Path
 	})
 	return found
+}
+
+// hasEmbeddingsEndpoint says whether providers of the type can produce
+// embeddings.
+func hasEmbeddingsEndpoint(providerType string) bool {
+	return providerType == "ollama" || providerType == "openai"
 }
 
 // providerHasKey says whether the index-th provider of the document has the

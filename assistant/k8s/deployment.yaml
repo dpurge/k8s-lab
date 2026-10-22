@@ -37,6 +37,14 @@ spec:
                 secretKeyRef:
                   name: assistant-database
                   key: ASSISTANT_DATABASE_URL
+            # Optional: written by `task llm-enable`; models.yaml names it for the
+            # openrouter provider (api_key_from: env:OPENROUTER_API_KEY).
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: assistant-llm-keys
+                  key: OPENROUTER_API_KEY
+                  optional: true
           volumeMounts:
             - name: models
               mountPath: /etc/assistant
@@ -80,7 +88,7 @@ spec:
         - name: workflows
           configMap:
             name: assistant-workflows
-        # The access token for Vertex AI, written by `task refresh-assistant-vertex-token`;
+        # The access token for Vertex AI, written by `task llm-enable` and `task llm-refresh-vertex-token`;
         # models.yaml names it as the vertex provider's api_key_from (file:)
         # (/etc/assistant-vertex/token). Optional so the pod starts without it; the
         # provider is then skipped (missing_credentials) until the token exists.

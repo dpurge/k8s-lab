@@ -20,6 +20,7 @@ import (
 	"knowledge/internal/generate"
 	"knowledge/internal/ingest"
 	"knowledge/internal/jobs"
+	"knowledge/internal/modelrouter"
 	"knowledge/internal/qdrant"
 )
 
@@ -40,7 +41,19 @@ type Server struct {
 	generate *generate.Service
 	jobs     *jobs.Service
 	ingest   *ingest.Service
+
+	// metricsHandler serves GET /metrics when set (see SetMetricsHandler).
+	metricsHandler http.Handler
+
+	// llmCalls and llmModels feed the model pages (see SetLLMAdmin).
+	llmCalls  CallQueries
+	llmModels func() []modelrouter.ModelInfo
 }
+
+// SetMetricsHandler mounts h at GET /metrics, outside the login: it is read by
+// Prometheus, which has no session, and holds only counts, never content. Call it
+// before Router.
+func (s *Server) SetMetricsHandler(h http.Handler) { s.metricsHandler = h }
 
 func New(kb *qdrant.Client, chatSvc *chat.Service, authSvc *auth.Service, generateSvc *generate.Service, jobsSvc *jobs.Service, ingestSvc *ingest.Service) *Server {
 	return &Server{kb: kb, chat: chatSvc, auth: authSvc, generate: generateSvc, jobs: jobsSvc, ingest: ingestSvc}
@@ -143,6 +156,9 @@ const draftUpdateBodyCap = 256 << 10 // 256 KiB
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	if s.metricsHandler != nil {
+		r.Method(http.MethodGet, "/metrics", s.metricsHandler)
+	}
 	r.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.kb.Health(r.Context()); err != nil {
 			http.Error(w, "qdrant unreachable", 503)
@@ -173,6 +189,9 @@ func (s *Server) Router() http.Handler {
 		r.Use(s.requireAuth)
 		r.Route("/api/v1", func(r chi.Router) {
 			r.Get("/auth/me", s.me)
+			r.Get("/admin/models", s.adminModels)
+			r.Get("/admin/llm-calls", s.adminLLMCalls)
+			r.Get("/admin/llm-aggregates", s.adminLLMAggregates)
 			r.Get("/jobs/current", s.currentJob)
 			r.Get("/jobs", s.listJobs)
 			r.Post("/jobs/{id}/retry", s.retryJob)

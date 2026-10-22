@@ -56,11 +56,7 @@ func newTestClient(t *testing.T, existing map[string]Item) (*Client, *[]map[stri
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	emb, err := embeddings.New("fake", "", "", "test-model", 4)
-	if err != nil {
-		t.Fatalf("embeddings.New: %v", err)
-	}
-	return New(srv.URL, "kb", emb, 0), &upserts
+	return New(srv.URL, "kb", embeddings.NewFake("test-model", 4), 0), &upserts
 }
 
 func TestImport_OnlyBodyRequired(t *testing.T) {

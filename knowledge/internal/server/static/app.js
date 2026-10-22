@@ -5,19 +5,25 @@ let currentChat = "";
 // transition and refresh the draft list (see pollStatus below).
 let ingestJobRunning = false;
 
-const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab", "tasksTab"];
+const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab", "tasksTab", "modelsTab", "usageTab", "attemptsTab"];
 // The menu has one item, Documents, for the two tabs that hold documents: the
 // documents themselves ("knowledge") and the drafts being made into them
 // ("ingest"). The two are the pages in the sidebar's Documents list.
 const DOCUMENT_TABS = ["knowledge", "ingest"];
+// Likewise one menu item, Models, for the three pages about model calls (see llm.js):
+// the configured models, what was used, and every call.
+const MODEL_TABS = ["models", "usage", "attempts"];
 const mainNav = $("mainNav");
 const documentsNav = $("documentsNav");
+const modelsNav = $("modelsNav");
 const confirmDialog = $("confirmDialog");
 mainNav.active = "documents"; // matches the markup's default "tab active" on knowledgeTab
 documentsNav.active = "knowledge";
-// "documents" is the menu's name for the documents page; the other items are tabs.
-mainNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id === "documents" ? "knowledge" : event.detail.id));
+modelsNav.active = "models";
+// "documents" and "llm" are the menu's names for the first page of a group; the other items are tabs.
+mainNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id === "documents" ? "knowledge" : event.detail.id === "llm" ? "models" : event.detail.id));
 documentsNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id));
+modelsNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id));
 
 // One delegated dp-card-select listener per list container, added
 // once here, instead of an inline onclick handler re-created on every
@@ -45,8 +51,10 @@ function showTab(tab) {
   // The tab's panel is in the shell's sidebar; the workspace is in its main area.
   for (const id of TAB_IDS) $(id.replace("Tab", "Aside")).classList.toggle("active", id === tab + "Tab");
   documentsNav.classList.toggle("active", DOCUMENT_TABS.includes(tab));
-  mainNav.active = DOCUMENT_TABS.includes(tab) ? "documents" : tab;
+  modelsNav.classList.toggle("active", MODEL_TABS.includes(tab));
+  mainNav.active = DOCUMENT_TABS.includes(tab) ? "documents" : MODEL_TABS.includes(tab) ? "llm" : tab;
   if (DOCUMENT_TABS.includes(tab)) documentsNav.active = tab;
+  if (MODEL_TABS.includes(tab)) modelsNav.active = tab;
   // Entering a tab always lands on its list view for predictability;
   // openItem()/openDraft() call showTab() themselves and then switch
   // to the detail view immediately after, overriding this.
@@ -55,6 +63,9 @@ function showTab(tab) {
   if (tab === "chat") run(loadChats);
   if (tab === "ingest") run(loadDrafts);
   if (tab === "tasks") run(loadJobs);
+  if (tab === "models") run(loadModelsPage);
+  if (tab === "usage") run(loadUsagePage);
+  if (tab === "attempts") run(() => loadAttemptsPage(1));
 }
 
 function parseTags(value) {
@@ -452,10 +463,16 @@ function updateNavCount(id, count) {
     { id: "documents", label: "Documents" },
     { id: "chat", label: "Chat" },
     { id: "tasks", label: withCount("Tasks", navCounts.tasks) },
+    { id: "llm", label: "Models" },
   ];
   documentsNav.items = [
     { id: "knowledge", label: "Documents" },
     { id: "ingest", label: withCount("Drafts", navCounts.drafts) },
+  ];
+  modelsNav.items = [
+    { id: "models", label: "Models" },
+    { id: "usage", label: "Usage" },
+    { id: "attempts", label: "Attempts" },
   ];
 }
 updateNavCount("drafts", null);

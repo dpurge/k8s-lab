@@ -37,6 +37,11 @@ task delete-k8s               # full teardown — cluster, registry, and local k
 | `task stop-k8s` | Pauses the cluster (`k3d cluster stop`) — workloads, pods, and registry contents survive. |
 | `task delete-k8s` | Fully tears down the cluster, its registry, and the project's local kubeconfig file. |
 | `task run-k8s -- <args>` | Runs `kubectl <args>` against this project's cluster only, e.g. `task run-k8s -- get pods`, `task run-k8s -- apply -f deploy.yaml`. Fails with a clear message if the cluster isn't running. |
+| `task llm-status` | Read-only: prints the four LLM sources in priority order (LAN Ollama, OpenRouter, Vertex AI, local Ollama) as available or not; exits 1 if none is available. See [LLM providers in the dev cluster](#llm-providers-in-the-dev-cluster). |
+| `task llm-enable` | Adds the available remote LLM sources to the assistant, phraseforge and knowledge in the dev cluster (models files, Secrets, ConfigMaps). A deployed app restarts only when its models file or key changed; running it twice changes nothing. |
+| `task llm-disable` | Removes everything `llm-enable` added and restores the committed local-Ollama default. |
+| `task llm-refresh-vertex-token` | Writes a fresh Vertex AI access token (valid about an hour) into the Vertex Secrets; Vertex must be enabled by `llm-enable`. |
+| `task test-llm-scripts` | Tests the `scripts/llm-*.sh` scripts against a fake Ollama and a fake `gcloud` (no real LLM, no cluster). |
 
 ## Kubeconfig isolation
 
@@ -148,6 +153,78 @@ task run-k8s -- rollout restart deployment/dictionary -n app
 | `task deploy-headlamp` / `task delete-headlamp` | Headlamp Kubernetes dashboard — see [Headlamp](#headlamp-kubernetes-dashboard) below. |
 
 Each app's own deploy/delete/migrate tasks and full API docs live in its own README (linked above).
+
+## LLM providers in the dev cluster
+
+By default the assistant, phraseforge and knowledge in the dev cluster call only the Ollama on your laptop, which is slow and heavy. `task llm-enable` adds faster sources for the length of your session; `task llm-disable` takes them away. The scope is the assistant, phraseforge and knowledge, the apps that use the shared model router (for knowledge, the chat, title, summary, translate and embeddings purposes). Dictionary has no LLM configuration.
+
+### Managing LLM keys during development
+
+**One-time setup.** The settings come from one git-ignored file, `.env` at the repository root. It is never committed.
+
+```sh
+cp .env.example .env     # then edit .env: set the sources you want, comment out the others
+```
+
+`scripts/llm-env.sh` reads `.env` by parsing it, never by executing it. A shell variable of the same name never counts: a key exported in your shell for other work is ignored, and only the line in `.env` is used. A commented-out or empty line turns that source off. No application reads `.env`; the apps get ConfigMaps and Secrets.
+
+| Setting in `.env` | Source | Notes |
+|---|---|---|
+| `LLM_LAN_OLLAMA_URL` | Ollama on the local network | The machine must have `gemma4:31b` pulled (fixed model; it may serve others). If it also has `bge-m3`, `llm-status` prints the id `lan-embed` and `llm-enable` adds that copy to knowledge's embeddings (see below). |
+| `OPENROUTER_API_KEY` | OpenRouter | Model `z-ai/glm-5.3-flash`. |
+| `LLM_VERTEX_ACCOUNT` | Vertex AI | The gcloud account the token is taken from; needs `gcloud` on your machine. |
+| `LLM_VERTEX_PROJECT` | Vertex AI | The Google Cloud project. Model `gemini-2.5-flash-lite`. |
+| `LLM_VERTEX_LOCATION` | Vertex AI | Default `us-central1`. |
+| `LLM_LOCAL_OLLAMA_URL` | Local Ollama | Default `http://127.0.0.1:11434`; used by `llm-status` to check the laptop's Ollama. |
+
+**Workflow.**
+
+1. `task llm-status` shows which sources are available and why the others are not (read-only; exit 1 if none).
+2. `task llm-enable` adds the available ones. It fails with a message, changing nothing, when no source at all is available; with only local Ollama available it resets to the committed default.
+3. Use the apps. The router tries the highest priority first and falls back at runtime:
+
+   | Source | Model | Priority |
+   |---|---|---|
+   | LAN Ollama (`ollama-lan`) | `gemma4:31b` | 100 |
+   | OpenRouter (`openrouter`) | `z-ai/glm-5.3-flash` | 90 |
+   | Vertex AI (`vertex`) | `gemini-2.5-flash-lite` | 80 |
+   | Local Ollama (committed default) | unchanged | 10 |
+
+   **Knowledge's embeddings.** Knowledge's embedding model `bge-m3` is in the space `bge-m3`, and the router falls back only between models of the same space. `llm-status` prints the id `lan-embed` when the LAN machine also has `bge-m3`; `llm-enable` then adds a second copy of the model (`bge-m3-lan`, priority 100) in the same space and dimension, and the local Ollama's `bge-m3` stays the fallback. Without `lan-embed`, embeddings stay on the local Ollama; OpenRouter and Vertex AI never carry them.
+
+4. To turn one source off, comment its line out of `.env` and run `task llm-enable` again; that removes the source, its Secrets and its models entries. `task llm-disable` removes everything.
+
+To compare Ollama with OpenRouter, enable one of them, run the same requests, then comment it out, enable the other and run them again (local Ollama stays as the priority 10 fallback). Compare the figures on the assistant's Usage page (and the Attempts table of each task), on phraseforge's Usage page (admins) and on knowledge's Models menu (Models, Usage and Attempts, open to any signed-in user), which show calls, tokens and cost per provider and model.
+
+```sh
+task llm-status
+task llm-enable
+# ... try the apps ...
+# comment OPENROUTER_API_KEY out of .env, then:
+task llm-enable
+task llm-disable        # when you are done
+```
+
+**Where things live in the cluster.** Generated models files go to the git-ignored `.k3d/llm/` and hold only `env:` and `file:` references. No secret is written to a file or a ConfigMap, and none is printed or passed on a command line.
+
+| What | Where (namespace `app`) |
+|---|---|
+| OpenRouter key | Secrets `assistant-llm-keys`, `phraseforge-llm-keys` and `knowledge-llm-keys`, key `OPENROUTER_API_KEY`; optional env in each Deployment |
+| Vertex token | Secrets `assistant-vertex`, `phraseforge-vertex` and `knowledge-vertex`, key `token`; optional volumes at `/etc/assistant-vertex`, `/etc/phraseforge-vertex` and `/etc/knowledge-vertex` |
+| Models files | ConfigMaps `assistant-models`, `phraseforge-models` and `knowledge-models` |
+
+`task deploy-assistant` and `task deploy-phraseforge` use the generated files while `.k3d/llm/` exists, so a redeploy keeps the setup.
+
+**Vertex token.** The token is valid about an hour. `task llm-refresh-vertex-token` writes a new one into the Vertex Secrets without restarting a pod. It needs `LLM_VERTEX_ACCOUNT` in `.env` and Vertex enabled by `llm-enable`. It replaces the removed `refresh-assistant-vertex-token`; the old variable `ASSISTANT_VERTEX_ACCOUNT` is gone, with no fallback.
+
+**The one rule: nothing you made by hand is overwritten.** `llm-enable` never overwrites a key or Secret it did not create. It stops, names the key or Secret, and changes nothing. Disable and re-enable remove only what `llm-enable` created (marked by the annotations `llm.k8s-lab/managed-keys` and `llm.k8s-lab/managed`); other keys in a Secret, for example `ANTHROPIC_API_KEY`, are kept.
+
+If `llm-enable` stops with a message such as `Secret ... already exists and llm-enable did not create it; refusing to overwrite it`, a Secret of that name was made by hand (or by an older task). Either delete it, as the message says (`task run-k8s -- -n app delete secret <name>`), or remove the source from `.env` to keep using the Secret as it is. For `Secret ... already has an OPENROUTER_API_KEY that llm-enable did not add`, remove that key from the Secret (`task run-k8s -- -n app edit secret <name>`) or comment `OPENROUTER_API_KEY` out of `.env`.
+
+### Known gaps
+
+- **Vertex AI in production is not implemented.** The vertex provider reads one OAuth access token (valid about an hour) from `api_key_from` (`env:` or `file:`). Nothing in the repository mints or refreshes tokens in production; only the dev tasks do, and they need `gcloud` on a laptop and the `task` command, which exists only in development. A token stored once in a production secret would stop working within the hour. Two options, neither built nor tested: (a) the provider obtains and renews its own token from a service account key or Workload Identity (Application Default Credentials), which is a router change; (b) a refresher (CronJob or sidecar) writes a fresh token into the file the pod reads. Production keeps using OpenRouter and Ollama keys.
+- **Knowledge's embedding models are on Ollama and OpenAI-compatible providers only.** Vertex AI and Anthropic providers cannot carry an embedding model, so `llm-enable` never routes embeddings to them. Dictionary has no LLM configuration.
 
 ## Shared infrastructure
 

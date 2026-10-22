@@ -41,7 +41,7 @@ the migration Job and the database alone.
 Model calls go through a router. Two mounted files configure it, and per-kind admin overrides pick model tags:
 
 - **`config.yaml`** (`CONFIG_FILE`, default `/etc/phraseforge/config.yaml`): the purposes (transcription, translation, title, ...) with their prompt, numCtx, timeouts and `model_tags`, plus ingest limits and retention.
-- **`models.yaml`** (`PHRASEFORGE_MODELS_FILE`, default `/etc/phraseforge/models.yaml`): the providers and models the router can call. Unlike `config.yaml` it is required: the server does not start without it (`migrate` does not read it). A commented example is `models.example.yaml`; the dev cluster's is in `k8s/configmap.yaml`.
+- **`models.yaml`** (`PHRASEFORGE_MODELS_FILE`, default `/etc/phraseforge/models.yaml`): the providers and models the router can call. Unlike `config.yaml` it is required: the server does not start without it (`migrate` does not read it). A commented example is `models.example.yaml`; the dev cluster's is `models.dev.yaml`, which the Taskfile builds into the ConfigMap `phraseforge-models` (mounted with `config.yaml` at `/etc/phraseforge`).
 
 Both are read at startup: restart the pod after a change.
 
@@ -112,14 +112,17 @@ What happens without a needed credential (an empty or unset variable, an unreada
 **Where the value comes from:**
 
 - **In a cluster:** the Helm chart repository's `jdp-frontend` chart reads the keys from its secret store entry for phraseforge through an ExternalSecret, and the Deployment passes them as environment variables (each optional, so a missing one never blocks the pod). The chart's values say which keys are copied; add the key to the secret store first, then enable it in the values (a missing remote key would fail the whole ExternalSecret, the database credentials with it), and restart the pod. Its `models.yaml` names them as `api_key_from: env:NAME`.
-- **In the dev cluster:** `k8s/deployment.yaml` reads `OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the Secret `phraseforge-llm-keys` in the `app` namespace, each marked `optional: true`. `task deploy-phraseforge` does not create that Secret, so by default these variables are unset. To supply keys, put `NAME=value` lines in a file outside the repository and run (with the lab's kubeconfig, as the Taskfile's `KUBECTL` does):
+- **In the dev cluster:** `k8s/deployment.yaml` reads `OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the Secret `phraseforge-llm-keys` in the `app` namespace, each marked `optional: true`, so by default these variables are unset (`task deploy-phraseforge` does not create that Secret). To manage `OPENROUTER_API_KEY` there, use `task llm-enable` (the key comes from the git-ignored `.env`; it also adds the LAN Ollama, OpenRouter and Vertex models): see [LLM providers in the dev cluster](../README.md#llm-providers-in-the-dev-cluster) in the root README. For the other keys, create the Secret by hand: put `NAME=value` lines in a file outside the repository and run (with the lab's kubeconfig, as the Taskfile's `KUBECTL` does):
 
   ```sh
   kubectl -n app create secret generic phraseforge-llm-keys --from-env-file=<file> --dry-run=client -o yaml | kubectl -n app apply -f -
   kubectl -n app rollout restart deployment/phraseforge
   ```
 
-  Then name the variable in a provider of the dev `models.yaml` (`k8s/configmap.yaml`), for example `api_key_from: env:OPENROUTER_API_KEY`, and apply it. That file has one Ollama provider with `api_key_from: ""`. For a variable with another name, add it to the `env` list of `k8s/deployment.yaml` the same way. Vertex is not wired in the dev deployment: it would need a Secret mounted into the pod and `api_key_from: file:` pointing at it, as the assistant's dev flow does.
+  Then name the variable in a provider of the dev `models.yaml` (`models.dev.yaml`, which `task deploy-phraseforge` rebuilds into the ConfigMap `phraseforge-models`), for example `api_key_from: env:ANTHROPIC_API_KEY`, and run `task deploy-phraseforge`. That file has one Ollama provider with `api_key_from: ""`. For a variable with another name, add it to the `env` list of `k8s/deployment.yaml` the same way.
+
+  The rule: `task llm-enable` never overwrites a key or Secret it did not create. It stops and names it, so a hand-made `phraseforge-llm-keys` stays untouched, and its other keys (for example `ANTHROPIC_API_KEY`) are kept when `llm-enable` adds or removes `OPENROUTER_API_KEY`. `llm-disable` and a repeated `llm-enable` remove only what `llm-enable` created.
+- **Vertex in the dev cluster:** the Deployment mounts the optional Secret `phraseforge-vertex` (key `token`) at `/etc/phraseforge-vertex`. `task llm-enable` creates it from your gcloud account (`LLM_VERTEX_ACCOUNT` and `LLM_VERTEX_PROJECT` in `.env`) and adds a `vertex` provider reading `file:/etc/phraseforge-vertex/token`; the token is valid about an hour, and `task llm-refresh-vertex-token` writes a new one. Production Vertex is not implemented: see [Known gaps](../README.md#known-gaps) in the root README.
 
 ### Custom request headers
 

@@ -42,9 +42,41 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_PASSWORD
+            # Provider API keys: optional. They come from the Secret knowledge-llm-keys,
+            # which `task llm-enable` or you create; without it these variables are
+            # unset. models.yaml names one through api_key_from: env:NAME, and the
+            # embeddings block of config.yaml reads the key of its provider. A key
+            # never goes in a manifest.
+            - name: OLLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: knowledge-llm-keys
+                  key: OLLAMA_API_KEY
+                  optional: true
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: knowledge-llm-keys
+                  key: OPENROUTER_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: knowledge-llm-keys
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: knowledge-llm-keys
+                  key: OPENAI_API_KEY
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /etc/knowledge
+              readOnly: true
+            - name: vertex
+              mountPath: /etc/knowledge-vertex
               readOnly: true
           readinessProbe:
             httpGet:
@@ -59,9 +91,22 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 10
       volumes:
+        # config.yaml (knowledge-config) and models.yaml (knowledge-models, built by
+        # the Taskfile from models.dev.yaml or a generated file) in one directory.
         - name: config
-          configMap:
-            name: knowledge-config
+          projected:
+            sources:
+              - configMap:
+                  name: knowledge-config
+              - configMap:
+                  name: knowledge-models
+        # The access token for Vertex AI, written by `task llm-enable`; models.yaml
+        # names it as the vertex provider's api_key_from (file:). Optional so the pod
+        # starts without it; the provider is then skipped (missing_credentials).
+        - name: vertex
+          secret:
+            secretName: knowledge-vertex
+            optional: true
 ---
 apiVersion: v1
 kind: Service

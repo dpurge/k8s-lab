@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `models.yaml` accepts `embedding_space` and `dimension` on an embedding model (both or neither; only an `ollama` or `openai` provider can carry one).
+- Optional Secret volume `phraseforge-vertex` (key `token`) at `/etc/phraseforge-vertex` in the dev Deployment, for a Vertex AI token written by `task llm-enable`.
 - Main menu in the top bar: Documents and, for admins, Tasks, Usage and Config; the content sections (Texts, Dialogs, Vocabulary, Models) and the language filter are in the left sidebar of Documents, and Usage and Config list their own pages there.
 - Usage section for admins (`#/usage`) with a sidebar: Usage (calls, tokens and cost per user, provider and model), Models, Performance and Attempts.
 - The user is recorded on jobs and model calls (nullable `user_id` on `jobs` and `llm_calls`, added by `phraseforge migrate`, which the deploy runs); a retry keeps the original job's user, and old rows show a dash.
@@ -68,6 +70,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The Attempts table cuts a long provider id to one line, with the full id as its tooltip, like the model column (it takes effect at the next deploy).
+- The dev cluster's `models.yaml` is in its own ConfigMap `phraseforge-models`, built by the Taskfile from `phraseforge/models.dev.yaml`, no longer a key of `phraseforge-config`; the Deployment and migrate Job mount both.
+- The Vertex provider's error texts no longer name a dev `task` command: a missing credential gives the `api_key_from` error alone, and a 401/403 says to renew the credential that `api_key_from` points to.
 - Jobs are called Tasks in the UI, and Clear removes completed and cancelled tasks (`POST /api/v1/admin/jobs/clear` is unchanged).
 - Admin is now Config, with its tabs as sidebar pages (Permissions, IME, LLM, Languages, Export/import).
 - `GET /api/v1/admin/llm-calls` is paged: `offset` parameter, response `{items,total,limit,offset}`, default `limit` 25 instead of 50 (at most 200).

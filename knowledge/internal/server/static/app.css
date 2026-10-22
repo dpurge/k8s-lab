@@ -20,6 +20,12 @@ dp-shell {
   --dp-shell-main-padding: 1rem;
 }
 
+/* The model pages are wide tables and their panels are short: a narrower sidebar
+   leaves the table the room for all its columns. */
+dp-shell:has(#modelsNav.active) {
+  --dp-shell-sidebar-width: 15rem;
+}
+
 a.brand {
   font-weight: 700;
   font-size: 1.15rem;
@@ -52,6 +58,11 @@ dp-field {
   a.brand,
   #userEmail {
     display: none;
+  }
+  /* Four menu items share the top bar with "Log out" and the theme button: the
+     menu strip scrolls, so it gives way, and "Log out" keeps its room. */
+  dp-shell::part(actions) {
+    flex-shrink: 0;
   }
   .user dp-button {
     --dp-button-padding: 0.45rem 0.8rem;
@@ -89,6 +100,7 @@ dp-field {
 }
 
 input,
+select,
 textarea {
   font: inherit;
   background: var(--surface);

@@ -54,6 +54,22 @@ type Operation struct {
 	UpdatedAt time.Time
 }
 
+// operationIDKey is the context key of the id of the operation a handler runs.
+type operationIDKey struct{}
+
+// WithOperationID returns ctx carrying the id of the operation being run. Run
+// does it for every handler, so what the handler calls (a model call, say) can
+// say which operation it belongs to.
+func WithOperationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, operationIDKey{}, id)
+}
+
+// OperationID is the id of the operation ctx belongs to; false outside a handler.
+func OperationID(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(operationIDKey{}).(string)
+	return id, ok && id != ""
+}
+
 // HandlerFunc performs one operation's actual work. It must not be called
 // directly by any package other than queue itself — kinds are dispatched by
 // the worker loop via the registration in Register.
@@ -245,7 +261,7 @@ func (s *Service) runOne(ctx context.Context) bool {
 	}
 
 	start := time.Now()
-	result, runErr := fn(ctx, op.Payload)
+	result, runErr := fn(WithOperationID(ctx, op.ID), op.Payload)
 	outcome := "ok"
 	if runErr != nil {
 		outcome = "error"

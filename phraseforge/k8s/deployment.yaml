@@ -88,6 +88,9 @@ spec:
             - name: config
               mountPath: /etc/phraseforge
               readOnly: true
+            - name: vertex
+              mountPath: /etc/phraseforge-vertex
+              readOnly: true
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -112,9 +115,22 @@ spec:
             periodSeconds: 5
             failureThreshold: 6
       volumes:
+        # config.yaml (phraseforge-config) and models.yaml (phraseforge-models, built
+        # by the Taskfile from models.dev.yaml or a generated file) in one directory.
         - name: config
-          configMap:
-            name: phraseforge-config
+          projected:
+            sources:
+              - configMap:
+                  name: phraseforge-config
+              - configMap:
+                  name: phraseforge-models
+        # The access token for Vertex AI, written by `task llm-enable`; models.yaml
+        # names it as the vertex provider's api_key_from (file:). Optional so the pod
+        # starts without it; the provider is then skipped (missing_credentials).
+        - name: vertex
+          secret:
+            secretName: phraseforge-vertex
+            optional: true
 ---
 apiVersion: v1
 kind: Service

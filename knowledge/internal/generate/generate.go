@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"k8s-lab/shared/llm"
 	"knowledge/internal/config"
+	"knowledge/internal/modelrouter"
 	"knowledge/internal/queue"
 )
 
@@ -40,22 +40,19 @@ type Service struct {
 	items   ItemWriteback
 }
 
-// purposeClient is one configured purpose (generateTitle or
-// generateSummary): its own LLM client, model (for logging), and prompt.
+// purposeClient is one configured purpose (generate_title or
+// generate_summary): its model call and its prompt.
 type purposeClient struct {
-	llm    *llm.Client
-	model  string
+	llm    modelrouter.Completer
 	prompt string
 }
 
-func newPurposeClient(cfg config.Config, p config.PurposeConfig) purposeClient {
-	return purposeClient{llm: llm.New(cfg.LLM(p)), model: p.Model, prompt: p.Prompt}
-}
-
-func New(cfg config.Config, q *queue.Service, items ItemWriteback) *Service {
+// New builds the service over the model calls for the title and summary
+// purposes.
+func New(cfg config.Config, q *queue.Service, items ItemWriteback, title, summary modelrouter.Completer) *Service {
 	return &Service{
-		title:   newPurposeClient(cfg, cfg.GenerateTitle),
-		summary: newPurposeClient(cfg, cfg.GenerateSummary),
+		title:   purposeClient{llm: title, prompt: cfg.GenerateTitle.Prompt},
+		summary: purposeClient{llm: summary, prompt: cfg.GenerateSummary.Prompt},
 		queue:   q,
 		items:   items,
 	}
@@ -185,12 +182,12 @@ func (s *Service) handleGenerate(ctx context.Context, raw json.RawMessage, pc pu
 // regardless of which path reached it.
 func (s *Service) llmComplete(ctx context.Context, pc purposeClient, body string) (string, error) {
 	start := time.Now()
-	out, err := pc.llm.Complete(ctx, []llm.Message{{Role: "system", Content: pc.prompt}, {Role: "user", Content: body}})
+	out, err := pc.llm.Complete(ctx, []modelrouter.Message{{Role: "system", Content: pc.prompt}, {Role: "user", Content: body}})
 	outcome := "ok"
 	if err != nil {
 		outcome = "error"
 	}
-	slog.Info("generate llm call", "model", pc.model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("generate llm call", "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
 	if err != nil {
 		return "", err
 	}

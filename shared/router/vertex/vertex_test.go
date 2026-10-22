@@ -181,7 +181,7 @@ func TestEachHTTPStatusIsClassifiedForTheBreaker(t *testing.T) {
 func TestAnExpiredTokenSaysHowToRefreshIt(t *testing.T) {
 	f := newFake(t, 401, `{"error":{"message":"invalid authentication credentials","status":"UNAUTHENTICATED"}}`)
 	_, err := provider(t, f, secretToken).Complete(context.Background(), prov, model, router.Request{Input: "i"})
-	if !strings.Contains(err.Error(), "refresh-assistant-vertex-token") || !strings.Contains(err.Error(), "UNAUTHENTICATED") {
+	if !strings.Contains(err.Error(), "api_key_from") || !strings.Contains(err.Error(), "expired") || !strings.Contains(err.Error(), "UNAUTHENTICATED") || strings.Contains(err.Error(), "task ") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -262,7 +262,7 @@ func TestAMissingOrEmptyTokenIsAClearClientErrorNamingTheSourceAndNoRequestIsMad
 	for name, c := range cases {
 		c.prov.Type, c.prov.Project, c.prov.Location = "vertex", "p", "l"
 		_, err := newP().Complete(context.Background(), c.prov, model, router.Request{Input: "i"})
-		if failure(t, err).Kind != router.FailClient || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "refresh-assistant-vertex-token") {
+		if failure(t, err).Kind != router.FailClient || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), "task ") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

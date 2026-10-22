@@ -42,6 +42,12 @@ spec:
               mountPath: /etc/phraseforge
               readOnly: true
       volumes:
+        # config.yaml (phraseforge-config) and models.yaml (phraseforge-models, built
+        # by the Taskfile from models.dev.yaml or a generated file) in one directory.
         - name: config
-          configMap:
-            name: phraseforge-config
+          projected:
+            sources:
+              - configMap:
+                  name: phraseforge-config
+              - configMap:
+                  name: phraseforge-models

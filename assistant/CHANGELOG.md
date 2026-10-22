@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `models.yaml` accepts `embedding_space` and `dimension` on an embedding model (both or neither; only an `ollama` or `openai` provider can carry one), and `assistant models validate` checks them.
+- Optional `OPENROUTER_API_KEY` environment variable in the dev Deployment, read from the Secret `assistant-llm-keys` (created by `task llm-enable` or by hand).
 - Admin: the Usage page can group by user, provider or model and shows a provider column; the Models page is separate; a new Attempts page lists every model call, newest first, failed ones included, with paging and a period filter; a side panel for the Usage section links the three pages.
 - API: `GET /api/v1/llm-calls?since=&limit=&offset=` (limit 1-200, default 25) returns `{items,total,limit,offset}`.
 - Delegation: a workflow state with `delegate: true` may hand a request to another workflow (a subagent) that declares `intents`; the child runs in the same conversation with its own state and limits, its result comes back to the parent, its steps continue the parent's trace (`task_steps.workflow_id` and `depth`, upgraded by `assistant migrate`) and its tokens count against the parent's budget; depth is limited to 2. `GET /api/v1/workflows` shows `intents`. New workflow `orchestrator` (tag `orchestrator`) routes each message to the workflow that fits, answers itself, or asks one question; the chat shows `→ workflow: reason` and `Handled by <workflow>`; the admin trace marks the delegated steps. The demo model plays the orchestrator by keywords in the dev cluster.
@@ -45,6 +47,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The Attempts table cuts a long provider id to one line, with the full id as its tooltip, like the model column (it takes effect at the next deploy).
+- The Vertex provider's error texts no longer name a dev `task` command: a missing credential gives the `api_key_from` error alone, and a 401/403 says to renew the credential that `api_key_from` points to.
 - The usage API (`GET /api/v1/usage`) groups by provider as well as user and model: rows carry `provider_id`.
 - The Usage, Models and Attempts tables are the shared UI library's components (`dp-usage-table`, `dp-model-table`, `dp-attempt-table`); the models table columns are provider, model, tags, priority and availability.
 - The shared UI library (`shared/ui`) gained usage, model and attempt tables and shared formatting, which this app now uses.

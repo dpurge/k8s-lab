@@ -29,14 +29,14 @@ function extractBetween(source, startMarker, endMarker) {
   return source.slice(start, end + endMarker.length);
 }
 
-// The nav wiring: TAB_IDS through the documentsNav listener.
+// The nav wiring: TAB_IDS through the modelsNav listener.
 const wiringSource = extractBetween(
   appJsSource,
-  'const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab", "tasksTab"];',
-  'documentsNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id));',
+  'const TAB_IDS = ["knowledgeTab", "chatTab", "ingestTab", "tasksTab", "modelsTab", "usageTab", "attemptsTab"];',
+  'modelsNav.addEventListener("dp-tabs-select", (event) => showTab(event.detail.id));',
 );
 // showIngestView and showTab, verbatim and contiguous (showKnowledgeView is stubbed).
-const functionsSource = extractBetween(appJsSource, "function showIngestView(view) {", 'if (tab === "tasks") run(loadJobs);\n}');
+const functionsSource = extractBetween(appJsSource, "function showIngestView(view) {", 'if (tab === "attempts") run(() => loadAttemptsPage(1));\n}');
 // The counts: navCounts, updateNavCount and its first call.
 const countsSource = extractBetween(appJsSource, "const navCounts = { drafts: null, tasks: null };", 'updateNavCount("drafts", null);');
 
@@ -47,12 +47,15 @@ const build = new Function(
   "loadDrafts",
   "loadJobs",
   "showKnowledgeView",
+  "loadModelsPage",
+  "loadUsagePage",
+  "loadAttemptsPage",
   `
   const $ = (id) => document.getElementById(id);
   ${functionsSource}
   ${wiringSource}
   ${countsSource}
-  return { mainNav, documentsNav, showTab, updateNavCount, TAB_IDS };
+  return { mainNav, documentsNav, modelsNav, showTab, updateNavCount, TAB_IDS };
   `,
 );
 
@@ -60,10 +63,14 @@ function harnessHTML() {
   return `
     <header><dp-tabs id="mainNav"></dp-tabs></header>
     <dp-tabs id="documentsNav" class="panel active"></dp-tabs>
+    <dp-tabs id="modelsNav" class="panel"></dp-tabs>
     <aside id="knowledgeAside" class="panel active"></aside>
     <aside id="chatAside" class="panel"></aside>
     <aside id="ingestAside" class="panel"></aside>
     <aside id="tasksAside" class="panel"></aside>
+    <aside id="modelsAside" class="panel"></aside>
+    <aside id="usageAside" class="panel"></aside>
+    <aside id="attemptsAside" class="panel"></aside>
     <section id="knowledgeTab" class="tab active"></section>
     <section id="chatTab" class="tab"></section>
     <section id="ingestTab" class="tab">
@@ -71,6 +78,9 @@ function harnessHTML() {
       <div id="ingestDetailView" class="view"></div>
     </section>
     <section id="tasksTab" class="tab"><div id="jobs"></div></section>
+    <section id="modelsTab" class="tab"></section>
+    <section id="usageTab" class="tab"></section>
+    <section id="attemptsTab" class="tab"></section>
   `;
 }
 
@@ -127,7 +137,7 @@ customElements.define("dp-tabs", StandInTabs);
 async function setUp() {
   document.body.innerHTML = harnessHTML();
   await settle();
-  const calls = { loadDrafts: 0, loadJobs: 0, loadChats: 0 };
+  const calls = { loadDrafts: 0, loadJobs: 0, loadChats: 0, loadModelsPage: 0, loadUsagePage: 0, loadAttemptsPage: [] };
   const wiring = build(
     document,
     (fn) => fn(),
@@ -135,6 +145,9 @@ async function setUp() {
     async () => void calls.loadDrafts++,
     async () => void calls.loadJobs++,
     () => {}, // showKnowledgeView: the documents list is out of scope here
+    async () => void calls.loadModelsPage++,
+    async () => void calls.loadUsagePage++,
+    async (page) => void calls.loadAttemptsPage.push(page),
   );
   return { wiring, calls };
 }
@@ -143,10 +156,13 @@ const labels = (tabs) => tabs.items.map((i) => i.label);
 const ids = (tabs) => tabs.items.map((i) => i.id);
 const isActive = (id) => document.getElementById(id).classList.contains("active");
 
-test("the menu is Documents, Chat, Tasks; the Documents list is Documents, Drafts", async () => {
+test("the menu is Documents, Chat, Tasks, Models; the Documents list is Documents, Drafts; the Models list is Models, Usage, Attempts", async () => {
   const { wiring } = await setUp();
-  assert.deepEqual(ids(wiring.mainNav), ["documents", "chat", "tasks"]);
-  assert.deepEqual(labels(wiring.mainNav), ["Documents", "Chat", "Tasks"]);
+  assert.deepEqual(ids(wiring.mainNav), ["documents", "chat", "tasks", "llm"]);
+  assert.deepEqual(labels(wiring.mainNav), ["Documents", "Chat", "Tasks", "Models"]);
+  assert.deepEqual(ids(wiring.modelsNav), ["models", "usage", "attempts"]);
+  assert.deepEqual(labels(wiring.modelsNav), ["Models", "Usage", "Attempts"]);
+  assert.equal(wiring.modelsNav.active, "models");
   assert.deepEqual(ids(wiring.documentsNav), ["knowledge", "ingest"]);
   assert.deepEqual(labels(wiring.documentsNav), ["Documents", "Drafts"]);
   assert.equal(wiring.mainNav.active, "documents");
@@ -157,19 +173,19 @@ test("showTab shows the tab's workspace and panel, the Documents list only with 
   const { wiring } = await setUp();
   const state = () => ({
     workspaces: wiring.TAB_IDS.map(isActive),
-    panels: ["knowledgeAside", "chatAside", "ingestAside", "tasksAside"].map(isActive),
+    panels: ["knowledgeAside", "chatAside", "ingestAside", "tasksAside", "modelsAside", "usageAside", "attemptsAside"].map(isActive),
     list: isActive("documentsNav"),
     nav: wiring.mainNav.active,
     page: wiring.documentsNav.active,
   });
   wiring.showTab("chat");
-  assert.deepEqual(state(), { workspaces: [false, true, false, false], panels: [false, true, false, false], list: false, nav: "chat", page: "knowledge" });
+  assert.deepEqual(state(), { workspaces: [false, true, false, false, false, false, false], panels: [false, true, false, false, false, false, false], list: false, nav: "chat", page: "knowledge" });
   wiring.showTab("ingest");
-  assert.deepEqual(state(), { workspaces: [false, false, true, false], panels: [false, false, true, false], list: true, nav: "documents", page: "ingest" });
+  assert.deepEqual(state(), { workspaces: [false, false, true, false, false, false, false], panels: [false, false, true, false, false, false, false], list: true, nav: "documents", page: "ingest" });
   wiring.showTab("tasks");
-  assert.deepEqual(state(), { workspaces: [false, false, false, true], panels: [false, false, false, true], list: false, nav: "tasks", page: "ingest" });
+  assert.deepEqual(state(), { workspaces: [false, false, false, true, false, false, false], panels: [false, false, false, true, false, false, false], list: false, nav: "tasks", page: "ingest" });
   wiring.showTab("knowledge");
-  assert.deepEqual(state(), { workspaces: [true, false, false, false], panels: [true, false, false, false], list: true, nav: "documents", page: "knowledge" });
+  assert.deepEqual(state(), { workspaces: [true, false, false, false, false, false, false], panels: [true, false, false, false, false, false, false], list: true, nav: "documents", page: "knowledge" });
 });
 
 test("choosing Documents in the menu opens the documents page; Drafts in the list opens the drafts and keeps the menu on Documents", async () => {
@@ -220,12 +236,55 @@ test("the Drafts count is in the Documents list, the Tasks count in the menu, an
   wiring.showTab("ingest");
   wiring.updateNavCount("drafts", 3);
   assert.deepEqual(labels(wiring.documentsNav), ["Documents", "Drafts (3)"]);
-  assert.deepEqual(labels(wiring.mainNav), ["Documents", "Chat", "Tasks"], "the tasks count is not loaded yet");
+  assert.deepEqual(labels(wiring.mainNav), ["Documents", "Chat", "Tasks", "Models"], "the tasks count is not loaded yet");
   assert.equal(wiring.documentsNav.active, "ingest");
   assert.equal(wiring.mainNav.active, "documents");
 
   wiring.updateNavCount("tasks", 0);
-  assert.deepEqual(labels(wiring.mainNav), ["Documents", "Chat", "Tasks (0)"]);
+  assert.deepEqual(labels(wiring.mainNav), ["Documents", "Chat", "Tasks (0)", "Models"]);
   assert.deepEqual(labels(wiring.documentsNav), ["Documents", "Drafts (3)"], "one count does not clobber the other");
   assert.equal(wiring.mainNav.active, "documents");
+});
+
+test("showTab shows a model page with its panel and the Models list, and marks the menu Models", async () => {
+  const { wiring } = await setUp();
+  const state = () => ({
+    workspaces: ["modelsTab", "usageTab", "attemptsTab"].map(isActive),
+    panels: ["modelsAside", "usageAside", "attemptsAside"].map(isActive),
+    list: isActive("modelsNav"),
+    documentsList: isActive("documentsNav"),
+    nav: wiring.mainNav.active,
+    page: wiring.modelsNav.active,
+  });
+  wiring.showTab("usage");
+  assert.deepEqual(state(), { workspaces: [false, true, false], panels: [false, true, false], list: true, documentsList: false, nav: "llm", page: "usage" });
+  wiring.showTab("attempts");
+  assert.deepEqual(state(), { workspaces: [false, false, true], panels: [false, false, true], list: true, documentsList: false, nav: "llm", page: "attempts" });
+  wiring.showTab("chat");
+  assert.deepEqual(state(), { workspaces: [false, false, false], panels: [false, false, false], list: false, documentsList: false, nav: "chat", page: "attempts" });
+  wiring.showTab("knowledge");
+  assert.equal(isActive("modelsNav"), false, "the Models list belongs only to the model pages");
+  assert.equal(isActive("documentsNav"), true);
+});
+
+test("choosing Models in the menu opens the models page and loads it; the list's pages load their own data", async () => {
+  const { wiring, calls } = await setUp();
+  wiring.mainNav.querySelector('[data-id="llm"]').click();
+  await settle();
+  assert.equal(isActive("modelsTab"), true);
+  assert.equal(isActive("modelsAside"), true);
+  assert.equal(wiring.mainNav.active, "llm");
+  assert.equal(calls.loadModelsPage, 1);
+
+  wiring.modelsNav.querySelector('[data-id="usage"]').click();
+  await settle();
+  assert.equal(isActive("usageTab"), true);
+  assert.equal(wiring.mainNav.active, "llm", "the menu stays on Models");
+  assert.equal(calls.loadUsagePage, 1);
+
+  wiring.modelsNav.querySelector('[data-id="attempts"]').click();
+  await settle();
+  assert.equal(isActive("attemptsTab"), true);
+  assert.deepEqual(calls.loadAttemptsPage, [1], "the attempts open on their first page");
+  assert.equal(calls.loadDrafts + calls.loadJobs + calls.loadChats, 0, "nothing else is loaded");
 });

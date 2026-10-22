@@ -93,9 +93,14 @@ const (
 	OutcomeCanceled    = "canceled"
 )
 
+// AttemptEmbed is the Attempt.Kind of an embedding call.
+const AttemptEmbed = "embed"
+
 // Attempt is one call to one model, successful or not. The router reports every
 // attempt to its Observer; a fallback therefore leaves several.
 type Attempt struct {
+	// Kind is AttemptEmbed for an embedding call; empty for a chat completion.
+	Kind         string
 	ModelID      string
 	ProviderID   string
 	ModelName    string
@@ -164,6 +169,15 @@ func NewRouter(cfg *modelcfg.Config, providers map[string]Provider, opts ...Opti
 	for _, p := range cfg.Providers {
 		if providers[p.Type] == nil {
 			return nil, fmt.Errorf("provider %q has type %q, which has no implementation", p.ID, p.Type)
+		}
+	}
+	for _, m := range cfg.Models {
+		if !m.IsEmbedding() {
+			continue
+		}
+		p, _ := cfg.Provider(m.Provider)
+		if _, ok := providers[p.Type].(EmbeddingProvider); !ok {
+			return nil, fmt.Errorf("model %q is an embedding model, but its provider type %q has no embeddings implementation", m.ID, p.Type)
 		}
 	}
 	r := &Router{cfg: cfg, providers: providers, clock: realClock{}, newCallID: randomCallID}
@@ -255,6 +269,27 @@ func (r *Router) Select(tags []string) ([]modelcfg.Model, error) {
 // selectModels is Select that also reports the models left out, by the breaker
 // or because their provider is unusable.
 func (r *Router) selectModels(tags []string) ([]modelcfg.Model, []skippedModel, error) {
+	return r.selectEligible(tags, completeEligible(tags))
+}
+
+// completeEligible says which models may take a chat call with the tags: those
+// that have all of them, embedding models never.
+func completeEligible(tags []string) func(modelcfg.Model) string {
+	return func(m modelcfg.Model) string {
+		if m.IsEmbedding() {
+			return "is an embedding model"
+		}
+		if !HasAllTags(m.Tags, tags) {
+			return "lacks the tags"
+		}
+		return ""
+	}
+}
+
+// selectEligible is selectModels over the models for which eligible returns
+// "", the others being listed in the error with the reason it gives. tags only
+// name the call in that error.
+func (r *Router) selectEligible(tags []string, eligible func(modelcfg.Model) string) ([]modelcfg.Model, []skippedModel, error) {
 	now := r.clock.Now()
 	unusable := r.providerReasons()
 	var candidates []modelcfg.Model
@@ -263,8 +298,8 @@ func (r *Router) selectModels(tags []string) ([]modelcfg.Model, []skippedModel, 
 	var earliest time.Time
 	skippedForOtherReason := false
 	for _, m := range r.cfg.Models {
-		if !HasAllTags(m.Tags, tags) {
-			reasons = append(reasons, fmt.Sprintf("%s lacks the tags", m.ID))
+		if why := eligible(m); why != "" {
+			reasons = append(reasons, fmt.Sprintf("%s %s", m.ID, why))
 			continue
 		}
 		if reason := unusable[m.Provider]; reason != "" {
@@ -303,26 +338,60 @@ func (r *Router) selectModels(tags []string) ([]modelcfg.Model, []skippedModel, 
 	return candidates, skipped, nil
 }
 
+// callSpec describes one routed call: which models may take it and how to make
+// it on one of them.
+type callSpec struct {
+	kind     string                      // Attempt.Kind
+	tags     []string                    // what the call asked for, for logs, errors and attempts
+	eligible func(modelcfg.Model) string // "" when a model may take the call, else why not
+	invoke   func(ctx context.Context, p modelcfg.Provider, m modelcfg.Model) (inputTokens, outputTokens int, err error)
+}
+
 // Complete sends the request to the best available model and falls back down
 // the list when one fails. A canceled context ends the call at once; it is not
 // held against any model. Every call after model selection leaves log lines
-// that share a call id; see the package documentation.
+// that share a call id; see the package documentation. Embedding models never
+// take it.
 func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
-	if err := ctx.Err(); err != nil {
+	var resp Response
+	winner, err := r.route(ctx, callSpec{
+		tags: req.Tags,
+		invoke: func(ctx context.Context, prov modelcfg.Provider, m modelcfg.Model) (int, int, error) {
+			var err error
+			resp, err = r.providers[prov.Type].Complete(ctx, prov, m, req)
+			return resp.InputTokens, resp.OutputTokens, err
+		},
+	})
+	if err != nil {
 		return Response{}, err
+	}
+	resp.ModelID = winner
+	return resp, nil
+}
+
+// route runs spec on the best available eligible model and falls back down the
+// list when one fails, returning the id of the model that answered. It is the
+// chain Complete and Embed share: selection, the breaker, attempts, logs.
+func (r *Router) route(ctx context.Context, spec callSpec) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	if r.callCheck != nil {
 		if err := r.callCheck(ctx); err != nil {
-			return Response{}, err
+			return "", err
 		}
 	}
 	started := r.clock.Now()
-	log := r.newCallLog(r.newCallID(), req.Tags)
-	candidates, skipped, err := r.selectModels(req.Tags)
+	log := r.newCallLog(r.newCallID(), spec.tags)
+	eligible := spec.eligible
+	if eligible == nil {
+		eligible = completeEligible(spec.tags)
+	}
+	candidates, skipped, err := r.selectEligible(spec.tags, eligible)
 	if err != nil {
 		log.noModel(ctx, r.modelIDs())
 		log.done(ctx, callSummary{outcome: callFailed, total: r.clock.Now().Sub(started)})
-		return Response{}, err
+		return "", err
 	}
 	candidateIDs := make([]string, len(candidates))
 	for i, m := range candidates {
@@ -342,7 +411,7 @@ func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
 	for i, m := range candidates {
 		if err := ctx.Err(); err != nil {
 			finish(callCanceled, "", attempts > 1)
-			return Response{}, err
+			return "", err
 		}
 		// An earlier attempt in this call may have taken the machine down.
 		if until, down := r.state.unavailableUntil(m, r.clock.Now()); down {
@@ -353,24 +422,24 @@ func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
 		provider, _ := r.cfg.Provider(m.Provider)
 		attemptStart := r.clock.Now()
 		attempts++
-		resp, err := r.providers[provider.Type].Complete(ctx, provider, m, req)
+		inputTokens, outputTokens, err := spec.invoke(ctx, provider, m)
 		elapsed := r.clock.Now().Sub(attemptStart)
 
 		attempt := Attempt{
-			ModelID: m.ID, ProviderID: m.Provider, ModelName: m.Name, Tags: req.Tags,
+			Kind:    spec.kind,
+			ModelID: m.ID, ProviderID: m.Provider, ModelName: m.Name, Tags: spec.tags,
 			StartedAt: attemptStart, Duration: elapsed,
 		}
 		if err == nil {
 			attempt.Outcome = OutcomeOK
-			attempt.InputTokens, attempt.OutputTokens = resp.InputTokens, resp.OutputTokens
+			attempt.InputTokens, attempt.OutputTokens = inputTokens, outputTokens
 			r.observe(ctx, attempt)
 			log.attempt(ctx, attempts, len(candidates), provider.Type, attempt, nil)
 			if rec := r.state.success(m); rec.wasHeld || rec.failures > 0 {
 				log.breakerClosed(ctx, m.ID, rec.failures)
 			}
-			resp.ModelID = m.ID
 			finish(callOK, m.ID, i > 0)
-			return resp, nil
+			return m.ID, nil
 		}
 
 		failure := classify(err)
@@ -385,7 +454,7 @@ func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
 		if failure.Kind == FailCanceled {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				finish(callCanceled, "", attempts > 1)
-				return Response{}, ctxErr
+				return "", ctxErr
 			}
 			// The provider gave up on its own while the caller still waits: not the
 			// model's fault, so the breaker is not told, but the next model may answer.
@@ -396,7 +465,7 @@ func (r *Router) Complete(ctx context.Context, req Request) (Response, error) {
 		failed = append(failed, AttemptError{ModelID: m.ID, Err: failure})
 	}
 	finish(callFailed, "", attempts > 1)
-	return Response{}, &AllFailedError{Tags: req.Tags, Attempts: failed}
+	return "", &AllFailedError{Tags: spec.tags, Attempts: failed}
 }
 
 // reportTransition logs a model or provider the breaker has just taken out of

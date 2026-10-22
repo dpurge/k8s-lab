@@ -369,3 +369,75 @@ func TestPriorityZeroAndTagsWithDigitsAndHyphensAreAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+const embeddingFile = `providers:
+  - id: laptop
+    type: ollama
+    base_url: http://localhost:11434
+    api_key_from: ""
+  - id: remote
+    type: openai
+    base_url: https://api.example.com/v1
+    api_key_from: env:KEY
+  - id: claude
+    type: anthropic
+    api_key_from: env:CLAUDE
+models:
+  - id: embed-laptop
+    provider: laptop
+    model: bge-m3
+    tags: [embed]
+    priority: 10
+    embedding_space: bge-m3
+    dimension: 1024
+  - id: embed-remote
+    provider: remote
+    model: text-embedding-3-small
+    tags: [embed]
+    priority: 20
+    embedding_space: openai-small
+    dimension: 1536
+`
+
+func TestEmbeddingModelsCarryASpaceAndADimension(t *testing.T) {
+	c, err := load(t, embeddingFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Models[0]; !got.IsEmbedding() || got.EmbeddingSpace != "bge-m3" || got.Dimension != 1024 {
+		t.Errorf("model = %+v, want an embedding model of space bge-m3 and dimension 1024", got)
+	}
+	if c.Models[0].EmbeddingSpace == c.Models[1].EmbeddingSpace {
+		t.Error("the two models should be in different spaces")
+	}
+	c2, err := load(t, valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Models[0].IsEmbedding() {
+		t.Error("a model without embedding_space is not an embedding model")
+	}
+}
+
+func TestEmbeddingSpaceAndDimensionComeTogetherAndFitAProvider(t *testing.T) {
+	cases := []struct{ name, change, want string }{
+		{"space without dimension", "    embedding_space: bge-m3\n", "has embedding_space but no dimension"},
+		{"dimension without space", "    dimension: 1024\n", "has dimension but no embedding_space"},
+		{"bad space name", "    embedding_space: BGE_M3\n    dimension: 4\n", "embedding_space"},
+		{"zero dimension", "    embedding_space: bge-m3\n    dimension: 0\n", "dimension"},
+		{"negative dimension", "    embedding_space: bge-m3\n    dimension: -3\n", "dimension"},
+	}
+	for _, c := range cases {
+		doc := "providers:\n  - id: laptop\n    type: ollama\n    base_url: http://localhost:11434\n    api_key_from: \"\"\nmodels:\n  - id: m\n    provider: laptop\n    model: x\n    tags: [embed]\n    priority: 1\n" + c.change
+		_, err := load(t, doc)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want it to contain %q", c.name, err, c.want)
+		}
+	}
+	// A provider type with no embeddings endpoint is refused, naming model, provider and type.
+	doc := strings.Replace(embeddingFile, "  - id: embed-remote\n    provider: remote", "  - id: embed-remote\n    provider: claude", 1)
+	_, err := load(t, doc)
+	if err == nil || !strings.Contains(err.Error(), `model "embed-remote" is an embedding model, but provider "claude" has type "anthropic"`) {
+		t.Errorf("err = %v, want the anthropic embedding model refused with a clear message", err)
+	}
+}

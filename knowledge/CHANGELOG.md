@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Model routing: providers and models are in `models.yaml` (path `KNOWLEDGE_MODELS_FILE`, default `/etc/knowledge/models.yaml`, ConfigMap `knowledge-models`), and chat, title, summary, translate and embeddings go through the shared router, which falls back to the next model when one fails.
+- Embedding space: `embeddings.embedding_space` and `embeddings.dimension` name the vector space of the index; the router falls back only between embedding models of the same space and treats a vector of the wrong length as a failed attempt. Keep the space name while the index holds items made with it; a different space or dimension needs a new Qdrant collection.
+- Table `llm_calls` (one row per model attempt, no prompt, reply, text or vector), purged after `llm_calls.retention_days` (default 30, 0 keeps forever); Prometheus metrics `knowledge_llm_*` at `GET /metrics` (no login); log lines of the router carry `kind` and `operation_id`.
+- A Models item in the top bar with three pages, Models, Usage and Attempts, open to any signed-in user.
+- Optional Secrets `knowledge-llm-keys` (OLLAMA, OPENROUTER, ANTHROPIC and OPENAI keys) and `knowledge-vertex` (mounted at `/etc/knowledge-vertex`) in the dev Deployment.
+- `embeddings.fake: true` for tests and local runs without a model.
 - chat messages (both user and assistant) now render as sanitized
   Markdown HTML — headers, bold/italic, code (inline and fenced), lists
   (unordered and ordered, including the chat retrieval reference list),
@@ -63,6 +69,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Breaking change:** all `config.yaml` keys are snake_case (`bindAddr` is `bind_addr`, `qdrant.searchMinScore` is `qdrant.search_min_score`, `generateTitle` is `generate_title`, `generateSummary` is `generate_summary`, `knowledgeLanguage` is `knowledge_language`, and per purpose `numCtx` is `num_ctx` and `timeoutSeconds` is `timeout_seconds`). An old key, or an unknown one, stops the startup with a message naming the replacement. The production Helm chart (outside this repository) must change together with the image: it needs `config.yaml` in the new shape and a rendered `models.yaml`.
 - the top bar is now Documents, Chat and Tasks; the ingest drafts and the ingest form moved under Documents
   as a Drafts page (in the sidebar next to Documents), and Jobs are called Tasks and have their own tab. The
   menu shows the number of tasks and drafts.
@@ -138,6 +145,10 @@ All notable changes to this project will be documented in this file.
   re-embedding is real LLM/embedding cost, only paid when content actually
   changed. `ImportResult` gains `deleted`/`unchanged` counts alongside
   `imported`.
+
+### Removed
+
+- The `providers` block of `config.yaml`, the per-purpose `provider`, `model`, `think` and `baseURL` keys and `embeddings.provider`, `model` and `baseURL` (providers, models and their options are in `models.yaml`, a purpose lists `model_tags`), and the knowledge-specific Ollama and OpenAI embedding clients.
 
 ### Fixed
 

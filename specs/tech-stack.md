@@ -1,7 +1,7 @@
 ---
-version: 22
+version: 24
 status: approved
-updated: 2026-10-21
+updated: 2026-10-22
 ---
 
 ## Languages & runtimes
@@ -13,9 +13,9 @@ updated: 2026-10-21
 - **Chi HTTP router** (`go-chi/chi v5.3.2`) — request routing and middleware across all three applications
 - **PostgreSQL driver** (`jackc/pgx v5.10.0`) — direct pgx usage, no ORM, in all applications and shared utilities
 - **Crypto** (`golang.org/x/crypto v0.57.0`) — password hashing and bearer token generation
-- **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed by phraseforge and knowledge, and by assistant through the router's Ollama provider; it has an additive `Headers` field for custom request headers
+- **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed directly by phraseforge, and by assistant and knowledge through the router's Ollama provider; it has an additive `Headers` field for custom request headers
 - **Shared Postgres helpers** (`shared/postgres`) — database initialization and DSN utilities
-- **Prometheus client** (`prometheus/client_golang v1.25.0`) — `/metrics` endpoint, used by assistant and phraseforge
+- **Prometheus client** (`prometheus/client_golang v1.25.0`) — `/metrics` endpoint, used by assistant, phraseforge and knowledge
 - **YAML and JSON Schema** (`go.yaml.in/yaml/v3`, `santhosh-tekuri/jsonschema/v6`) — assistant's workflow files and the schemas that validate them; `go.yaml.in/yaml/v3` is the maintained fork of the archived `gopkg.in/yaml.v3`
 
 ### Frontend libraries (knowledge app only)
@@ -37,8 +37,9 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 - **Qdrant** (`qdrant/qdrant:v1.19.0`) — vector database for semantic search in the knowledge application
 - **Garage** (`dxflrs/garage:v2.3.0`) — S3-compatible object storage with `replication_factor = 1`
 - **NATS** (`nats:2.14.6-alpine`) — message queue with JetStream enabled
-- **Ollama** (optional, `host.docker.internal:11434`) — local LLM for embeddings and chat
-- **OpenRouter/OpenAI-compatible** — both providers configured in phraseforge's mounted `config.yaml` with per-purpose defaults; API keys from env vars (`OPENROUTER_API_KEY`, `OLLAMA_API_KEY`)
+- **Ollama** (optional, `host.docker.internal:11434`) — local LLM for embeddings and chat (knowledge's embeddings are routed too); a LAN Ollama (`gemma4:31b`) can be added to the assistant, phraseforge and knowledge in the dev cluster with `task llm-enable`
+- **OpenRouter/OpenAI-compatible** — providers and models are in each app's `models.yaml` (phraseforge, assistant, knowledge), with API keys from env vars (`OPENROUTER_API_KEY`, `OLLAMA_API_KEY`); in the dev cluster `task llm-enable` adds OpenRouter (`z-ai/glm-5.3-flash`) from the key in `.env`
+- **Vertex AI** (dev only) — added by `task llm-enable` (`gemini-2.5-flash-lite`); access token from gcloud, valid about an hour (`task llm-refresh-vertex-token`); not available in production
 
 **Kubernetes tooling:**
 - **Argo Workflows** (v4.1.3) — workflow orchestration
@@ -47,6 +48,7 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 
 **Build & CI/CD:**
 - **Task** (tested v3.53.1) — command orchestrator for k3d cluster management, image builds, and Kubernetes deployments via `Taskfile.yml`
+- **LLM dev tasks** — `task llm-status`, `llm-enable`, `llm-disable`, `llm-refresh-vertex-token` (Taskfile.yml) call the bash scripts in `scripts/` (`llm-env.sh`, `llm-status.sh`, `llm-generate.sh`, `llm-enable.sh`); `task test-llm-scripts` runs their tests (`llm-status_test.sh`, `llm-generate_test.sh`) against a fake Ollama and a fake `gcloud`
 - **Docker** — multi-stage builds (`golang:1.26-alpine` → `scratch`), with corporate CA trust via bind-mount; image size threshold of 50 MB enforced
 - **GitHub Actions** — per-application release workflows (dictionary, phraseforge, knowledge)
   - CalVer versioning: `YYYY.MM.micro`
@@ -65,7 +67,7 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 | `assistant` | `assistant` | `assistant/CHANGELOG.md` | none (release workflow added in a later feature) | `specs/artifacts/assistant/roadmap.md` |
 | `environment` | `.` | `CHANGELOG.md` | none | |
 
-Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an additive `Headers` field for custom request headers) is consumed by phraseforge, knowledge and assistant; `shared/modelcfg` (the models.yaml schema, loader, lint, and credential and header resolution), `shared/yamlschema`, `shared/router` (the model router with its `ollama`, `openai`, `anthropic` and `vertex` providers and the `routertest` helpers) and `shared/retention` (batched, age-based purging) by phraseforge and assistant; `shared/postgres` by phraseforge and knowledge; `shared/ui` (the Lit component library and its handler) by phraseforge, assistant and knowledge. A change under `shared/` needs entries in every artifact that consumes the changed package.
+Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an additive `Headers` field for custom request headers) is consumed directly by phraseforge (and by the router's Ollama provider, so by assistant and knowledge); `shared/modelcfg` (the models.yaml schema, loader, lint, and credential and header resolution, and the `embedding_space` and `dimension` model keys), `shared/yamlschema`, `shared/router` (the model router with its `ollama`, `openai`, `anthropic` and `vertex` providers, `Embed` for embedding models, and the `routertest` helpers) and `shared/retention` (batched, age-based purging) by phraseforge, assistant and knowledge; `shared/postgres` by phraseforge and knowledge; `shared/ui` (the Lit component library and its handler) by phraseforge, assistant and knowledge. A change under `shared/` needs entries in every artifact that consumes the changed package.
 
 ## Key conventions
 
@@ -96,7 +98,8 @@ Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an addit
 - If the dev cluster is unreachable, report it and never try another context. Any other cluster, production included, is changed only when the user explicitly asks.
 
 **Credentials & configuration:**
-- Generated, gitignored files only: `.k3d/postgres.env`, `.k3d/garage.toml`, `.k3d/garage.env`
+- Generated, gitignored files only: `.k3d/postgres.env`, `.k3d/garage.toml`, `.k3d/garage.env`, and `.k3d/llm/` (models files and the list of enabled sources, written by `task llm-enable`; never holds a secret)
+- The git-ignored `.env` at the repository root (template: `.env.example`) holds the dev LLM settings; only the `scripts/llm-*.sh` scripts read it, by parsing and never executing it, and shell variables of the same names are ignored. No application reads `.env`: the apps get ConfigMaps and Secrets.
 - No credentials in code or committed files
 
 **Registry addressing duality:**
@@ -114,22 +117,28 @@ Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an addit
 
 **LLM connectivity:**
 - Ollama via `host.docker.internal` in k3s context for host-side Ollama access
+- Dev-cluster providers beyond the laptop's Ollama (LAN Ollama, OpenRouter, Vertex AI) are added and removed with `task llm-enable` and `task llm-disable` for the assistant, phraseforge and knowledge; the router tries the highest priority first (100, 90, 80; local Ollama 10)
+- Vertex AI in production is not implemented: the provider reads one access token valid about an hour and nothing in production mints or refreshes it (options, neither built: the provider renews its own token through a service account or Workload Identity; or a CronJob or sidecar writes a fresh token into the file the pod reads)
 
 **Task runtime:**
 - Global error handling: `set: [errexit, nounset, pipefail]`
+
+**Task shell:**
+- Task runs `cmds` in its own built-in shell, not bash (`BASH_SOURCE` is unset): call `bash scripts/<name>.sh` and `eval` its output instead of sourcing bash code. Scripts must work on macOS bash 3.2 (with `set -u`, expand a possibly empty array as `${a[@]+"${a[@]}"}`).
 
 **Go binary optimization:**
 - Stripped symbols and DWARF: `-ldflags="-s -w"`
 - Static linking: `CGO_ENABLED=0`
 
 **Naming conventions:**
-- **Configuration keys** (YAML, JSON), **API request and response fields**, **query parameters**, **database tables and columns**: `snake_case` (lowercase words separated by underscores).
-- **Environment variables**: `UPPER_SNAKE_CASE` with the application's prefix (e.g., `PHRASEFORGE_MODELS_FILE`, `ASSISTANT_LLM_CALLS_RETENTION_DAYS`).
+- **Configuration keys** (YAML, JSON), **API request and response fields**, **query parameters**, **database tables and columns**: `snake_case` (lowercase words separated by underscores; for example `bind_addr`, `qdrant.search_min_score`, `model_tags`, `llm_calls.retention_days`).
+- **Environment variables**: `UPPER_SNAKE_CASE` with the application's prefix (e.g., `PHRASEFORGE_MODELS_FILE`, `KNOWLEDGE_MODELS_FILE`, `ASSISTANT_LLM_CALLS_RETENTION_DAYS`).
+- The dev LLM settings in `.env` are `UPPER_SNAKE_CASE` without an application prefix, because they serve several apps: `LLM_LAN_OLLAMA_URL`, `LLM_LOCAL_OLLAMA_URL`, `LLM_VERTEX_ACCOUNT`, `LLM_VERTEX_PROJECT`, `LLM_VERTEX_LOCATION` and the provider's own name `OPENROUTER_API_KEY`.
 - **Names that users choose and that appear as values** (provider IDs, model IDs, tags, workflow IDs): lowercase letters, digits and hyphens, starting with a letter (e.g., `ollama-cpu`, `openrouter`).
-- **Metric names**: `snake_case` with the application prefix (e.g., `phraseforge_llm_calls_total`, `assistant_llm_calls_purged_total`).
+- **Metric names**: `snake_case` with the application prefix (e.g., `phraseforge_llm_calls_total`, `knowledge_llm_calls_total`, `assistant_llm_calls_purged_total`).
 - **Go and JavaScript identifiers**: follow their respective language conventions and are not covered by these rules.
 - **i18n message keys**: dotted lowercase words with underscores (e.g., `admin.llm_model_tags`, `admin.llm_reason_cooldown`).
-- **LEGACY — existing camelCase keys**: Some existing keys are camelCase: the PhraseForge `config.yaml` purpose keys (such as `numCtx`, `maxAttempts`), parts of PhraseForge's older admin JSON (such as `llmPrompts`, `sourceLanguage`), and the Helm chart's values for them. The human intends to migrate all of them to `snake_case`. Until then, legacy names stay as they are, but **every NEW key — even one added next to legacy camelCase neighbours — must be `snake_case`**. When a key is renamed, the old name must be rejected with a message naming the replacement rather than silently ignored.
+- **LEGACY — existing camelCase keys**: Some existing keys are camelCase: the PhraseForge `config.yaml` purpose keys (such as `numCtx`, `maxAttempts`), parts of PhraseForge's older admin JSON (such as `llmPrompts`, `sourceLanguage`), and the Helm chart's values for them. Knowledge's `config.yaml` keys are all `snake_case` (an old camelCase key is rejected at startup naming the replacement; the knowledge Helm chart values changed with it). The human intends to migrate all of the others to `snake_case`. Until then, legacy names stay as they are, but **every NEW key — even one added next to legacy camelCase neighbours — must be `snake_case`**. When a key is renamed, the old name must be rejected with a message naming the replacement rather than silently ignored.
 - **Check before naming**: before proposing any new key, field, query parameter, column or option name, check this section; a name that does not match is a defect, not a style choice, even when it sits next to legacy camelCase neighbours or copies an existing legacy spelling.
 
 **Background operation queue (knowledge, phraseforge):**
@@ -149,11 +158,14 @@ Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an addit
 **Schemas as contracts (assistant):**
 - Every contract lives under `assistant/schemas/`: `db/` (idempotent DDL), `api/` (OpenAPI), and as each slice needs them `messages/`, `documents/`, the workflow schema and the model-config schema. A test checks each code surface against its schema, so a schema and its code cannot drift apart.
 
-**Model routing (assistant):**
+**Model routing (assistant, phraseforge, knowledge):**
 - Models are configured in `models.yaml`, validated by `assistant/schemas/models.schema.json`: providers (an Ollama endpoint may be on localhost or on another machine; several can be listed), and models with tags and a priority. A call goes to the highest-priority available model that has the requested tags and falls back to lower ones; a circuit breaker, not pings, decides what is available. Every attempt is recorded in `llm_calls` and attributed to the user.
 
-**Tests never call a real LLM (assistant):**
-- LLM access sits behind an interface and tests use a scripted fake that returns canned responses. The whole suite must pass with no LLM reachable.
+**Embedding space (knowledge):**
+- An embedding model in `models.yaml` carries `embedding_space` and `dimension` (both or neither; only `ollama` and `openai` providers have an embeddings endpoint). The router falls back only between models of the same space and treats a vector of the wrong length as a failed attempt. The space name is stored on every Qdrant item, so it must stay while the index holds items made with it; a different space or dimension needs a new collection.
+
+**Tests never call a real LLM (assistant, knowledge):**
+- LLM access sits behind an interface and tests use a scripted fake that returns canned responses. The whole suite must pass with no LLM reachable. Knowledge: purposes and the embedder run against a scripted provider and fake HTTP servers; its database tests need `KNOWLEDGE_TEST_DSN` and are skipped without it.
 
 **Structured logging:**
 - `log/slog`, JSON handler to stdout, configured once in `main.go`.

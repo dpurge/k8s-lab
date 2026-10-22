@@ -22,11 +22,23 @@ type Result struct {
 	// Wait, if set, holds the call until it is closed (or the context ends), so
 	// a test can finish other calls first.
 	Wait <-chan struct{}
+	// Vector is what an embedding call returns; Response.InputTokens is its
+	// token count.
+	Vector []float32
 }
 
 // OK is a successful result with text and token counts.
 func OK(text string, in, out int) Result {
 	return Result{Response: router.Response{Text: text, InputTokens: in, OutputTokens: out}}
+}
+
+// Embedding is a successful embedding result with a vector of n numbers.
+func Embedding(n, inputTokens int) Result {
+	v := make([]float32, n)
+	for i := range v {
+		v[i] = float32(i + 1)
+	}
+	return Result{Response: router.Response{InputTokens: inputTokens}, Vector: v}
 }
 
 // Fail is a result that fails with the given kind.
@@ -38,7 +50,9 @@ func Fail(kind router.FailureKind, message string) Result {
 type Call struct {
 	ModelID    string
 	ProviderID string
-	Request    router.Request
+	// Request is set for a chat call, EmbedRequest for an embedding call.
+	Request      router.Request
+	EmbedRequest router.EmbedRequest
 }
 
 // Provider answers each call from a script keyed by model id: the next result
@@ -51,6 +65,8 @@ type Provider struct {
 	calls   []Call
 }
 
+var _ router.EmbeddingProvider = (*Provider)(nil)
+
 // NewProvider returns a provider with the given scripts.
 func NewProvider(scripts map[string][]Result) *Provider {
 	return &Provider{scripts: scripts, used: map[string]int{}}
@@ -58,33 +74,56 @@ func NewProvider(scripts map[string][]Result) *Provider {
 
 // Complete implements router.Provider.
 func (p *Provider) Complete(ctx context.Context, prov modelcfg.Provider, m modelcfg.Model, req router.Request) (router.Response, error) {
+	res, err := p.take(ctx, Call{ModelID: m.ID, ProviderID: prov.ID, Request: req})
+	if err != nil {
+		return router.Response{}, err
+	}
+	return res.Response, res.Err
+}
+
+// Embed implements router.EmbeddingProvider: it answers from the same script as
+// Complete, with the result's Vector.
+func (p *Provider) Embed(ctx context.Context, prov modelcfg.Provider, m modelcfg.Model, req router.EmbedRequest) (router.EmbedResponse, error) {
+	res, err := p.take(ctx, Call{ModelID: m.ID, ProviderID: prov.ID, EmbedRequest: req})
+	if err != nil {
+		return router.EmbedResponse{}, err
+	}
+	if res.Err != nil {
+		return router.EmbedResponse{}, res.Err
+	}
+	return router.EmbedResponse{Vector: res.Vector, InputTokens: res.Response.InputTokens}, nil
+}
+
+// take records the call and returns the model's next scripted result, after
+// honoring Block and Wait; the error is the context's, when it ended first.
+func (p *Provider) take(ctx context.Context, call Call) (Result, error) {
 	p.mu.Lock()
-	p.calls = append(p.calls, Call{ModelID: m.ID, ProviderID: prov.ID, Request: req})
-	script := p.scripts[m.ID]
+	p.calls = append(p.calls, call)
+	script := p.scripts[call.ModelID]
 	var res Result
 	switch {
 	case len(script) == 0:
 		res = OK("", 0, 0)
-	case p.used[m.ID] < len(script):
-		res = script[p.used[m.ID]]
+	case p.used[call.ModelID] < len(script):
+		res = script[p.used[call.ModelID]]
 	default:
 		res = script[len(script)-1]
 	}
-	p.used[m.ID]++
+	p.used[call.ModelID]++
 	p.mu.Unlock()
 
 	if res.Block {
 		<-ctx.Done()
-		return router.Response{}, ctx.Err()
+		return Result{}, ctx.Err()
 	}
 	if res.Wait != nil {
 		select {
 		case <-res.Wait:
 		case <-ctx.Done():
-			return router.Response{}, ctx.Err()
+			return Result{}, ctx.Err()
 		}
 	}
-	return res.Response, res.Err
+	return res, nil
 }
 
 // Calls returns the calls made so far.

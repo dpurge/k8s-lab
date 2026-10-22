@@ -7,25 +7,29 @@
 RAG. It provides:
 
 - a browser GUI at `http://knowledge.localhost:8080/`, gated behind sign-up/login, with a dark/light
-  theme toggle that remembers your last choice. The top bar has three items: Documents, Chat and
-  Tasks (shown as "Tasks (N)"). The sidebar of the Documents page lists two pages, Documents and
+  theme toggle that remembers your last choice. The top bar has four items: Documents, Chat,
+  Tasks (shown as "Tasks (N)") and Models. The sidebar of the Documents page lists two pages, Documents and
   Drafts (shown as "Drafts (N)")
 - a JSON REST API under `/api/v1`
 - semantic/vector search backed by Qdrant
 - chat with your knowledge, with chat history stored in Postgres
 - LLM-generated title/summary suggestions for a knowledge item, from its body
-- embedding providers for Ollama and OpenAI-compatible APIs such as OpenRouter
+- model routing: chat, title/summary generation, translation and embeddings go through the shared
+  model router, with providers and models in `models.yaml` and fallback between models
 
 ## Application architecture
 
 ```text
 knowledge/
 ├── main.go                           # serve or migrate entrypoint
-├── internal/config/config.go          # runtime config: mounted YAML file + credential env vars
+├── internal/config/config.go          # runtime config: mounted config.yaml + credential env vars (models.go loads models.yaml)
 ├── internal/auth/auth.go              # signup/login/session logic (bcrypt + Postgres sessions)
-├── internal/embeddings/embeddings.go  # Ollama/OpenAI/fake embedding clients
+├── internal/embeddings/embeddings.go  # Embedder interface + fake embedder
+├── internal/modelrouter/              # purposes and embedder over shared/router (tags, fallback, kinds)
+├── internal/llmcalls/                 # llm_calls records, retention rule, router observer
+├── internal/metrics/                  # Prometheus metrics knowledge_llm_*
 ├── internal/qdrant/qdrant.go          # Qdrant collection + CRUD/search logic
-├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats, jobs, operations)
+├── internal/db/db.go                  # Postgres schema/migrations (users, sessions, chats, jobs, operations, llm_calls)
 ├── internal/queue/queue.go            # single-worker, priority-ordered LLM operation queue used by chat/generate/ingest
 ├── internal/chat/chat.go              # chat persistence + RAG orchestration; replies run async via internal/queue
 ├── internal/generate/generate.go      # LLM-generated title/summary from a knowledge item's body, queued via internal/queue
@@ -40,7 +44,7 @@ knowledge/
 ├── internal/server/static/vendor/     # vendored (no CDN) markdown-it + DOMPurify for chat rendering
 ├── internal/server/static/components/ # kb-* Web Components (kb-button, kb-nav, kb-card, kb-field, kb-dialog, kb-status-bar, kb-message, kb-job-card); component.test.js per one, Node+jsdom
 └── k8s/
-    ├── configmap.yaml                 # mounted config (models, prompts, thresholds)
+    ├── configmap.yaml                 # mounted config.yaml (purposes, prompts, embedding space, thresholds)
     ├── deployment.yaml                # Deployment, Service, Ingress
     └── jobs/migrate-job.yaml          # creates/validates Qdrant collection
 ```
@@ -59,7 +63,7 @@ One knowledge item = one Qdrant point:
   "summary": "One-paragraph summary.",
   "body": "# Full Markdown article\n...",
   "tags": ["k8s", "headlamp"],
-  "embedding_model": "nomic-embed-text",
+  "embedding_model": "bge-m3",
   "created_at": "2026-09-14T12:00:00Z",
   "updated_at": "2026-09-14T12:05:00Z"
 }
@@ -86,7 +90,7 @@ Body:
 Search embeds the query string and performs Qdrant vector search. Tag filtering is conjunctive:
 when searching with `tag=k8s&tag=headlamp`, an item must contain **both** tags to be returned.
 Semantic search defaults to the 7 most relevant items and caps requested limits at 20. Results
-scoring below `qdrant.searchMinScore` are dropped entirely — Qdrant otherwise always returns its
+scoring below `qdrant.search_min_score` are dropped entirely — Qdrant otherwise always returns its
 nearest neighbors even when none are a good match, which let weak/irrelevant results reach the
 chat model and get hallucinated over.
 
@@ -102,89 +106,174 @@ clickable links back to the Knowledge UI.
 
 ## Configuration
 
-Most configuration lives in a YAML file — `knowledge/k8s/configmap.yaml`'s `ConfigMap`, mounted
-into both the Deployment and the migrate Job at `/etc/knowledge/config.yaml` (override the path
-with `CONFIG_FILE`). A missing file falls back to built-in defaults (so `go run .` works locally
-without a cluster); a malformed one is a startup error, not a silently-ignored one. Any field the
-file omits keeps its default — the file doesn't need to be complete.
+Configuration is two mounted YAML files plus environment variables:
+
+| What | Where | Holds |
+| --- | --- | --- |
+| `config.yaml` | ConfigMap `knowledge-config` (`knowledge/k8s/configmap.yaml`); path from `CONFIG_FILE`, default `/etc/knowledge/config.yaml` | the purposes (`model_tags`, prompts, limits), the embedding space, Qdrant and retention settings |
+| `models.yaml` | ConfigMap `knowledge-models`; path from `KNOWLEDGE_MODELS_FILE`, default `/etc/knowledge/models.yaml` | providers, models, their options, priorities and API-key references |
+| environment | the Deployment | Postgres and Qdrant connection settings, API keys |
+
+A missing `config.yaml` falls back to built-in defaults (so `go run .` works locally without a
+cluster); a malformed one is a startup error, not a silently-ignored one. Any field the file omits
+keeps its default. `models.yaml` has no default: the server stops at startup, naming
+`KNOWLEDGE_MODELS_FILE` and the file, when it is missing or invalid (`migrate` does not read it).
+
+### config.yaml
+
+All keys are snake_case. An old camelCase key, a removed key and an unknown key are rejected at
+startup with a message that names the file, the key and (for a renamed or moved key) its replacement.
 
 ```yaml
-bindAddr: 0.0.0.0:8300
+bind_addr: 0.0.0.0:8300
 qdrant:
   collection: knowledge
-  searchMinScore: 0.4          # min Qdrant cosine-similarity score to keep a semantic search
+  search_min_score: 0.4        # min Qdrant cosine-similarity score to keep a semantic search
                                 # result; 0 (or negative) disables filtering. Applies to general
                                 # search and chat retrieval alike.
-providers:                     # one entry per LLM provider; every purpose below names one
-  ollama:
-    baseURL: http://localhost:11434
-    firstTokenTimeoutSeconds: 300  # streamed calls fail if no output arrives within this
-                                   # (model load + prompt processing) ...
-    idleTimeoutSeconds: 60         # ... or if output then stops for this long
-  openrouter:
-    baseURL: https://openrouter.ai/api/v1
-  openai:
-    baseURL: https://api.openai.com/v1
 embeddings:
-  provider: ollama              # a providers key (ollama, openrouter, openai), or fake
-  model: bge-m3
-  dimension: 1024               # must match the model and the existing Qdrant collection
+  embedding_space: bge-m3       # the vector space of the index (see "Embedding space" below)
+  dimension: 1024               # length of every vector of the space; must match the Qdrant collection
+  # fake: true                  # deterministic hash vectors with no model, for tests and local runs
 chat:
-  provider: ollama
-  model: gemma4:12b
-  numCtx: 8192                  # Ollama options.num_ctx; 0 omits it (Ollama's own default
-                                # applies). Full retrieved documents go into the prompt, so this
-                                # needs more room than gemma4:12b's 4096 runtime default.
-  think: false                  # a thinking-capable model otherwise incurs a large hidden-
-                                # reasoning latency cost (confirmed: ~150s vs ~14s)
-  timeoutSeconds: 1800          # overall cap on one call (a backstop, every purpose)
+  model_tags: [chat]            # a call goes to the highest-priority available model in
+                                # models.yaml that has all of these tags, and falls back to the
+                                # next one when it fails
+  num_ctx: 8192                 # context window the purpose sizes its input to; 0 leaves the
+                                # model's own setting. A model with these tags must have
+                                # options.num_ctx of at least this (an Ollama model; checked at startup).
+  timeout_seconds: 1800         # overall cap on one call (a backstop, every purpose)
   prompt: |
     You answer using only the retrieved knowledge documents below.
 
     If unsupported by the retrieved knowledge documents, say you do not know.
-generateTitle:                  # the knowledge-item "Generate" title button; its own model
-  provider: ollama              # because not every model can do this — llama3-chatqa:8b
-  model: gemma4:12b             # (completion-only QA) hallucinated an unrelated continuation
-  timeoutSeconds: 1800
+generate_title:                 # the knowledge-item "Generate" title button
+  model_tags: [default]
+  timeout_seconds: 1800
   prompt: >-
     You write a short, specific title for the given Markdown document.
     Respond with only the title text on a single line — no quotes, no
     punctuation at the end, no preamble like "Title:".
-generateSummary:                # the "Generate" summary button
-  provider: ollama
-  model: gemma4:12b
-  timeoutSeconds: 1800
+generate_summary:               # the "Generate" summary button
+  model_tags: [default]
+  timeout_seconds: 1800
   prompt: >-
     You write a one-paragraph summary of the given Markdown document,
     for use as a search-result preview. Respond with only the summary
     text — no preamble like "Summary:", no quotes.
-knowledgeLanguage: English      # the knowledge base's target language; fixed per deployment
+knowledge_language: English     # the knowledge base's target language; fixed per deployment
+llm_calls:
+  retention_days: 30            # model call records older than this are purged; 0 keeps them forever
 translate:
-  provider: ollama
-  model: gemma4:12b             # chosen after a live comparison showed comparable quality
-  timeoutSeconds: 1800
+  model_tags: [default]
+  timeout_seconds: 1800
   prompt: >-
     If the following text is already in {{language}}, return it
     unchanged. Otherwise, translate it into {{language}}. Respond with
     only the resulting text — no preamble, no explanation.
 ```
 
-Every purpose accepts `provider`, `model`, `numCtx`, `think`, `timeoutSeconds`, and `prompt`.
-The shape matches phraseforge's. The pre-registry shape is rejected at startup with a message
-saying where each value moved: a per-section `baseURL` (now `providers.<name>.baseURL`), the
-`generate:` section (now `generateTitle`/`generateSummary`), and the `prompts:` block (now each
-purpose's `prompt`). So is a purpose naming a provider that isn't in `providers`.
+Every purpose (`chat`, `generate_title`, `generate_summary`, `translate`) accepts `model_tags`
+(required, non-empty, no blank or duplicate tag), `num_ctx`, `timeout_seconds` and `prompt`. The
+shape matches phraseforge's. Startup fails when a purpose's tags match no model.
+`llm_calls.retention_days` must be from 0 to 36500 (the limit of `shared/retention`).
 
-**Credentials and connection settings are never in this file** — they stay as plain (or
+### models.yaml
+
+Providers and models are listed here, in the schema shared with phraseforge and the assistant. The
+committed dev file is `knowledge/models.dev.yaml` (the Ollama on your laptop, as
+`host.docker.internal:11434`); check a file with
+`(cd assistant && go run . models validate ../knowledge/models.dev.yaml)`.
+
+```yaml
+providers:
+  - id: ollama
+    type: ollama
+    base_url: http://host.docker.internal:11434
+    api_key_from: ""            # "", env:NAME or file:/absolute/path
+models:
+  - id: gemma4-12b
+    provider: ollama
+    model: gemma4:12b
+    tags: [default, chat]
+    priority: 10
+    options:
+      num_ctx: 8192
+      think: false                      # a thinking-capable model otherwise incurs a large hidden-
+                                        # reasoning latency cost (confirmed: ~150s vs ~14s)
+      first_token_timeout_seconds: 300  # streamed calls fail if no output arrives within this
+                                        # (model load + prompt processing) ...
+      idle_timeout_seconds: 60          # ... or if output then stops for this long
+  - id: bge-m3                          # an embedding model: no purpose tags, a space and a dimension
+    provider: ollama
+    model: bge-m3
+    tags: [embed]
+    priority: 10
+    embedding_space: bge-m3
+    dimension: 1024
+```
+
+An API key is never in the file: `api_key_from` points to an environment variable
+(`env:OPENROUTER_API_KEY`) or a file (`file:/path`). A provider whose credential is missing is
+skipped and never stops the startup.
+
+### Embedding space
+
+Embeddings go through the same router, as models of one embedding space. A model with
+`embedding_space` and `dimension` in `models.yaml` is an embedding model (both keys or neither;
+only `ollama` and `openai` providers have an embeddings endpoint, any other type is refused at
+startup). `embeddings.embedding_space` and `embeddings.dimension` in `config.yaml` name the space
+the knowledge base needs. The rules:
+
+- The router tries only models of that space, highest priority first. Fallback happens between
+  copies of the same model (for example `bge-m3` on a LAN machine and on your laptop), never to
+  another space, even when every model of the space has failed.
+- A reply whose vector length differs from `dimension` is a failed attempt and is never stored.
+  Startup fails when no model has the space, or a model of the space declares another dimension.
+- The space name is stored on every Qdrant item (`embedding_model` in the item). Keep the name
+  while the index holds items made with it. A different space or a different dimension needs a new
+  collection (`qdrant.collection`): the migration refuses an existing collection with another
+  vector size, and vectors of different models cannot be compared even at equal length.
+- The embedder does not depend on Qdrant.
+
+### Environment variables
+
+**Credentials and connection settings are never in `config.yaml`** — they stay as plain (or
 Kubernetes-Secret-sourced) env vars: `PGUSER`/`PGPASSWORD` (from the `postgres-credentials`
-Secret in k8s), `PGHOST`/`PGPORT`/`PGDATABASE`, `QDRANT_URL`, and one API key per provider:
-`OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` (empty by default; needed for
-OpenAI/OpenRouter) — this is what lets the migrate Job run before the ConfigMap exists. The old
-per-purpose `CHAT_API_KEY`/`GENERATE_API_KEY`/`TRANSLATE_API_KEY`/`EMBEDDINGS_API_KEY` are
-rejected at startup, so a key is never silently ignored.
+Secret in k8s), `PGHOST`/`PGPORT`/`PGDATABASE`, `QDRANT_URL`, and the API keys that `api_key_from`
+in `models.yaml` names: `OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` (all optional, empty by default) — this is what lets the migrate Job run before
+the ConfigMaps exist. The old per-purpose `CHAT_API_KEY`/`GENERATE_API_KEY`/`TRANSLATE_API_KEY`/
+`EMBEDDINGS_API_KEY` are rejected at startup, so a key is never silently ignored.
 
-The migration validates collection vector size. If the collection already exists with a different
-size, migration fails; use a matching model/dimension or recreate the collection.
+### Breaking change: snake_case keys and models.yaml
+
+The new image does not start with an old `config.yaml`, and the old image does not read the new
+one, so **the new image and the production Helm chart values must change together**. The chart
+(outside this repository) needs `config.yaml` in the new shape (the `knowledge-config` ConfigMap)
+and a `models.yaml` rendered from its values, mounted next to it (the `knowledge-models`
+ConfigMap), as `knowledge/k8s/` does for the dev cluster. An old key stops the startup with a
+message naming the replacement. Old key to new key:
+
+| Old key | New key |
+| --- | --- |
+| `bindAddr` | `bind_addr` |
+| `qdrant.searchMinScore` | `qdrant.search_min_score` |
+| `generateTitle` | `generate_title` |
+| `generateSummary` | `generate_summary` |
+| `knowledgeLanguage` | `knowledge_language` |
+| `<purpose>.numCtx` | `<purpose>.num_ctx` |
+| `<purpose>.timeoutSeconds` | `<purpose>.timeout_seconds` |
+| `<purpose>.provider`, `<purpose>.model` | `<purpose>.model_tags`; the provider and model are in `models.yaml` |
+| `<purpose>.think` | the `think` option of the model in `models.yaml` |
+| `providers` (block) | `providers` in `models.yaml` |
+| `providers.<name>.baseURL` | `base_url` of the provider in `models.yaml` |
+| `providers.<name>.firstTokenTimeoutSeconds`, `idleTimeoutSeconds` | `first_token_timeout_seconds`, `idle_timeout_seconds` in the model's `options` in `models.yaml` |
+| `embeddings.provider`, `embeddings.model`, `embeddings.baseURL` | `embeddings.embedding_space`; the model is an embedding model of that space in `models.yaml` |
+
+`qdrant.collection`, `embeddings.dimension`, the purpose names `chat` and `translate`, and each
+`prompt` keep their names. Existing Qdrant items stay valid when `embedding_space` equals the model
+name stored on them (`bge-m3` in the dev cluster).
 
 ### Ollama notes
 
@@ -194,7 +283,7 @@ For local testing on the host:
 ollama pull bge-m3
 ```
 
-The k8s manifest points at Docker Desktop/Rancher Desktop's host alias:
+The dev `models.yaml` points at Docker Desktop/Rancher Desktop's host alias:
 
 ```text
 http://host.docker.internal:11434
@@ -208,41 +297,75 @@ example:
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
 ```
 
-Or edit `providers.ollama.baseURL` in `knowledge/k8s/configmap.yaml` (shared by the Deployment
-and the migrate Job) to point at an Ollama server on your LAN.
+Or edit `base_url` of the `ollama` provider in `knowledge/models.dev.yaml` (it becomes the
+`knowledge-models` ConfigMap on the next `task deploy-knowledge`) to point at an Ollama server on
+your LAN. `task llm-enable` adds a LAN Ollama, OpenRouter and Vertex AI without editing a file; see
+[LLM providers in the dev cluster](../README.md#llm-providers-in-the-dev-cluster).
 
 Calls to Ollama stream their response, so a slow-but-working model (e.g. CPU-only) isn't cut off
-by a fixed timeout: a call fails only if no output arrives within
-`providers.ollama.firstTokenTimeoutSeconds`, output stops for `idleTimeoutSeconds`, or the
-purpose's `timeoutSeconds` passes overall.
+by a fixed timeout: a call fails only if no output arrives within the model's
+`first_token_timeout_seconds`, output stops for `idle_timeout_seconds`, or the purpose's
+`timeout_seconds` passes overall.
 
 ### OpenAI / OpenRouter-compatible embeddings
 
-Point `embeddings.provider` at the `openai` or `openrouter` provider; the app calls
-`<providers.<name>.baseURL>/embeddings` with a bearer token from that provider's API-key env var
-(a credential — never in the config file). For OpenAI:
+An OpenAI-compatible embedding model is a model of the space in `models.yaml` on a provider of type
+`openai`; the app calls `<base_url>/embeddings` with a bearer token from `api_key_from`. For
+OpenAI:
+
+```yaml
+providers:
+  - id: openai
+    type: openai
+    base_url: https://api.openai.com/v1
+    api_key_from: env:OPENAI_API_KEY
+models:
+  - id: embed-openai
+    provider: openai
+    model: text-embedding-3-small
+    tags: [embed]
+    priority: 10
+    embedding_space: text-embedding-3-small
+    dimension: 1536
+```
+
+and in `config.yaml`:
 
 ```yaml
 embeddings:
-  provider: openai
-  model: text-embedding-3-small
+  embedding_space: text-embedding-3-small
   dimension: 1536
 ```
+
 ```env
 OPENAI_API_KEY=sk-...
 ```
 
-For OpenRouter, use the embedding model ID/dimension you choose:
+For OpenRouter, use a provider with `base_url: https://openrouter.ai/api/v1`,
+`api_key_from: env:OPENROUTER_API_KEY` and the embedding model ID and dimension you choose. A
+different space or dimension than the index holds needs a new `qdrant.collection` (see
+[Embedding space](#embedding-space)). Vertex AI and Anthropic providers cannot carry an embedding
+model. The OpenAI-compatible `/embeddings` call is tested against a fake server only.
 
-```yaml
-embeddings:
-  provider: openrouter
-  model: <openrouter-embedding-model>
-  dimension: <model-dimension>
-```
-```env
-OPENROUTER_API_KEY=...
-```
+### Model calls
+
+Every model call, embeddings included, goes through the router and is recorded one row per attempt:
+
+- Table `llm_calls`: `kind` (`chat`, `generate_title`, `generate_summary`, `translate` or
+  `embed`), model and provider ids, tags, tokens, cost, start, duration, outcome, error and HTTP
+  status. It never holds a prompt, reply, text or vector. `operation_id` is the queue operation the
+  call ran in; it is NULL for the embedding of a search query, which runs outside the queue. Rows
+  older than `llm_calls.retention_days` (default 30, 0 keeps forever) are purged in batches.
+- `GET /metrics` serves the Prometheus metrics `knowledge_llm_*` (calls, tokens, cost, duration
+  per provider and model, model availability, record errors, purged rows) without a login.
+  Whether it is reachable through the ingress is a deployment decision.
+- The router's log lines carry `kind` and `operation_id`, never content.
+- The Models item of the top bar has three pages, open to any signed-in user (there are no
+  roles): Models (configured models, priority, availability), Usage (successful calls, tokens and
+  cost per kind, provider or model) and Attempts (every attempt, newest first, with filters). They
+  are the shared `dp-model-table`, `dp-usage-table` and `dp-attempt-table`; the user column is
+  labelled Kind. The attempts API redacts addresses from error texts and carries no upstream
+  model name. With the sidebar open at 1024 px the Attempts table scrolls sideways inside its card.
 
 ## Deploy
 
@@ -252,8 +375,27 @@ task deploy-postgres
 task deploy-knowledge
 ```
 
-`task deploy-knowledge` builds the image, ensures Qdrant is deployed, runs the Postgres/Qdrant migration,
-and deploys the GUI/API. Postgres is required for chat persistence.
+`task deploy-knowledge` builds the image, ensures Qdrant is deployed, applies the two ConfigMaps,
+runs the Postgres/Qdrant migration, and deploys the GUI/API. Postgres is required for chat
+persistence.
+
+The ConfigMaps (namespace `app`):
+
+| ConfigMap | Key | Built from |
+| --- | --- | --- |
+| `knowledge-config` | `config.yaml` | `knowledge/k8s/configmap.yaml` |
+| `knowledge-models` | `models.yaml` | `knowledge/models.dev.yaml`, or `.k3d/llm/knowledge-models.yaml` when `task llm-enable` generated one; checked first with `models validate`, so a mistake stops the deploy and not the pod |
+
+Both the Deployment and the migrate Job (`knowledge/k8s/jobs/migrate-job.yaml`) mount the two
+ConfigMaps in one projected volume at `/etc/knowledge`, so `config.yaml` and `models.yaml` sit in
+one directory. Both are applied before the migrate Job and the Deployment.
+`task delete-knowledge` removes `knowledge-models` as well.
+
+Two Secrets are optional (the pod starts without them): `knowledge-llm-keys` with the keys
+`OLLAMA_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (environment
+variables of the Deployment), and `knowledge-vertex` (mounted at `/etc/knowledge-vertex`, for a
+Vertex AI token). `task llm-enable` creates them; see
+[LLM providers in the dev cluster](../README.md#llm-providers-in-the-dev-cluster).
 
 Open:
 
@@ -588,8 +730,8 @@ curl -i -X DELETE "$BASE/chats/$CHAT_ID"
 
 ### Generate title/summary
 
-Suggest a title or summary from a knowledge item's body, using `generate.model` (independent of
-`chat.model`). The Knowledge UI's editor has a "Generate" button next to each field that does
+Suggest a title or summary from a knowledge item's body, using the `model_tags` of `generate_title` and
+`generate_summary` (independent of `chat`). The Knowledge UI's editor has a "Generate" button next to each field that does
 this; either result can be edited before Save.
 
 ```sh

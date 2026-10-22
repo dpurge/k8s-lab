@@ -7,58 +7,57 @@ data:
   config.yaml: |
     qdrant:
       collection: knowledge
-      searchMinScore: 0.4
-    # One entry per LLM provider; every purpose below names one. API keys
-    # come only from env (OLLAMA_API_KEY, OPENROUTER_API_KEY,
-    # OPENAI_API_KEY). Ollama calls stream and fail if no output arrives
-    # within firstTokenTimeoutSeconds (model load + prompt processing) or
-    # stops for idleTimeoutSeconds.
-    providers:
-      ollama:
-        baseURL: http://host.docker.internal:11434
-        firstTokenTimeoutSeconds: 300
-        idleTimeoutSeconds: 60
+      search_min_score: 0.4
+    # Embeddings go through the model router too, from the embedding models of this
+    # vector space in models.yaml (the knowledge-models ConfigMap). The router falls
+    # back only between models of the same space (for example the same model on two
+    # machines), so the index never mixes vector spaces. The space name is stored
+    # with every item: keep it as it is while the index holds items made with it.
+    # dimension must be the length of the vectors of every model of the space
+    # (bge-m3 produces 1024-dim dense embeddings, verified against Ollama).
     embeddings:
-      provider: ollama
-      model: bge-m3
-      # bge-m3 produces 1024-dim dense embeddings — verified directly
-      # against Ollama's /api/embeddings, not assumed.
+      embedding_space: bge-m3
       dimension: 1024
-    # timeoutSeconds is each purpose's overall cap (a backstop).
+    # Each purpose lists model_tags: a call goes to the highest-priority available
+    # model in models.yaml (the knowledge-models ConfigMap) that has all of them,
+    # and falls back to a lower one when it fails. Providers, models, the
+    # streaming limits and `think` are in models.yaml. timeout_seconds is each
+    # purpose's overall cap (a backstop).
     chat:
-      provider: ollama
-      model: gemma4:12b
+      model_tags: [chat]
       # gemma4:12b's Ollama runtime default context is 4096 tokens
       # (verified via `ollama show` / `/api/ps`), far below its trained
       # max. Full retrieved documents go straight into the prompt (see
-      # knowledge/internal/chat/chat.go), so the larger window matters.
-      numCtx: 8192
-      timeoutSeconds: 1800
+      # knowledge/internal/chat/chat.go), so the larger window matters. A model
+      # with the chat tag must have options.num_ctx of at least this.
+      num_ctx: 8192
+      timeout_seconds: 1800
       prompt: |
         You answer using only the retrieved knowledge documents below.
 
         If unsupported by the retrieved knowledge documents, say you do not know.
-    generateTitle:
-      provider: ollama
-      model: gemma4:12b
-      timeoutSeconds: 1800
+    generate_title:
+      model_tags: [default]
+      timeout_seconds: 1800
       prompt: >-
         You write a short, specific title for the given Markdown document.
         Respond with only the title text on a single line — no quotes, no
         punctuation at the end, no preamble like "Title:".
-    generateSummary:
-      provider: ollama
-      model: gemma4:12b
-      timeoutSeconds: 1800
+    generate_summary:
+      model_tags: [default]
+      timeout_seconds: 1800
       prompt: >-
         You write a one-paragraph summary of the given Markdown document,
         for use as a search-result preview. Respond with only the summary
         text — no preamble like "Summary:", no quotes.
-    knowledgeLanguage: English
+    knowledge_language: English
+    # Model call records (the llm_calls table) older than this are purged; 0 keeps
+    # them forever.
+    llm_calls:
+      retention_days: 30
     translate:
-      provider: ollama
-      model: gemma4:12b
-      timeoutSeconds: 1800
+      model_tags: [default]
+      timeout_seconds: 1800
       prompt: >-
         If the following text is already in {{language}}, return it
         unchanged. Otherwise, translate it into {{language}}. Respond with

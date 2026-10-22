@@ -35,3 +35,6 @@ assistant/.docker/corp-ca/_corp-ca.pem
 # Built bundle of shared/ui (task build-ui); only the placeholder is tracked
 shared/ui/dist/*
 !shared/ui/dist/.gitkeep
+
+# Per-machine settings read by the Taskfile (copy .env.example); holds API keys
+.env

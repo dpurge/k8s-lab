@@ -1,84 +1,36 @@
+// Package embeddings is the interface knowledge's vector store takes to turn text
+// into a vector, plus a deterministic fake for tests and local runs without a
+// model. The real implementation is in package modelrouter: it asks the shared
+// router for a model of one embedding space, so the store knows nothing about
+// providers, and nothing here depends on a particular vector store.
 package embeddings
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
-	"fmt"
 	"math"
-	"net/http"
 	"strings"
-	"time"
 )
 
+// Embedder turns text into a vector of Dimension numbers. Model names the
+// vector space (the embedding_space of models.yaml): vectors of one Model can be
+// compared, vectors of different Models cannot.
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float64, error)
 	Dimension() int
 	Model() string
 }
 
-func New(provider, baseURL, apiKey, model string, dim int) (Embedder, error) {
-	switch strings.ToLower(provider) {
-	case "ollama":
-		return &Ollama{baseURL: strings.TrimRight(baseURL, "/"), model: model, dim: dim, http: &http.Client{Timeout: 60 * time.Second}}, nil
-	case "openai":
-		return &OpenAI{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, model: model, dim: dim, http: &http.Client{Timeout: 60 * time.Second}}, nil
-	case "fake":
-		return Fake{model: model, dim: dim}, nil
-	default:
-		return nil, fmt.Errorf("unknown EMBEDDINGS_PROVIDER %q", provider)
-	}
-}
-
-type Ollama struct {
-	baseURL, model string
-	dim            int
-	http           *http.Client
-}
-
-func (o *Ollama) Dimension() int { return o.dim }
-func (o *Ollama) Model() string  { return o.model }
-func (o *Ollama) Embed(ctx context.Context, text string) ([]float64, error) {
-	in := map[string]string{"model": o.model, "prompt": text}
-	var out struct {
-		Embedding []float64 `json:"embedding"`
-	}
-	if err := postJSON(ctx, o.http, o.baseURL+"/api/embeddings", "", in, &out); err != nil {
-		return nil, err
-	}
-	return checkDim(out.Embedding, o.dim)
-}
-
-type OpenAI struct {
-	baseURL, apiKey, model string
-	dim                    int
-	http                   *http.Client
-}
-
-func (o *OpenAI) Dimension() int { return o.dim }
-func (o *OpenAI) Model() string  { return o.model }
-func (o *OpenAI) Embed(ctx context.Context, text string) ([]float64, error) {
-	in := map[string]any{"model": o.model, "input": text}
-	var out struct {
-		Data []struct {
-			Embedding []float64 `json:"embedding"`
-		} `json:"data"`
-	}
-	if err := postJSON(ctx, o.http, o.baseURL+"/embeddings", o.apiKey, in, &out); err != nil {
-		return nil, err
-	}
-	if len(out.Data) == 0 {
-		return nil, fmt.Errorf("embedding response had no data")
-	}
-	return checkDim(out.Data[0].Embedding, o.dim)
-}
-
+// Fake is an Embedder that hashes words into a unit vector: the same text always
+// gives the same vector, and texts that share words are close. It calls nothing.
 type Fake struct {
 	model string
 	dim   int
 }
+
+// NewFake returns a Fake in the vector space named model with dim numbers.
+func NewFake(model string, dim int) Fake { return Fake{model: model, dim: dim} }
 
 func (f Fake) Dimension() int { return f.dim }
 func (f Fake) Model() string  { return f.model }
@@ -101,31 +53,4 @@ func (f Fake) Embed(_ context.Context, text string) ([]float64, error) {
 		}
 	}
 	return v, nil
-}
-
-func checkDim(v []float64, want int) ([]float64, error) {
-	if len(v) != want {
-		return nil, fmt.Errorf("embedding dimension %d does not match configured dimension %d", len(v), want)
-	}
-	return v, nil
-}
-func postJSON(ctx context.Context, c *http.Client, url, key string, in, out any) error {
-	b, _ := json.Marshal(in)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s returned %s", url, resp.Status)
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
 }

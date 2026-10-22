@@ -7,23 +7,22 @@ import (
 	"strings"
 	"time"
 
-	"k8s-lab/shared/llm"
 	"knowledge/internal/config"
+	"knowledge/internal/modelrouter"
 )
 
 var ErrEmptyText = errors.New("text is required")
 
 type Service struct {
-	llm            *llm.Client
-	model          string
+	llm            modelrouter.Completer
 	language       string
 	promptTemplate string
 }
 
-func New(cfg config.Config) *Service {
+// New builds the service over c, the model call for the translate purpose.
+func New(cfg config.Config, c modelrouter.Completer) *Service {
 	return &Service{
-		llm:            llm.New(cfg.LLM(cfg.Translate)),
-		model:          cfg.Translate.Model,
+		llm:            c,
 		language:       cfg.KnowledgeLanguage,
 		promptTemplate: cfg.Translate.Prompt,
 	}
@@ -43,12 +42,12 @@ func (s *Service) Translate(ctx context.Context, text string) (string, error) {
 	}
 	sys := strings.ReplaceAll(s.promptTemplate, "{{language}}", s.language)
 	start := time.Now()
-	out, err := s.llm.Complete(ctx, []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: text}})
+	out, err := s.llm.Complete(ctx, []modelrouter.Message{{Role: "system", Content: sys}, {Role: "user", Content: text}})
 	outcome := "ok"
 	if err != nil {
 		outcome = "error"
 	}
-	slog.Info("translate llm call", "model", s.model, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
+	slog.Info("translate llm call", "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)
 	if err != nil {
 		return "", err
 	}

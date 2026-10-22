@@ -16,6 +16,9 @@ vars:
   # it always targets this project's cluster only — via kubectl's own
   # --kubeconfig flag, not the KUBECONFIG env var.
   KUBECTL: 'kubectl --kubeconfig={{.KUBECONFIG_PATH}}'
+  # The apps the llm-* tasks configure (each with its own <app>-models ConfigMap,
+  # <app>-llm-keys and <app>-vertex Secrets and Deployment in namespace app).
+  LLM_APPS: assistant phraseforge knowledge
   # Trusted inside the cluster node if present (see start-k8s); harmless if absent.
   CORP_CA_BUNDLE: /usr/local/munki/certs.pem
   ARGO_WORKFLOWS_VERSION: v4.1.3
@@ -441,6 +444,177 @@ tasks:
       - task: _require-cluster
       - '{{.KUBECTL}} delete -f k8s/26-ollama.yaml --ignore-not-found'
 
+  llm-status:
+    desc: Show which LLM sources (LAN Ollama, OpenRouter, Vertex AI, local Ollama) are available, in priority order; fails if none (read-only, reads LLM_* variables from the shell).
+    cmds:
+      - bash scripts/llm-status.sh
+
+  test-llm-scripts:
+    desc: Test the llm-* task scripts against a fake Ollama and a fake gcloud (no real LLM).
+    cmds:
+      - bash scripts/llm-status_test.sh
+      - bash scripts/llm-generate_test.sh
+
+  # ── Extra LLM sources (LAN Ollama, OpenRouter, Vertex AI) ───────────────────
+  # The settings come from .env only (see .env.example and scripts/llm-env.sh); the
+  # shell's own variables of those names are ignored. The generated models
+  # files and the list of enabled sources live in .k3d/llm/ (no secrets); the
+  # deploy tasks use the generated files while they exist.
+  llm-enable:
+    desc: Add the available extra LLM sources (LAN Ollama, OpenRouter, Vertex AI) to the assistant, phraseforge and knowledge in the dev cluster; fails if no source is available.
+    cmds:
+      - task: _require-cluster
+      - task: _llm-guard
+      - task: _llm-guard-vertex
+      - bash scripts/llm-enable.sh
+      - task: _llm-apply
+
+  llm-disable:
+    desc: Remove the extra LLM sources, their keys and tokens from the dev cluster; the apps return to the committed local Ollama configuration.
+    cmds:
+      - task: _require-cluster
+      - rm -rf .k3d/llm
+      - task: _llm-apply
+
+  # Refuses to take over an OPENROUTER_API_KEY that someone put into
+  # assistant-llm-keys or phraseforge-llm-keys by hand (both READMEs tell you to
+  # create those Secrets yourself); only a key this task added (marked by an
+  # annotation) is replaced or removed.
+  _llm-guard:
+    internal: true
+    cmds:
+      - |
+        eval "$(bash scripts/llm-env.sh --export)"
+        if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+            for app in {{.LLM_APPS}}; do
+                name="$app-llm-keys"
+                if {{.KUBECTL}} get secret "$name" -n app -o json 2>/dev/null \
+                    | jq -e '(.data.OPENROUTER_API_KEY != null) and ((.metadata.annotations["llm.k8s-lab/managed-keys"] // "") != "OPENROUTER_API_KEY")' >/dev/null; then
+                    echo "Secret $name already has an OPENROUTER_API_KEY that llm-enable did not add; refusing to overwrite it. Remove that key from the Secret, or unset OPENROUTER_API_KEY here to use it as is." >&2
+                    exit 1
+                fi
+            done
+        fi
+
+  # Same rule for the Vertex token Secrets: one this task did not create is never
+  # overwritten.
+  _llm-guard-vertex:
+    internal: true
+    cmds:
+      - |
+        eval "$(bash scripts/llm-env.sh --export)"
+        if [ -n "${LLM_VERTEX_ACCOUNT:-}" ]; then
+            for app in {{.LLM_APPS}}; do
+                name="$app-vertex"
+                if {{.KUBECTL}} get secret "$name" -n app -o json 2>/dev/null \
+                    | jq -e '(.metadata.annotations["llm.k8s-lab/managed"] // "") != "true"' >/dev/null; then
+                    echo "Secret $name already exists and llm-enable did not create it; refusing to overwrite it. Delete it with: kubectl --kubeconfig=.k3d/kubeconfig -n app delete secret $name   (or remove LLM_VERTEX_ACCOUNT from .env)" >&2
+                    exit 1
+                fi
+            done
+        fi
+
+  _llm-apply:
+    internal: true
+    cmds:
+      - task: _apply-namespaces
+      - task: _llm-openrouter-key
+      - task: _llm-vertex-token
+      - task: _ensure-assistant-models
+      - task: _ensure-phraseforge-models
+      - task: _ensure-knowledge-models
+      - task: _llm-restart
+
+  _llm-openrouter-key:
+    internal: true
+    cmds:
+      - |
+        eval "$(bash scripts/llm-env.sh --export)"
+        sources=""
+        if [ -f .k3d/llm/sources ]; then sources="$(cat .k3d/llm/sources)"; fi
+        if printf '%s\n' "$sources" | grep -qx openrouter; then
+            for app in {{.LLM_APPS}}; do
+                name="$app-llm-keys"
+                # apply merges: other keys already in the Secret stay.
+                printf '%s' "$OPENROUTER_API_KEY" \
+                | {{.KUBECTL}} create secret generic "$name" --from-file=OPENROUTER_API_KEY=/dev/stdin \
+                    --namespace=app --dry-run=client -o yaml \
+                | {{.KUBECTL}} apply -f - >/dev/null
+                {{.KUBECTL}} annotate secret "$name" -n app --overwrite llm.k8s-lab/managed-keys=OPENROUTER_API_KEY >/dev/null
+            done
+            echo "OpenRouter key stored in the Secrets <app>-llm-keys for: {{.LLM_APPS}}"
+        else
+            # Only a key this task added is removed; the Secret goes only when empty.
+            for app in {{.LLM_APPS}}; do
+                name="$app-llm-keys"
+                if {{.KUBECTL}} get secret "$name" -n app >/dev/null 2>&1; then
+                    managed="$({{.KUBECTL}} get secret "$name" -n app -o json | jq -r '.metadata.annotations["llm.k8s-lab/managed-keys"] // ""')"
+                    if [ "$managed" = OPENROUTER_API_KEY ]; then
+                        {{.KUBECTL}} patch secret "$name" -n app --type=json \
+                            -p '[{"op":"remove","path":"/data/OPENROUTER_API_KEY"}]' >/dev/null 2>&1 || true
+                        {{.KUBECTL}} annotate secret "$name" -n app llm.k8s-lab/managed-keys- >/dev/null
+                        left="$({{.KUBECTL}} get secret "$name" -n app -o json | jq '(.data // {}) | length')"
+                        if [ "$left" = 0 ]; then {{.KUBECTL}} delete secret "$name" -n app; fi
+                    fi
+                fi
+            done
+        fi
+
+  # A short-lived (about an hour) OAuth token of the gcloud account in
+  # LLM_VERTEX_ACCOUNT, one Secret per app; the pods re-read the file on every
+  # call, so a refreshed token needs no restart.
+  _llm-vertex-token:
+    internal: true
+    cmds:
+      - |
+        set -e
+        eval "$(bash scripts/llm-env.sh --export)"
+        sources=""
+        if [ -f .k3d/llm/sources ]; then sources="$(cat .k3d/llm/sources)"; fi
+        if printf '%s\n' "$sources" | grep -qx vertex; then
+            token="$(timeout 20 gcloud auth print-access-token --account="$LLM_VERTEX_ACCOUNT")"
+            for app in {{.LLM_APPS}}; do
+                name="$app-vertex"
+                printf '%s' "$token" \
+                | {{.KUBECTL}} create secret generic "$name" --from-file=token=/dev/stdin \
+                    --namespace=app --dry-run=client -o yaml \
+                | {{.KUBECTL}} apply -f - >/dev/null
+                {{.KUBECTL}} annotate secret "$name" -n app --overwrite llm.k8s-lab/managed=true >/dev/null
+            done
+            echo "Vertex token stored in the Secrets <app>-vertex for: {{.LLM_APPS}} (valid about an hour)"
+        else
+            # Only Secrets this task wrote (marked by the annotation) are removed.
+            for app in {{.LLM_APPS}}; do
+                name="$app-vertex"
+                marked="$({{.KUBECTL}} get secret "$name" -n app -o json 2>/dev/null | jq -r '.metadata.annotations["llm.k8s-lab/managed"] // ""' || true)"
+                if [ "$marked" = true ]; then {{.KUBECTL}} delete secret "$name" -n app; fi
+            done
+        fi
+
+  # Applies the manifests (they gained an optional key env and Vertex volume) and
+  # makes the apps that are deployed re-read their configuration, but only when it
+  # changed: each Deployment's pod template carries an annotation with the
+  # resource versions of its models ConfigMap and its key Secret (never their
+  # content), and Kubernetes rolls the pods out only when that value changes. A
+  # Vertex token needs no restart (the file is re-read on every call). Apps that
+  # are not deployed pick this up at their deploy.
+  _llm-restart:
+    internal: true
+    cmds:
+      - |
+        for app in {{.LLM_APPS}}; do
+            if {{.KUBECTL}} get deployment/"$app" -n app >/dev/null 2>&1; then
+                {{.KUBECTL}} apply -f "$app/k8s/"
+                models="$({{.KUBECTL}} get configmap "$app-models" -n app -o jsonpath='{.metadata.resourceVersion}')"
+                keys="$({{.KUBECTL}} get secret "$app-llm-keys" -n app -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null || true)"
+                {{.KUBECTL}} patch deployment/"$app" -n app --type=merge \
+                    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"llm.k8s-lab/config\":\"models=${models};keys=${keys:-none}\"}}}}}"
+                {{.KUBECTL}} rollout status deployment/"$app" -n app --timeout=120s
+            else
+                echo "$app is not deployed; it uses this configuration from its next deploy"
+            fi
+        done
+
   deploy-headlamp:
     desc: Deploy Headlamp Kubernetes dashboard to the running cluster.
     cmds:
@@ -528,6 +702,7 @@ tasks:
       - task: _apply-namespaces
       - task: _ensure-db-secret
       - '{{.KUBECTL}} apply -f knowledge/k8s/configmap.yaml'
+      - task: _ensure-knowledge-models
       - task: _migrate-db
         vars:
           APP: knowledge
@@ -543,6 +718,25 @@ tasks:
       - task: _require-cluster
       - '{{.KUBECTL}} delete -f knowledge/k8s/deployment.yaml --ignore-not-found'
       - '{{.KUBECTL}} delete -f knowledge/k8s/configmap.yaml --ignore-not-found'
+      - '{{.KUBECTL}} delete configmap knowledge-models -n app --ignore-not-found'
+
+  # The models file is a ConfigMap built from knowledge/models.dev.yaml, or from
+  # the file `task llm-enable` generated, checked first (knowledge shares the
+  # assistant's models schema) so a mistake in it stops the deploy instead of the
+  # pod. The migrate Job and the Deployment both mount it, so it is applied
+  # before either.
+  _ensure-knowledge-models:
+    internal: true
+    cmds:
+      - |
+        file="$PWD/knowledge/models.dev.yaml"
+        if [ -f .k3d/llm/knowledge-models.yaml ]; then file="$PWD/.k3d/llm/knowledge-models.yaml"; fi
+        (cd assistant && go run . models validate "$file")
+        {{.KUBECTL}} create configmap knowledge-models \
+            --from-file=models.yaml="$file" \
+            --namespace=app \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
 
   migrate-knowledge-db:
     desc: Ensure the knowledge Qdrant collection exists.
@@ -721,15 +915,18 @@ tasks:
             --dry-run=client -o yaml \
         | {{.KUBECTL}} apply -f -
 
-  # The models file is a ConfigMap built from assistant/models.dev.yaml, checked
-  # first so a mistake in it stops the deploy instead of the pod.
+  # The models file is a ConfigMap built from assistant/models.dev.yaml, or from
+  # the file `task llm-enable` generated (.k3d/llm/), checked first so a mistake
+  # in it stops the deploy instead of the pod.
   _ensure-assistant-models:
     internal: true
     cmds:
-      - (cd assistant && go run . models validate models.dev.yaml)
       - |
+        file="$PWD/assistant/models.dev.yaml"
+        if [ -f .k3d/llm/assistant-models.yaml ]; then file="$PWD/.k3d/llm/assistant-models.yaml"; fi
+        (cd assistant && go run . models validate "$file")
         {{.KUBECTL}} create configmap assistant-models \
-            --from-file=models.yaml=assistant/models.dev.yaml \
+            --from-file=models.yaml="$file" \
             --namespace=app \
             --dry-run=client -o yaml \
         | {{.KUBECTL}} apply -f -
@@ -747,30 +944,24 @@ tasks:
             --dry-run=client -o yaml \
         | {{.KUBECTL}} apply -f -
 
-  # The assistant's access token for Vertex AI: a short-lived OAuth token of the
-  # gcloud account in ASSISTANT_VERTEX_ACCOUNT, written to a gitignored file and
-  # projected as a Secret, which the pod re-reads on every call (no restart).
-  # Run it again when a call fails with "401 ... token may have expired".
-  # Not part of `task deploy-assistant`: the dev models file does not use Vertex
-  # (the dev cluster mimics phraseforge: one Ollama on the laptop).
-  refresh-assistant-vertex-token:
-    desc: Write a fresh Vertex AI access token for the assistant into its Secret (valid about an hour).
-    vars:
-      ACCOUNT: '{{.ASSISTANT_VERTEX_ACCOUNT | default "nobody@example.com"}}'
+  # Vertex access tokens last about an hour: run this again when a call fails with
+  # "401 ... token may have expired". The pods re-read the file, so no restart.
+  llm-refresh-vertex-token:
+    desc: Write a fresh Vertex AI access token (valid about an hour) into the Secrets of the assistant, phraseforge and knowledge; Vertex must be enabled by `task llm-enable`.
     cmds:
       - task: _require-cluster
       - |
-        set -e
-        mkdir -p .k3d
-        install -m 600 /dev/null .k3d/assistant-vertex-token
-        gcloud auth print-access-token --account='{{.ACCOUNT}}' > .k3d/assistant-vertex-token
-        {{.KUBECTL}} create secret generic assistant-vertex \
-            --from-file=token=.k3d/assistant-vertex-token \
-            --namespace=app \
-            --dry-run=client -o yaml \
-        | {{.KUBECTL}} apply -f -
-        rm -f .k3d/assistant-vertex-token
-        echo "assistant-vertex token written for {{.ACCOUNT}}; the pod picks it up within about a minute"
+        eval "$(bash scripts/llm-env.sh --export)"
+        if ! grep -qx vertex .k3d/llm/sources 2>/dev/null; then
+            echo "Vertex AI is not enabled. Set LLM_VERTEX_ACCOUNT and LLM_VERTEX_PROJECT in .env and run: task llm-enable" >&2
+            exit 1
+        fi
+        if [ -z "${LLM_VERTEX_ACCOUNT:-}" ]; then
+            echo "LLM_VERTEX_ACCOUNT is not set in .env" >&2
+            exit 1
+        fi
+      - task: _llm-guard-vertex
+      - task: _llm-vertex-token
 
   deploy-phraseforge:
     desc: Build and deploy the phraseforge app to the running cluster.
@@ -785,6 +976,7 @@ tasks:
       - task: _apply-namespaces
       - task: _ensure-db-secret
       - '{{.KUBECTL}} apply -f phraseforge/k8s/configmap.yaml'
+      - task: _ensure-phraseforge-models
       - task: _migrate-db
         vars:
           APP: phraseforge
@@ -799,6 +991,24 @@ tasks:
     cmds:
       - task: _require-cluster
       - '{{.KUBECTL}} delete -f phraseforge/k8s/ --ignore-not-found'
+      - '{{.KUBECTL}} delete configmap phraseforge-models -n app --ignore-not-found'
+
+  # The models file is a ConfigMap built from phraseforge/models.dev.yaml, or from
+  # the file `task llm-enable` generated, checked first (phraseforge shares the assistant's models schema) so a mistake in it
+  # stops the deploy instead of the pod. The migrate Job and the Deployment both
+  # mount it, so it is applied before either.
+  _ensure-phraseforge-models:
+    internal: true
+    cmds:
+      - |
+        file="$PWD/phraseforge/models.dev.yaml"
+        if [ -f .k3d/llm/phraseforge-models.yaml ]; then file="$PWD/.k3d/llm/phraseforge-models.yaml"; fi
+        (cd assistant && go run . models validate "$file")
+        {{.KUBECTL}} create configmap phraseforge-models \
+            --from-file=models.yaml="$file" \
+            --namespace=app \
+            --dry-run=client -o yaml \
+        | {{.KUBECTL}} apply -f -
 
   migrate-phraseforge-db:
     desc: Run the phraseforge database migration Job against the running cluster.

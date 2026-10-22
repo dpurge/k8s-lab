@@ -29,6 +29,10 @@ func Migrate(ctx context.Context, cfg config.Config) error {
 	return err
 }
 
+// SchemaSQL is the idempotent DDL Migrate applies, for tests that need the tables
+// in a throwaway schema.
+func SchemaSQL() string { return schema }
+
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
@@ -106,4 +110,30 @@ CREATE TABLE IF NOT EXISTS operations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS operations_one_running_idx ON operations ((true)) WHERE status = 'running';
-CREATE INDEX IF NOT EXISTS operations_claim_idx ON operations (created_at ASC) WHERE status = 'pending';`
+CREATE INDEX IF NOT EXISTS operations_claim_idx ON operations (created_at ASC) WHERE status = 'pending';
+-- One row per attempt to call a model, embeddings included (see internal/llmcalls).
+-- A row never holds a prompt, a reply, a text or a vector. operation_id is the queue
+-- operation the call ran in (every chat, title, summary, translate and ingest call
+-- runs in one) and is NULL for a call made outside the queue, such as the embedding
+-- of a search query; it has no foreign key, so purging operations never touches it.
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    operation_id  UUID,
+    kind          TEXT NOT NULL DEFAULT '',
+    model_id      TEXT NOT NULL,
+    provider_id   TEXT NOT NULL,
+    model_name    TEXT NOT NULL,
+    tags          TEXT[] NOT NULL DEFAULT '{}',
+    input_tokens  INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cost_usd      NUMERIC(14, 8) NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+    started_at    TIMESTAMPTZ NOT NULL,
+    duration_ms   INTEGER NOT NULL CHECK (duration_ms >= 0),
+    outcome       TEXT NOT NULL CHECK (outcome IN ('ok', 'error', 'timeout', 'rate_limited', 'canceled')),
+    error         TEXT,
+    http_status   INTEGER,
+    request_id    TEXT
+);
+CREATE INDEX IF NOT EXISTS llm_calls_started_idx ON llm_calls (started_at);
+CREATE INDEX IF NOT EXISTS llm_calls_model_idx ON llm_calls (model_id, started_at);
+CREATE INDEX IF NOT EXISTS llm_calls_operation_idx ON llm_calls (operation_id);`

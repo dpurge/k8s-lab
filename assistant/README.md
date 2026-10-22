@@ -217,12 +217,14 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
 - Providers: `ollama`; `vertex` (Gemini on Vertex AI, REST `generateContent`),
   which authenticates with an OAuth access token that the provider's
   `api_key_from: file:/path` in `models.yaml` names, re-read on every call, so a
-  refreshed token needs no restart (to try it in the dev cluster, add a `vertex`
-  provider as in `models.example.yaml` with `api_key_from:
-  file:/etc/assistant-vertex/token` and run `task refresh-assistant-vertex-token`,
-  which writes the token from your gcloud account into the Secret
-  `assistant-vertex`, mounted at `/etc/assistant-vertex/token`; the token is valid
-  about an hour; production needs a service account, not yet built). Without a token the
+  refreshed token needs no restart (to try it in the dev cluster, put
+  `LLM_VERTEX_ACCOUNT` and `LLM_VERTEX_PROJECT` in `.env` and run `task llm-enable`,
+  which adds the `vertex` provider and writes the token from your gcloud account
+  into the Secret `assistant-vertex`, mounted at `/etc/assistant-vertex/token`;
+  the token is valid about an hour, `task llm-refresh-vertex-token` writes a new
+  one; Vertex AI in production is not implemented, a known gap described in the
+  [root README](../README.md#known-gaps): nothing there mints or renews the
+  token). Without a token the
   Vertex provider is disabled (reason `missing_credentials`, one warning in the
   log), never a startup error; and `demo`, a deterministic stand-in that acts out `hello` instantly,
   to try the interface without a real model. `openai` (any OpenAI-compatible
@@ -281,28 +283,35 @@ per header, read on every call); the rules are in the phraseforge README,
   the dev models file's only real provider, the same as phraseforge's dev
   cluster: model `gemma4-12b` (`gemma4:12b`), tags `default`, `chat`, `review`
   and `cheap`, priority 10. The GPU machine (`ollama-gpu`, preferred), Vertex
-  and OpenRouter are the prod cluster's; `models.example.yaml` shows them.
-- **Vertex (`gcp`), if you add it to try it:** `task refresh-assistant-vertex-token`
-  writes a fresh access token from your gcloud account into the Secret
-  `assistant-vertex` (key `token`, valid about an hour). The Deployment mounts
-  that Secret, optional, at `/etc/assistant-vertex`, so a provider with
-  `api_key_from: file:/etc/assistant-vertex/token` reads it. The task is not
-  part of `task deploy-assistant`; run it again when the token expires, no
-  restart is needed.
-- **`env:` keys:** the Deployment's `env` list has only `ASSISTANT_MODELS_FILE`,
-  `ASSISTANT_WORKFLOWS_DIR` and `ASSISTANT_DATABASE_URL`; no provider key is set,
-  so an `env:NAME` provider has no credential there. To supply one, create a
-  Secret with the key in the `app` namespace (with the lab's kubeconfig), add an
-  entry such as this to the container's `env` in `k8s/deployment.yaml`, name it
-  in the provider (`api_key_from: env:OPENROUTER_API_KEY`) in the models
-  ConfigMap source, and run `task deploy-assistant` (it applies both and
-  restarts the pod):
+  and OpenRouter are the prod cluster's in the committed file;
+  `models.example.yaml` shows them. To try a LAN Ollama, OpenRouter or Vertex in
+  the dev cluster, use `task llm-enable` (see "LLM providers in the dev cluster"
+  in the [root README](../README.md#llm-providers-in-the-dev-cluster)).
+- **Vertex, if you enable it to try it:** `task llm-enable` (with
+  `LLM_VERTEX_ACCOUNT` and `LLM_VERTEX_PROJECT` in `.env`) writes an access token
+  from your gcloud account into the Secret `assistant-vertex` (key `token`, valid
+  about an hour) and adds the `vertex` provider to the models file. The Deployment
+  mounts that Secret, optional, at `/etc/assistant-vertex`, so the provider's
+  `api_key_from: file:/etc/assistant-vertex/token` reads it. Run
+  `task llm-refresh-vertex-token` when the token expires; no restart is needed.
+  A Secret of that name that `llm-enable` did not create is never overwritten.
+- **`env:` keys:** besides `ASSISTANT_MODELS_FILE`, `ASSISTANT_WORKFLOWS_DIR` and
+  `ASSISTANT_DATABASE_URL`, the Deployment's `env` list has an optional
+  `OPENROUTER_API_KEY` from the Secret `assistant-llm-keys`, key
+  `OPENROUTER_API_KEY` (the pod starts without it). `task llm-enable` creates
+  that Secret from `OPENROUTER_API_KEY` in `.env` and adds the `openrouter`
+  provider (`api_key_from: env:OPENROUTER_API_KEY`). A Secret of that name made by
+  hand is still allowed and is never overwritten: `llm-enable` stops and names it.
+  For any other key, create a Secret with it in the `app` namespace (with the
+  lab's kubeconfig), add an entry such as this to the container's `env` in
+  `k8s/deployment.yaml`, name it in the provider in the models ConfigMap source,
+  and run `task deploy-assistant` (it applies both and restarts the pod):
 
   ```yaml
   - name: OPENROUTER_API_KEY
     valueFrom:
       secretKeyRef:
-        name: assistant-llm-keys   # a Secret you create; not created by any task
+        name: assistant-llm-keys   # created by `task llm-enable`, or by hand
         key: OPENROUTER_API_KEY
         optional: true             # the pod starts without it
   ```

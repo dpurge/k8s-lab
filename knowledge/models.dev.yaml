@@ -1,0 +1,42 @@
+# The models the dev cluster's knowledge uses (KNOWLEDGE_MODELS_FILE;
+# /etc/knowledge/models.yaml in the cluster): the Ollama on the laptop that runs
+# the cluster, reached from a pod as host.docker.internal. Deployed as the
+# knowledge-models ConfigMap by `task deploy-knowledge`; `task llm-enable`
+# generates a copy with extra providers in .k3d/llm/, which the deploy task then
+# uses. Check this file with
+#   (cd assistant && go run . models validate ../knowledge/models.dev.yaml)
+# A purpose in config.yaml lists model_tags; a call goes to the highest-priority
+# available model that has all of them and falls back to a lower one when it fails.
+providers:
+  - id: ollama
+    type: ollama
+    base_url: http://host.docker.internal:11434
+    api_key_from: ""
+models:
+  - id: gemma4-12b
+    provider: ollama
+    model: gemma4:12b
+    tags: [default, chat]
+    priority: 10
+    options:
+      # The most this model is run with; a purpose's num_ctx must not exceed it
+      # (chat asks for 8192).
+      num_ctx: 8192
+      think: false
+      # Streaming no-progress limits: wait for the first output (model load +
+      # prompt eval), then the longest gap between outputs.
+      first_token_timeout_seconds: 300
+      idle_timeout_seconds: 60
+  # The embedding model. embedding_space names the vector space of the knowledge
+  # base (config.yaml: embeddings.embedding_space) and dimension is the length of
+  # its vectors (bge-m3 produces 1024-dim dense embeddings, verified against
+  # Ollama). Another copy of the same model on another machine may carry the same
+  # embedding_space and stand in for this one; a different model must never
+  # share it, because vectors of different spaces cannot be compared.
+  - id: bge-m3
+    provider: ollama
+    model: bge-m3
+    tags: [embed]
+    priority: 10
+    embedding_space: bge-m3
+    dimension: 1024

@@ -126,6 +126,16 @@
           "type": "integer",
           "minimum": 0
         },
+        "embedding_space": {
+          "description": "Marks an embedding model and names the vector space it produces. Models of one space may stand in for each other (the same model on two machines); models of different spaces never do, even with the same dimension. Needs dimension. Only ollama and openai providers have an embeddings endpoint.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "dimension": {
+          "description": "How many numbers an embedding of this model has; a reply of another length is a failed call. Needs embedding_space.",
+          "type": "integer",
+          "minimum": 1
+        },
         "options": {
           "description": "Settings for this model; a provider ignores the ones that do not apply to it. num_ctx, think, first_token_timeout_seconds and idle_timeout_seconds are Ollama-only; num_predict (most tokens in a reply: max_tokens for openai and anthropic, which defaults to 16000, and the output limit for vertex and ollama) and overall_timeout_seconds apply to every provider.",
           "type": "object",

@@ -135,7 +135,7 @@ type apiError struct {
 func (p *Provider) token(prov modelcfg.Provider) (string, error) {
 	token, err := modelcfg.ResolveCredential(prov, p.getenv, p.readFile).Require(prov.ID)
 	if err != nil {
-		return "", fmt.Errorf("%w (dev: task refresh-assistant-vertex-token writes the access token file)", err)
+		return "", err
 	}
 	return token, nil
 }
@@ -257,7 +257,7 @@ func statusFailure(code int, raw []byte) *router.Failure {
 	case code == http.StatusTooManyRequests:
 		return &router.Failure{Kind: router.FailRateLimited, Err: err, HTTPStatus: code}
 	case code == http.StatusUnauthorized, code == http.StatusForbidden:
-		return &router.Failure{Kind: router.FailClient, Err: fmt.Errorf("%w (the access token may have expired: task refresh-assistant-vertex-token)", err), HTTPStatus: code}
+		return &router.Failure{Kind: router.FailClient, Err: fmt.Errorf("%w (the access token may have expired or lack permission; renew the credential that api_key_from points to)", err), HTTPStatus: code}
 	case code >= 500:
 		return &router.Failure{Kind: router.FailServer, Err: err, HTTPStatus: code}
 	}

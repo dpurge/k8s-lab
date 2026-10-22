@@ -29,6 +29,10 @@
            them), on top of the current page's own panel. Shown with either. -->
       <dp-tabs slot="sidebar" id="documentsNav" class="panel active" orientation="vertical" label="Documents"></dp-tabs>
 
+      <!-- The pages of Models (what is configured, what was used, every call), on
+           top of the current page's own panel. Shown with any of the three. -->
+      <dp-tabs slot="sidebar" id="modelsNav" class="panel" orientation="vertical" label="Models"></dp-tabs>
+
       <aside slot="sidebar" id="knowledgeAside" class="panel active">
         <h1>Documents</h1>
         <input id="q" placeholder="Semantic search query" />
@@ -90,6 +94,46 @@
         <h1>Tasks</h1>
         <div class="actions">
           <dp-button onclick="run(loadJobs)">Refresh</dp-button>
+        </div>
+      </aside>
+
+      <aside slot="sidebar" id="modelsAside" class="panel">
+        <h1>Models</h1>
+        <p class="muted">The models the router can use, and whether each can take calls now.</p>
+        <div class="actions">
+          <dp-button onclick="run(loadModelsPage)">Refresh</dp-button>
+        </div>
+      </aside>
+
+      <aside slot="sidebar" id="usageAside" class="panel">
+        <h1>Usage</h1>
+        <dp-field label="Period" for="usagePeriod">
+          <select id="usagePeriod"></select>
+        </dp-field>
+        <dp-field label="Group by" for="usageGroup">
+          <select id="usageGroup"></select>
+        </dp-field>
+        <div class="actions">
+          <dp-button onclick="run(loadUsagePage)">Refresh</dp-button>
+        </div>
+      </aside>
+
+      <aside slot="sidebar" id="attemptsAside" class="panel">
+        <h1>Attempts</h1>
+        <dp-field label="Period" for="attemptsPeriod">
+          <select id="attemptsPeriod"></select>
+        </dp-field>
+        <dp-field label="Model" for="attemptsModel">
+          <select id="attemptsModel"></select>
+        </dp-field>
+        <dp-field label="Kind" for="attemptsKind">
+          <select id="attemptsKind"></select>
+        </dp-field>
+        <dp-field label="Outcome" for="attemptsOutcome">
+          <select id="attemptsOutcome"></select>
+        </dp-field>
+        <div class="actions">
+          <dp-button onclick="run(() => loadAttemptsPage(1))">Refresh</dp-button>
         </div>
       </aside>
 
@@ -181,6 +225,22 @@
         <div id="jobs"></div>
       </section>
 
+      <section id="modelsTab" class="tab">
+        <h1>Models</h1>
+        <dp-model-table id="modelsTable"></dp-model-table>
+      </section>
+
+      <section id="usageTab" class="tab">
+        <h1>Usage</h1>
+        <dp-usage-table id="usageTable"></dp-usage-table>
+      </section>
+
+      <section id="attemptsTab" class="tab">
+        <h1>Attempts</h1>
+        <dp-attempt-table id="attemptsTable"></dp-attempt-table>
+        <dp-pager id="attemptsPager" prev-label="Previous" next-label="Next" style="margin-top: 1.5rem"></dp-pager>
+      </section>
+
       <dp-status-bar slot="footer" id="statusBar"></dp-status-bar>
     </dp-shell>
     <dp-dialog id="confirmDialog"></dp-dialog>
@@ -188,5 +248,7 @@
     <!-- defer: it calls dp-status-bar and dp-tabs methods at startup, so it must
          run after dp-core.js (a module) has defined them. -->
     <script defer src="/app.js"></script>
+    <!-- After app.js, whose api(), run() and $() it uses. -->
+    <script defer src="/llm.js"></script>
   </body>
 </html>

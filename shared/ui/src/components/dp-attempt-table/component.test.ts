@@ -33,6 +33,17 @@ test("the full timestamp is the started cell's tooltip; the error is the outcome
   assert.ok(trs[1].querySelector(".badge")!.classList.contains("bad"));
 });
 
+test("provider and model are cut to one line like the user, and the full id is the tooltip", async () => {
+  const long = "provider-with-a-very-long-identifier-0123456789";
+  const el = await table([row({ provider: long, model: "model-with-a-very-long-identifier-0123456789" })]);
+  const tds = el.shadowRoot!.querySelectorAll("tbody tr td");
+  for (const index of [2, 3]) {
+    assert.ok(tds[index].classList.contains("name"), `column ${index} is cut to one line`);
+  }
+  assert.equal(tds[2].getAttribute("title"), long);
+  assert.equal(tds[2].textContent!.trim(), long, "the text itself is whole; only the display is cut");
+});
+
 test("labels replace headings by key", async () => {
   const el = await table([row()]);
   el.labels = { started: "Début", duration: "Durée" };

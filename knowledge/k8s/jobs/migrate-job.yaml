@@ -42,6 +42,12 @@ spec:
               mountPath: /etc/knowledge
               readOnly: true
       volumes:
+        # config.yaml (knowledge-config) and models.yaml (knowledge-models, built by
+        # the Taskfile from models.dev.yaml or a generated file) in one directory.
         - name: config
-          configMap:
-            name: knowledge-config
+          projected:
+            sources:
+              - configMap:
+                  name: knowledge-config
+              - configMap:
+                  name: knowledge-models

@@ -264,7 +264,7 @@ func TestModelsExampleLoadsAndServesTheDefaultPurposes(t *testing.T) {
 	}
 }
 
-func TestConfigMapModelsYamlLoadsAndServesTheConfigMapPurposes(t *testing.T) {
+func TestDevModelsYamlLoadsAndServesTheConfigMapPurposes(t *testing.T) {
 	raw, err := os.ReadFile("../../k8s/configmap.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,14 @@ func TestConfigMapModelsYamlLoadsAndServesTheConfigMapPurposes(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &cm); err != nil {
 		t.Fatal(err)
 	}
-	writeModels(t, cm.Data["models.yaml"])
+	if _, ok := cm.Data["models.yaml"]; ok {
+		t.Error("configmap still has models.yaml; it lives in models.dev.yaml (the phraseforge-models ConfigMap)")
+	}
+	models, err := os.ReadFile("../../models.dev.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeModels(t, string(models))
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(cm.Data["config.yaml"]), 0o644); err != nil {
 		t.Fatal(err)

@@ -1,14 +1,18 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"time"
+	"regexp"
+	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
-	"k8s-lab/shared/llm"
+	"k8s-lab/shared/retention"
 )
 
 type Config struct {
@@ -24,11 +28,6 @@ type Config struct {
 	PGUser     string
 	PGPassword string
 
-	// Providers maps a provider key ("ollama", "openrouter", "openai") to
-	// its connection details; every purpose (and Embeddings) names one of
-	// these keys — phraseforge's config shape.
-	Providers map[string]ProviderConfig
-
 	Embeddings EmbeddingsConfig
 
 	Chat            PurposeConfig
@@ -37,122 +36,104 @@ type Config struct {
 	Translate       PurposeConfig
 
 	KnowledgeLanguage string
+
+	// LLMCallsRetentionDays is how long model call records are kept; 0 keeps
+	// them forever.
+	LLMCallsRetentionDays int
 }
 
-// ProviderConfig is one LLM provider's connection details. APIKey is never
-// read from the mounted file — only from that provider's own env var
-// (OLLAMA_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY).
-type ProviderConfig struct {
-	BaseURL string
-	APIKey  string
-	// FirstTokenTimeoutSeconds and IdleTimeoutSeconds bound a streamed
-	// call's wait for its first output (model load + prompt eval) and the
-	// gap between outputs afterwards; 0 means shared/llm's own default.
-	// Only the Ollama path streams.
-	FirstTokenTimeoutSeconds int
-	IdleTimeoutSeconds       int
-}
-
-// PurposeConfig is one LLM use: which provider and model, its runtime
-// knobs, and its system prompt.
+// PurposeConfig is one LLM use: the tags a model must have (the router picks
+// the highest-priority available model with all of them; providers, models
+// and their options are in models.yaml), its runtime knobs and its system
+// prompt.
 type PurposeConfig struct {
-	Provider string
-	Model    string
-	// NumCtx sets Ollama's options.num_ctx; 0 leaves Ollama's default.
+	ModelTags []string
+	// NumCtx is the context window the purpose sizes its input to and sends
+	// with each call; 0 leaves the model's own setting.
 	NumCtx int
-	Think  bool
-	// TimeoutSeconds caps the whole call — a backstop; the provider's
-	// first-token/idle limits are what catch a hung call.
+	// TimeoutSeconds caps the whole call — a backstop; the model's
+	// first-token/idle limits (models.yaml) are what catch a hung call.
 	TimeoutSeconds int
 	Prompt         string
 }
 
-// EmbeddingsConfig selects the embedding model. Provider is a registry key
-// or "fake" (no provider entry needed).
+// NamedPurpose is a purpose with its key in the config file.
+type NamedPurpose struct {
+	Name    string
+	Purpose PurposeConfig
+}
+
+// Purposes lists the four LLM purposes under their config keys.
+func (c Config) Purposes() []NamedPurpose {
+	return []NamedPurpose{
+		{"chat", c.Chat}, {"generate_title", c.GenerateTitle},
+		{"generate_summary", c.GenerateSummary}, {"translate", c.Translate},
+	}
+}
+
+// DefaultLLMCallsRetentionDays is how long model call records are kept unless
+// llm_calls.retention_days says otherwise.
+const DefaultLLMCallsRetentionDays = 30
+
+// DefaultNumCtx is the window assumed for a purpose that sets none: Ollama's
+// own default.
+const DefaultNumCtx = 4096
+
+// EffectiveNumCtx is n, or DefaultNumCtx when n is unset (zero or negative).
+func EffectiveNumCtx(n int) int {
+	if n <= 0 {
+		return DefaultNumCtx
+	}
+	return n
+}
+
+// EmbeddingsConfig names the vector space the knowledge base lives in and how
+// long its vectors are. The models that produce it (providers, addresses, keys)
+// are the embedding models of that space in models.yaml; the router falls back
+// only between models of the same space, so the index never mixes vector spaces.
+// Fake makes embeddings from a deterministic hash with no model at all, for
+// tests and local runs.
 type EmbeddingsConfig struct {
-	Provider  string
-	Model     string
+	Space     string
 	Dimension int
+	Fake      bool
 }
 
-// FakeEmbeddingsProvider needs no registry entry (tests/local runs).
-const FakeEmbeddingsProvider = "fake"
-
-// LLM builds the shared/llm client config for p. Safe for any purpose Load
-// returned, since Load rejects a purpose whose provider isn't registered.
-func (c Config) LLM(p PurposeConfig) llm.Config {
-	prov := c.Providers[p.Provider]
-	return llm.Config{
-		Provider: p.Provider,
-		BaseURL:  prov.BaseURL,
-		APIKey:   prov.APIKey,
-		Model:    p.Model,
-		NumCtx:   p.NumCtx,
-		Think:    p.Think,
-		Timeout:  time.Duration(p.TimeoutSeconds) * time.Second,
-
-		FirstTokenTimeout: time.Duration(prov.FirstTokenTimeoutSeconds) * time.Second,
-		IdleTimeout:       time.Duration(prov.IdleTimeoutSeconds) * time.Second,
-	}
-}
-
-// EmbeddingsConnection resolves Embeddings.Provider to what
-// embeddings.New takes: the API style ("ollama", "openai" for any
-// OpenAI-compatible provider such as openrouter, or "fake"), plus the
-// provider's base URL and API key.
-func (c Config) EmbeddingsConnection() (apiStyle, baseURL, apiKey string) {
-	switch c.Embeddings.Provider {
-	case FakeEmbeddingsProvider, "ollama":
-		apiStyle = c.Embeddings.Provider
-	default:
-		apiStyle = "openai"
-	}
-	prov := c.Providers[c.Embeddings.Provider]
-	return apiStyle, prov.BaseURL, prov.APIKey
-}
+// embeddingSpacePattern is what models.yaml accepts as an embedding_space.
+var embeddingSpacePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // fileConfig mirrors the mounted ConfigMap YAML file's shape. Credentials
 // (PGUser/PGPassword, the provider API keys), Postgres connection fields
 // (PGHost/PGPort/PGDatabase), and QdrantURL are deliberately absent here —
 // they stay plain/Secret-sourced env vars, never read from this file, so
 // `migrate` works before the ConfigMap exists (it's a
-// pre-install/pre-upgrade hook).
+// pre-install/pre-upgrade hook). Providers and models are in models.yaml.
 type fileConfig struct {
-	BindAddr string `yaml:"bindAddr"`
+	BindAddr string `yaml:"bind_addr"`
 	Qdrant   struct {
 		Collection     string  `yaml:"collection"`
-		SearchMinScore float64 `yaml:"searchMinScore"`
+		SearchMinScore float64 `yaml:"search_min_score"`
 	} `yaml:"qdrant"`
-	Providers struct {
-		Ollama     providerFileConfig `yaml:"ollama"`
-		OpenRouter providerFileConfig `yaml:"openrouter"`
-		OpenAI     providerFileConfig `yaml:"openai"`
-	} `yaml:"providers"`
 	Embeddings struct {
-		Provider  string `yaml:"provider"`
-		Model     string `yaml:"model"`
+		Space     string `yaml:"embedding_space"`
 		Dimension int    `yaml:"dimension"`
+		Fake      bool   `yaml:"fake"`
 	} `yaml:"embeddings"`
 	Chat              purposeFileConfig `yaml:"chat"`
-	GenerateTitle     purposeFileConfig `yaml:"generateTitle"`
-	GenerateSummary   purposeFileConfig `yaml:"generateSummary"`
+	GenerateTitle     purposeFileConfig `yaml:"generate_title"`
+	GenerateSummary   purposeFileConfig `yaml:"generate_summary"`
 	Translate         purposeFileConfig `yaml:"translate"`
-	KnowledgeLanguage string            `yaml:"knowledgeLanguage"`
-}
-
-type providerFileConfig struct {
-	BaseURL                  string `yaml:"baseURL"`
-	FirstTokenTimeoutSeconds int    `yaml:"firstTokenTimeoutSeconds"`
-	IdleTimeoutSeconds       int    `yaml:"idleTimeoutSeconds"`
+	KnowledgeLanguage string            `yaml:"knowledge_language"`
+	LLMCalls          struct {
+		RetentionDays int `yaml:"retention_days"`
+	} `yaml:"llm_calls"`
 }
 
 type purposeFileConfig struct {
-	Provider       string `yaml:"provider"`
-	Model          string `yaml:"model"`
-	NumCtx         int    `yaml:"numCtx"`
-	Think          bool   `yaml:"think"`
-	TimeoutSeconds int    `yaml:"timeoutSeconds"`
-	Prompt         string `yaml:"prompt"`
+	ModelTags      []string `yaml:"model_tags"`
+	NumCtx         int      `yaml:"num_ctx"`
+	TimeoutSeconds int      `yaml:"timeout_seconds"`
+	Prompt         string   `yaml:"prompt"`
 }
 
 func defaultFileConfig() fileConfig {
@@ -160,29 +141,26 @@ func defaultFileConfig() fileConfig {
 	f.BindAddr = "0.0.0.0:8300"
 	f.Qdrant.Collection = "knowledge"
 	f.Qdrant.SearchMinScore = 0.4
-	f.Providers.Ollama = providerFileConfig{BaseURL: "http://localhost:11434", FirstTokenTimeoutSeconds: 300, IdleTimeoutSeconds: 60}
-	f.Providers.OpenRouter = providerFileConfig{BaseURL: "https://openrouter.ai/api/v1"}
-	f.Providers.OpenAI = providerFileConfig{BaseURL: "https://api.openai.com/v1"}
-	f.Embeddings.Provider = "ollama"
-	f.Embeddings.Model = "bge-m3"
+	f.Embeddings.Space = "bge-m3"
 	f.Embeddings.Dimension = 1024
 	// TimeoutSeconds 1800 is the overall backstop only, as in phraseforge
 	// (see specs/features/llm-streaming-progress-timeout.md).
 	f.Chat = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", NumCtx: 8192, TimeoutSeconds: 1800,
+		ModelTags: []string{"chat"}, NumCtx: 8192, TimeoutSeconds: 1800,
 		Prompt: "You answer using only the retrieved knowledge documents below.\n\nIf unsupported by the retrieved knowledge documents, say you do not know.",
 	}
 	f.GenerateTitle = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", TimeoutSeconds: 1800,
+		ModelTags: []string{"default"}, TimeoutSeconds: 1800,
 		Prompt: `You write a short, specific title for the given Markdown document. Respond with only the title text on a single line — no quotes, no punctuation at the end, no preamble like "Title:".`,
 	}
 	f.GenerateSummary = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", TimeoutSeconds: 1800,
+		ModelTags: []string{"default"}, TimeoutSeconds: 1800,
 		Prompt: `You write a one-paragraph summary of the given Markdown document, for use as a search-result preview. Respond with only the summary text — no preamble like "Summary:", no quotes.`,
 	}
 	f.KnowledgeLanguage = "English"
+	f.LLMCalls.RetentionDays = DefaultLLMCallsRetentionDays
 	f.Translate = purposeFileConfig{
-		Provider: "ollama", Model: "gemma4:12b", TimeoutSeconds: 1800,
+		ModelTags: []string{"default"}, TimeoutSeconds: 1800,
 		Prompt: "If the following text is already in {{language}}, return it unchanged. Otherwise, translate it into {{language}}. Respond with only the resulting text — no preamble, no explanation.",
 	}
 	return f
@@ -203,8 +181,9 @@ func env(key, fallback string) string {
 // Load reads the mounted config file (path from CONFIG_FILE, default
 // /etc/knowledge/config.yaml) over built-in defaults — a missing file is
 // fine (defaults apply, so local runs without a cluster still work), but a
-// malformed one, one using a removed key, or one naming an unknown
-// provider is a real error, not something to silently paper over.
+// malformed one, one using a removed or unknown key, or invalid values is a
+// real error, not something to silently paper over. The models the purposes
+// run on are in models.yaml (see LoadModels), which only the server needs.
 func Load() (Config, error) {
 	fc := defaultFileConfig()
 	path := env("CONFIG_FILE", "/etc/knowledge/config.yaml")
@@ -215,11 +194,13 @@ func Load() (Config, error) {
 	case err != nil:
 		return Config{}, fmt.Errorf("read config file %s: %w", path, err)
 	default:
-		if err := yaml.Unmarshal(data, &fc); err != nil {
-			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
-		}
-		if err := checkRemovedKeys(data, fc); err != nil {
+		if err := checkRemovedKeys(data); err != nil {
 			return Config{}, fmt.Errorf("config file %s: %w", path, err)
+		}
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
+			return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
 	if err := checkRemovedEnvVars(); err != nil {
@@ -239,12 +220,6 @@ func Load() (Config, error) {
 		PGUser:     env("PGUSER", "postgres"),
 		PGPassword: env("PGPASSWORD", ""),
 
-		Providers: map[string]ProviderConfig{
-			"ollama":     providerConfig(fc.Providers.Ollama, "OLLAMA_API_KEY"),
-			"openrouter": providerConfig(fc.Providers.OpenRouter, "OPENROUTER_API_KEY"),
-			"openai":     providerConfig(fc.Providers.OpenAI, "OPENAI_API_KEY"),
-		},
-
 		Embeddings: EmbeddingsConfig(fc.Embeddings),
 
 		Chat:            PurposeConfig(fc.Chat),
@@ -253,62 +228,138 @@ func Load() (Config, error) {
 		Translate:       PurposeConfig(fc.Translate),
 
 		KnowledgeLanguage: fc.KnowledgeLanguage,
+
+		LLMCallsRetentionDays: fc.LLMCalls.RetentionDays,
 	}
-	if err := cfg.checkProviders(); err != nil {
-		return Config{}, err
+	if err := cfg.check(); err != nil {
+		return Config{}, fmt.Errorf("config file %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func providerConfig(f providerFileConfig, apiKeyEnv string) ProviderConfig {
-	return ProviderConfig{
-		BaseURL: f.BaseURL, APIKey: env(apiKeyEnv, ""),
-		FirstTokenTimeoutSeconds: f.FirstTokenTimeoutSeconds, IdleTimeoutSeconds: f.IdleTimeoutSeconds,
-	}
-}
-
-// checkProviders rejects a purpose (or embeddings) naming an unregistered
-// provider, reporting every such problem at once.
-func (c Config) checkProviders() error {
+// check reports every invalid value at once.
+func (c Config) check() error {
 	var errs []error
-	for _, p := range []struct{ name, provider string }{
-		{"chat", c.Chat.Provider}, {"generateTitle", c.GenerateTitle.Provider},
-		{"generateSummary", c.GenerateSummary.Provider}, {"translate", c.Translate.Provider},
-	} {
-		if _, ok := c.Providers[p.provider]; !ok {
-			errs = append(errs, fmt.Errorf("%s.provider %q is not in providers (ollama, openrouter, openai)", p.name, p.provider))
+	for _, np := range c.Purposes() {
+		if len(np.Purpose.ModelTags) == 0 {
+			errs = append(errs, fmt.Errorf("%s.model_tags must list at least one tag", np.Name))
+		}
+		seen := map[string]bool{}
+		for _, tag := range np.Purpose.ModelTags {
+			switch {
+			case strings.TrimSpace(tag) == "":
+				errs = append(errs, fmt.Errorf("%s.model_tags has a blank tag", np.Name))
+			case seen[tag]:
+				errs = append(errs, fmt.Errorf("%s.model_tags lists %q twice", np.Name, tag))
+			}
+			seen[tag] = true
+		}
+		if np.Purpose.NumCtx < 0 {
+			errs = append(errs, fmt.Errorf("%s.num_ctx must not be negative", np.Name))
+		}
+		if np.Purpose.TimeoutSeconds < 0 {
+			errs = append(errs, fmt.Errorf("%s.timeout_seconds must not be negative", np.Name))
 		}
 	}
-	if _, ok := c.Providers[c.Embeddings.Provider]; !ok && c.Embeddings.Provider != FakeEmbeddingsProvider {
-		errs = append(errs, fmt.Errorf("embeddings.provider %q is not in providers (ollama, openrouter, openai) and is not %q", c.Embeddings.Provider, FakeEmbeddingsProvider))
+	if !embeddingSpacePattern.MatchString(c.Embeddings.Space) {
+		errs = append(errs, fmt.Errorf("embeddings.embedding_space %q must start with a lowercase letter and use only lowercase letters, digits and hyphens", c.Embeddings.Space))
+	}
+	if c.LLMCallsRetentionDays < 0 || c.LLMCallsRetentionDays > retention.MaxDays {
+		errs = append(errs, fmt.Errorf("llm_calls.retention_days must be a whole number of days from 0 (keep forever) to %d, got %d", retention.MaxDays, c.LLMCallsRetentionDays))
+	}
+	if c.Embeddings.Dimension < 1 {
+		errs = append(errs, fmt.Errorf("embeddings.dimension must be at least 1, got %d", c.Embeddings.Dimension))
 	}
 	return errors.Join(errs...)
 }
 
-// checkRemovedKeys rejects the pre-registry config shape, saying where each
-// value moved, so an old ConfigMap with a new image fails at startup
-// instead of silently using the localhost default.
-func checkRemovedKeys(data []byte, fc fileConfig) error {
+// renamedKeys maps an old camelCase key (a dotted path) to what replaced it.
+var renamedKeys = map[string]string{
+	"bindAddr":              "bind_addr",
+	"knowledgeLanguage":     "knowledge_language",
+	"generateTitle":         "generate_title",
+	"generateSummary":       "generate_summary",
+	"qdrant.searchMinScore": "qdrant.search_min_score",
+}
+
+// embeddingsRemovedKeys are the keys of the embeddings block that models.yaml
+// replaced, by old name.
+var embeddingsRemovedKeys = map[string]string{
+	"provider": "embeddings.embedding_space (the providers of an embedding space are in models.yaml)",
+	"model":    "embeddings.embedding_space and an embedding model in models.yaml",
+	"baseURL":  "the base_url of a provider in models.yaml",
+	"base_url": "the base_url of a provider in models.yaml",
+}
+
+// purposeRenamedKeys are the renamed or moved keys of each purpose section
+// (chat, generate_title, generate_summary, translate), by old name.
+var purposeRenamedKeys = map[string]string{
+	"provider":       "model_tags (the router picks the provider; providers and models are in models.yaml)",
+	"model":          "model_tags (the router picks the model; providers and models are in models.yaml)",
+	"numCtx":         "num_ctx",
+	"timeoutSeconds": "timeout_seconds",
+	"think":          "the think option of a model in models.yaml",
+	"baseURL":        "the base_url of a provider in models.yaml",
+}
+
+// checkRemovedKeys rejects the earlier config shapes, saying where each value
+// moved, so an old ConfigMap with a new image fails at startup instead of
+// silently using a default. It reports every such key at once.
+func checkRemovedKeys(data []byte) error {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	var errs []error
-	for _, sec := range []struct{ name, provider string }{
-		{"embeddings", fc.Embeddings.Provider}, {"chat", fc.Chat.Provider}, {"translate", fc.Translate.Provider},
-	} {
-		if m, ok := raw[sec.name].(map[string]any); ok {
-			if _, ok := m["baseURL"]; ok {
-				errs = append(errs, fmt.Errorf("%s.baseURL is no longer supported; set providers.%s.baseURL", sec.name, sec.provider))
+	moved := func(old, now string) {
+		errs = append(errs, fmt.Errorf("%s is no longer supported; use %s", old, now))
+	}
+	for old, now := range renamedKeys {
+		path := strings.Split(old, ".")
+		if len(path) == 1 {
+			if _, ok := raw[old]; ok {
+				moved(old, now)
+			}
+			continue
+		}
+		if m, ok := raw[path[0]].(map[string]any); ok {
+			if _, ok := m[path[1]]; ok {
+				moved(old, now)
+			}
+		}
+	}
+	if _, ok := raw["providers"]; ok {
+		errs = append(errs, errors.New("providers is no longer supported; providers, their base_url and the streaming limits (first_token_timeout_seconds, idle_timeout_seconds) are in models.yaml"))
+	}
+	for _, section := range []string{"chat", "generateTitle", "generateSummary", "generate_title", "generate_summary", "translate"} {
+		m, ok := raw[section].(map[string]any)
+		if !ok {
+			continue
+		}
+		shown := section
+		if now, renamed := renamedKeys[section]; renamed {
+			shown = now // the section itself is reported above; name its new key here
+		}
+		for old, now := range purposeRenamedKeys {
+			if _, ok := m[old]; ok {
+				moved(shown+"."+old, now)
+			}
+		}
+	}
+	if m, ok := raw["embeddings"].(map[string]any); ok {
+		for old, now := range embeddingsRemovedKeys {
+			if _, ok := m[old]; ok {
+				moved("embeddings."+old, now)
 			}
 		}
 	}
 	if _, ok := raw["generate"]; ok {
-		errs = append(errs, errors.New("generate is no longer supported; use generateTitle and generateSummary (each with provider, model, prompt)"))
+		errs = append(errs, errors.New("generate is no longer supported; use generate_title and generate_summary (each with model_tags, prompt)"))
 	}
 	if _, ok := raw["prompts"]; ok {
-		errs = append(errs, errors.New("prompts is no longer supported; move prompts.chat to chat.prompt, prompts.generateTitle to generateTitle.prompt, prompts.generateSummary to generateSummary.prompt, prompts.translate to translate.prompt"))
+		errs = append(errs, errors.New("prompts is no longer supported; move prompts.chat to chat.prompt, prompts.generateTitle to generate_title.prompt, prompts.generateSummary to generate_summary.prompt, prompts.translate to translate.prompt"))
 	}
+	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
 	return errors.Join(errs...)
 }
 
@@ -316,7 +367,7 @@ func checkRemovedEnvVars() error {
 	var errs []error
 	for _, name := range removedEnvVars {
 		if os.Getenv(name) != "" {
-			errs = append(errs, fmt.Errorf("%s is no longer supported; set the API key of the provider it was used with: OLLAMA_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY", name))
+			errs = append(errs, fmt.Errorf("%s is no longer supported; set the API key of the provider it was used with: OLLAMA_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY (for models.yaml: api_key_from: env:NAME)", name))
 		}
 	}
 	return errors.Join(errs...)

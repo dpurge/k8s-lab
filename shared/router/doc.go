@@ -3,9 +3,21 @@
 // back to lower ones when a model fails. A circuit breaker, not pings, decides
 // what is available.
 //
+// # Embeddings
+//
+// Router.Embed returns the embedding of one text in one embedding space (the
+// embedding_space of a model in modelcfg). It shares selection, the breaker,
+// attempts and logging with Complete, but only models of that space are
+// candidates, highest priority first, so a fallback is only ever another copy of
+// the same model, never a model whose vectors mean something else. A vector whose
+// length is not the model's dimension is a failed attempt and is never returned.
+// An Attempt of an embedding call has Kind AttemptEmbed and the tag
+// "embedding_space=<space>"; its OutputTokens are zero. A provider takes part by
+// implementing EmbeddingProvider, which ollama and openai do.
+//
 // # Troubleshooting
 //
-// Every call to Complete that gets as far as choosing a model writes log lines
+// Every call to Complete or Embed that gets as far as choosing a model writes log lines
 // through the router's slog logger (WithLogger). All lines of one call share a
 // call_id (8 hex characters) and a "tags" array, and carry whatever
 // WithLogAttrs adds (the assistant adds task_id and user_id). A line never
