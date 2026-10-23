@@ -297,8 +297,15 @@ func (e *Engine) isRedirectable(reason FailReason) bool {
 	return false
 }
 
+// FailedObservationKey is the key under which the on_error state sees the
+// observation the failed step was given (for example the user's text), next to
+// "error". The shipped workflow instructions that read it use the same word.
+const FailedObservationKey = "observation"
+
 // redirect takes the on_error edge: the run moves to target with the failure
-// as its observation. It reports done when the run ended as a result.
+// as its observation, and the observation the failed step had under
+// FailedObservationKey, so the target can still see what the step was asked.
+// It reports done when the run ended as a result.
 func (e *Engine) redirect(ctx context.Context, wf *Workflow, run *Run, target string, f Failure, v *StateValidator) (Result, bool, error) {
 	run.ErrorEdgeUsed = true
 	run.Steps++
@@ -307,7 +314,11 @@ func (e *Engine) redirect(ctx context.Context, wf *Workflow, run *Run, target st
 	}
 	run.StateName = target
 	run.Visits[target]++
-	run.Observation = map[string]any{"error": map[string]any{"reason": string(f.Reason), "message": f.Message}}
+	observation := map[string]any{"error": map[string]any{"reason": string(f.Reason), "message": f.Message}}
+	if run.Observation != nil {
+		observation[FailedObservationKey] = run.Observation
+	}
+	run.Observation = observation
 	if wf.States[target].End {
 		res, err := e.finish(ctx, wf, run, v)
 		return res, true, err

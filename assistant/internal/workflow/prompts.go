@@ -42,7 +42,11 @@ var (
 type Prompts struct {
 	// UIGuide is added to the system prompt of every step of a workflow that
 	// declares ui: how to write an interface and which components there are.
-	UIGuide  string
+	UIGuide string
+	// UISchema is the JSON Schema of the "ui" value of an ask_user payload; the
+	// reply schema of a workflow that declares ui carries it. Nil leaves "ui"
+	// untyped.
+	UISchema map[string]any
 	template string
 	lang     map[string]string
 	output   map[string]string

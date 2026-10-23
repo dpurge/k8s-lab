@@ -26,6 +26,7 @@ states:
       whose payload has a question and an A2UI interface under "ui". When the
       observation is an action named continue, go to device.
     next: [device]
+    on_error: fallback
   device:
     instructions: >-
       Ask the page for the size of its window: reply with the ask_user action
@@ -33,11 +34,20 @@ states:
       viewport function (no question). The page's answer is the next observation,
       {"ui_function_response": ...}; record its value in viewport and go to form.
     next: [form]
+    on_error: fallback
   form:
     instructions: >-
       Show the form the same way, saying what the window was. When the observation is an action named
       submit_form, record its context in answers, write one sentence about it in
       summary, and go to done.
+    next: [done]
+    on_error: fallback
+  fallback:
+    instructions: >-
+      The demo could not be completed. The observation is an object with "error"
+      and what the failed step had been given under "observation". Record in
+      summary one plain sentence saying that the interface demo could not be
+      completed. Then go to done.
     next: [done]
   done:
     instructions: Finished.

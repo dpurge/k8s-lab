@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Phraseforge answers `task_status` over NATS on `dp.phraseforge.request` when `nats.url` (or `PHRASEFORGE_NATS_URL`) is set.
 - `models.yaml` accepts `embedding_space` and `dimension` on an embedding model (both or neither; only an `ollama` or `openai` provider can carry one).
 - Optional Secret volume `phraseforge-vertex` (key `token`) at `/etc/phraseforge-vertex` in the dev Deployment, for a Vertex AI token written by `task llm-enable`.
 - Main menu in the top bar: Documents and, for admins, Tasks, Usage and Config; the content sections (Texts, Dialogs, Vocabulary, Models) and the language filter are in the left sidebar of Documents, and Usage and Config list their own pages there.
@@ -70,6 +71,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Phraseforge now stops gracefully on SIGTERM or SIGINT.
+- The layout is the common `dp-shell` of the shared UI library, and buttons, fields, cards, dialogs, pagers, tabs and the status bar are its shared `dp-*` components instead of `pf-*` ones, with no change in what the pages do. On a screen under 760 px the sidebar is a slide-over drawer, a collapsed sidebar is out of the tab order, and the top bar fits a phone (a long user name is cut, "Log out" stays whole). Confirm dialogs are native dialogs (Escape closes them, Tab stays inside), and the Cancel, Retry and Delete buttons on the Tasks page now really disable themselves when clicked, as the code intended.
 - The Attempts table cuts a long provider id to one line, with the full id as its tooltip, like the model column (it takes effect at the next deploy).
 - The dev cluster's `models.yaml` is in its own ConfigMap `phraseforge-models`, built by the Taskfile from `phraseforge/models.dev.yaml`, no longer a key of `phraseforge-config`; the Deployment and migrate Job mount both.
 - The Vertex provider's error texts no longer name a dev `task` command: a missing credential gives the `api_key_from` error alone, and a 401/403 says to renew the credential that `api_key_from` points to.

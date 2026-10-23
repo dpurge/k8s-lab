@@ -50,7 +50,7 @@ func (v *Validator) Check(raw []byte) (*Message, error) {
 	}
 	if kind == "" || len(extra) > 0 {
 		sort.Strings(extra)
-		return nil, refuse("", "a message has \"version\": \"v1.0\" and exactly one of createSurface, updateComponents, updateDataModel, deleteSurface, callRendererFunction, agentFunctionResponse (found %s)", describeKeys(msg))
+		return nil, refuse("", "a message has \"version\": \"v1.0\" and exactly one of createSurface, updateComponents, updateDataModel, deleteSurface, callRendererFunction, agentFunctionResponse (found %s)%s", describeKeys(msg), misplacedBodyHint(msg))
 	}
 	body, _ := msg[kind].(map[string]any)
 	out := &Message{Kind: kind, Body: body}
@@ -129,6 +129,28 @@ func describeKeys(msg map[string]any) string {
 	}
 	sort.Strings(keys)
 	return strings.Join(keys, ", ")
+}
+
+// misplacedBodyHint explains the commonest slip of a model: closing
+// createSurface too early, so that dataModel or components land beside it.
+func misplacedBodyHint(msg map[string]any) string {
+	if _, ok := msg["createSurface"]; !ok {
+		return ""
+	}
+	var misplaced []string
+	for _, key := range []string{"components", "dataModel"} {
+		if _, ok := msg[key]; ok {
+			misplaced = append(misplaced, fmt.Sprintf("%q", key))
+		}
+	}
+	if len(misplaced) == 0 {
+		return ""
+	}
+	verb := "is"
+	if len(misplaced) > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf(" %s %s next to \"createSurface\" but must be inside it: createSurface was probably closed too early.", strings.Join(misplaced, " and "), verb)
 }
 
 // copyWith returns msg with msg[kind][key] replaced, leaving msg untouched.

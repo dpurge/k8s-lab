@@ -1,13 +1,14 @@
 ---
-version: 25
+version: 26
 status: approved
-updated: 2026-10-21
+updated: 2026-10-23
 ---
 
 ## Now
-- Shared Lit UI library and common shell — branch `main` — specs/features/shared-ui-lit-library.md
+
 
 ## Next
+
 
 ## Later
 

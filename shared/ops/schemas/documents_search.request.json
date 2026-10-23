@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.local/schemas/ops/documents_search.request-1.json",
+  "title": "documents_search request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query"],
+  "properties": {
+    "query": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "tags": {"$ref": "#/$defs/tags"},
+    "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
+    "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+    "offset": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "tags": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 64}
+    }
+  }
+}

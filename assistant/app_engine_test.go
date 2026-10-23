@@ -1098,3 +1098,26 @@ func TestOnlyWorkflowsThatDeclareIntentsAreOfferedForRouting(t *testing.T) {
 		}
 	}
 }
+
+func TestRemovingAConversationCancelsItsWaitingRunAndKeepsTheTask(t *testing.T) {
+	pool := dbtest.Pool(t)
+	a := testApp(t, pool, &recordingClock{}, nil)
+	conv := startChat(t, a, "hello")
+	say(t, a, conv, "hi")
+	a.worker.RunOnce(context.Background())
+	taskID := field(t, call(t, a.handler, "GET", "/api/v1/conversations/"+conv, ""), "task_id").(string)
+	if getTask(t, a, taskID)["status"] != "waiting" {
+		t.Fatal("hello must be waiting for the name")
+	}
+
+	if rec := call(t, a.handler, "DELETE", "/api/v1/conversations/"+conv, ""); rec.Code != 204 {
+		t.Fatalf("remove: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(t, a.handler, "GET", "/api/v1/conversations/"+conv, ""); rec.Code != 404 {
+		t.Errorf("the conversation is gone: %d", rec.Code)
+	}
+	task := call(t, a.handler, "GET", "/api/v1/tasks/"+taskID, "")
+	if task.Code != 200 || field(t, task, "status") != "cancelled" {
+		t.Errorf("the task stays, cancelled: %d %s", task.Code, task.Body)
+	}
+}

@@ -1,6 +1,7 @@
 // Package metrics holds the Prometheus metrics of knowledge's model calls and
-// serves them. Labels are configured ids only (provider, model, outcome, direction),
-// never a user, a prompt, a text or a vector.
+// message bus requests, and serves them. Labels are configured ids only (provider,
+// model, operation, outcome, direction), never a user, a prompt, a text or a
+// vector.
 package metrics
 
 import (
@@ -27,6 +28,7 @@ type Metrics struct {
 	llmDuration     *prometheus.HistogramVec
 	llmRecordErrors prometheus.Counter
 	llmPurged       prometheus.Counter
+	busRequests     *prometheus.CounterVec
 	availability    *availabilityCollector
 }
 
@@ -59,12 +61,16 @@ func New() *Metrics {
 			Name: "knowledge_llm_calls_purged_total",
 			Help: "Model call records deleted by the retention purge.",
 		}),
+		busRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "knowledge_bus_requests_total",
+			Help: "Requests handled over the message bus, by operation and outcome (ok or the error code).",
+		}, []string{"operation", "outcome"}),
 		availability: newAvailabilityCollector(),
 	}
 	m.registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.availability,
+		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.busRequests, m.availability,
 	)
 	return m
 }
@@ -92,6 +98,12 @@ func (m *Metrics) ObserveLLM(provider, model, outcome string, inputTokens, outpu
 
 // RecordError counts a call that could not be written to the database.
 func (m *Metrics) RecordError() { m.llmRecordErrors.Inc() }
+
+// ObserveBusRequest counts one request handled over the message bus; it has the
+// signature of responder.Observer. Operation and outcome come from fixed sets.
+func (m *Metrics) ObserveBusRequest(operation, outcome string) {
+	m.busRequests.WithLabelValues(operation, outcome).Inc()
+}
 
 // RuleLLMCalls is the name of the retention rule of the llm_calls table.
 const RuleLLMCalls = "llm_calls"

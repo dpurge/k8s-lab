@@ -25,6 +25,15 @@ states:
       apology and what went wrong in reply and go to done.
     delegate: true
     next: [done]
+    on_error: give_up
+  give_up:
+    instructions: >-
+      The request could not be routed. The observation is an object with "error"
+      and the user's message under "observation". Record in reply a short
+      apology that says in plain words that the request could not be routed or
+      answered, and suggests rephrasing it or trying again. Give no technical
+      details and do not repeat the error text. Then go to done.
+    next: [done]
   done:
     instructions: Finished.
     end: true

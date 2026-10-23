@@ -245,3 +245,18 @@ func TestLoadRejectsAMediaHostThatCouldChangeThePolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadReadsTheNATSURLAndTheDefaultIsNone(t *testing.T) {
+	cfg, err := Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL}))
+	if err != nil || cfg.NATSURL != "" {
+		t.Errorf("unset: got %q, %v; want empty", cfg.NATSURL, err)
+	}
+	cfg, err = Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvNATSURL: ""}))
+	if err != nil || cfg.NATSURL != "" {
+		t.Errorf("empty: got %q, %v; want empty", cfg.NATSURL, err)
+	}
+	cfg, err = Load(lookupFrom(map[string]string{EnvDatabaseURL: validURL, EnvNATSURL: "  nats://nats.example:4222\n"}))
+	if err != nil || cfg.NATSURL != "nats://nats.example:4222" {
+		t.Errorf("set: got %q, %v; want the trimmed URL", cfg.NATSURL, err)
+	}
+}

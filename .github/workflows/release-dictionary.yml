@@ -13,6 +13,13 @@
 #
 # NOTE: the GitHub release is created as a DRAFT (publish it manually) —
 # matching cli-tools' convention (there, via .goreleaser.yml's release.draft).
+#
+# The changelog is stamped at release time: scripts/release-stamp.sh (through
+# scripts/stamp-changelog.mjs) moves dictionary/CHANGELOG.md's [Unreleased]
+# entries under the new version, commits that with "[skip ci]" and tags that
+# commit. What CI tests lives in scripts/ci-test.sh, which `task ci-local` also
+# runs on a clean copy of the tree. dictionary imports nothing from shared/, so
+# shared/** is deliberately not listed.
 name: release-dictionary
 
 on:
@@ -21,6 +28,9 @@ on:
     paths:
       - 'dictionary/**'
       - '.github/workflows/release-dictionary.yml'
+      - 'scripts/ci-test.sh'
+      - 'scripts/release-stamp.sh'
+      - 'scripts/stamp-changelog.mjs'
   workflow_dispatch:
 
 # Only one release run at a time; queue (do not cancel) concurrent merges so
@@ -68,19 +78,29 @@ jobs:
 
           echo "Releasing ${tag}"
 
-      - name: Create and push tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: dictionary/go.mod
+
+      # Only for scripts/stamp-changelog.mjs; dictionary has no UI to build.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      # Vets and tests; see scripts/ci-test.sh. Database tests skip without their env
+      # vars; none calls a model.
+      - name: Test
+        working-directory: .
+        run: bash scripts/ci-test.sh dictionary
+
+      - name: Stamp changelog, commit, tag and push
+        working-directory: .
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/release-stamp.sh dictionary "$VERSION"
 
       # Plain cross-compilation, not GoReleaser: dictionary is a single binary
       # (no per-command build matrix to justify the extra tool/config), so

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.local/schemas/ops/task_status.response-1.json",
+  "title": "task_status response (never carries a task's payload or result)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "status", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "minLength": 1},
+    "step": {"type": "string"},
+    "progress": {"type": "string"},
+    "error": {"type": "string", "maxLength": 1000},
+    "created_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
+    "updated_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"}
+  }
+}

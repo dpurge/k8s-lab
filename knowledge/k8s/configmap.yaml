@@ -51,6 +51,11 @@ data:
         for use as a search-result preview. Respond with only the summary
         text — no preamble like "Summary:", no quotes.
     knowledge_language: English
+    # The message bus: knowledge answers documents_search, url_ingest and task_status
+    # to other apps on dp.knowledge.request. Empty (the default) means it does not
+    # connect. The dev NATS answers to the production service name.
+    nats:
+      url: nats://jdp-data-nats.data.svc:4222
     # Model call records (the llm_calls table) older than this are purged; 0 keeps
     # them forever.
     llm_calls:

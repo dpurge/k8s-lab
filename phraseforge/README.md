@@ -218,6 +218,12 @@ translation:
 curl -H "Host: phraseforge.localhost" http://localhost:8080/health
 ```
 
+## Message bus (NATS)
+
+Phraseforge answers `task_status` over NATS on `dp.phraseforge.request`, with the message format of `shared/message`: `{id}` in, the job's `id`, `kind`, `status`, `step`, `progress`, `error`, `created_at` and `updated_at` out (the job's payload, result and user are never copied; an id that is not a UUID or is unknown answers `not_found`). Any other operation, `url_ingest` included, answers `unknown_operation`.
+
+It listens only when `nats.url` in `config.yaml` (or the env var `PHRASEFORGE_NATS_URL`) is set; empty, the default in code, means it never connects, and a failed connection is logged without stopping the app. The dev ConfigMap sets `nats://jdp-data-nats.data.svc:4222`. Nothing authenticates a sender: any client that can reach NATS can ask. On SIGTERM or SIGINT phraseforge drains the bus first, then stops HTTP (10 s limit). `phraseforge_bus_requests_total{operation,outcome}` counts the requests.
+
 ## Tests
 
 `go test ./...` runs everything except the database tests of `internal/vocabulary`, `internal/models` and the vocabulary and models API tests of `internal/server`, which are skipped unless `PHRASEFORGE_TEST_DSN` is set to a Postgres URL (the admin config round trip and the checkpoint tests of `internal/jobs` use `PHRASEFORGE_TEST_DB` instead; the other `internal/jobs` database tests use `PHRASEFORGE_TEST_DSN` with a throwaway schema). Each of those tests applies `internal/db/schema.sql` into its own throwaway schema and drops it afterwards, so a development database is safe to point at.

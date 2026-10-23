@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.local/schemas/ops/url_ingest.request-1.json",
+  "title": "url_ingest request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["url"],
+  "properties": {
+    "url": {"type": "string", "maxLength": 2048, "pattern": "^https?://[^\\s]+$"},
+    "tags": {"$ref": "#/$defs/tags"}
+  },
+  "$defs": {
+    "tags": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 64}
+    }
+  }
+}

@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Knowledge answers `documents_search`, `url_ingest` and `task_status` over NATS on `dp.knowledge.request` when `nats.url` (or `KNOWLEDGE_NATS_URL`) is set.
 - Model routing: providers and models are in `models.yaml` (path `KNOWLEDGE_MODELS_FILE`, default `/etc/knowledge/models.yaml`, ConfigMap `knowledge-models`), and chat, title, summary, translate and embeddings go through the shared router, which falls back to the next model when one fails.
 - Embedding space: `embeddings.embedding_space` and `embeddings.dimension` name the vector space of the index; the router falls back only between embedding models of the same space and treats a vector of the wrong length as a failed attempt. Keep the space name while the index holds items made with it; a different space or dimension needs a new Qdrant collection.
 - Table `llm_calls` (one row per model attempt, no prompt, reply, text or vector), purged after `llm_calls.retention_days` (default 30, 0 keeps forever); Prometheus metrics `knowledge_llm_*` at `GET /metrics` (no login); log lines of the router carry `kind` and `operation_id`.
@@ -69,6 +70,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Knowledge now stops gracefully on SIGTERM or SIGINT.
+- The GUI runs on the common `dp-shell` and shared components of the shared UI library, with phraseforge's layout: the login and sign-up pages match phraseforge's, the top bar has the Documents, Chat, Tasks and Models tabs, the e-mail, Log out and a theme button, each tab's filters and forms are in a hideable sidebar (the choice is remembered), and on a screen under 760 px the sidebar is a slide-over drawer. Buttons are 41 px high instead of 38.
 - **Breaking change:** all `config.yaml` keys are snake_case (`bindAddr` is `bind_addr`, `qdrant.searchMinScore` is `qdrant.search_min_score`, `generateTitle` is `generate_title`, `generateSummary` is `generate_summary`, `knowledgeLanguage` is `knowledge_language`, and per purpose `numCtx` is `num_ctx` and `timeoutSeconds` is `timeout_seconds`). An old key, or an unknown one, stops the startup with a message naming the replacement. The production Helm chart (outside this repository) must change together with the image: it needs `config.yaml` in the new shape and a rendered `models.yaml`.
 - the top bar is now Documents, Chat and Tasks; the ingest drafts and the ingest form moved under Documents
   as a Drafts page (in the sidebar next to Documents), and Jobs are called Tasks and have their own tab. The

@@ -171,3 +171,13 @@ func TestRejectedA2UIMessagesAreCountedBySource(t *testing.T) {
 	wantLine(t, scrape(t, m), `assistant_a2ui_rejected_total{source="interface"} 1`)
 	wantLine(t, scrape(t, m), `assistant_a2ui_rejected_total{source="event"} 2`)
 }
+
+func TestObserveBus(t *testing.T) {
+	m := New()
+	m.ObserveBus("knowledge", "documents_search", "ok", 20*time.Millisecond)
+	m.ObserveBus("knowledge", "documents_search", "timeout", 30*time.Millisecond)
+	body := scrape(t, m)
+	wantLine(t, body, `assistant_bus_requests_total{app="knowledge",operation="documents_search",outcome="ok"} 1`)
+	wantLine(t, body, `assistant_bus_requests_total{app="knowledge",operation="documents_search",outcome="timeout"} 1`)
+	wantLine(t, body, `assistant_bus_request_duration_seconds_count{app="knowledge",operation="documents_search"} 2`)
+}

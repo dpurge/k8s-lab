@@ -13,23 +13,15 @@ import (
 // cancelTask stops a task. A pending or waiting one is cancelled at once; a
 // running one is told to stop and ends as cancelled within moments (202).
 func (d Deps) cancelTask(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	t, err := d.Tasks.Cancel(r.Context(), id)
+	t, outcome, err := tasks.CancelOrStop(r.Context(), d.Tasks, d.Worker, chi.URLParam(r, "id"))
 	switch {
+	case err == nil && outcome == tasks.Stopping:
+		writeJSON(w, http.StatusAccepted, d.respond(t))
 	case err == nil:
 		writeJSON(w, http.StatusOK, d.respond(t))
 	case errors.Is(err, tasks.ErrNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, "task not found")
 	case errors.Is(err, tasks.ErrNotCancellable):
-		if d.Worker != nil && d.Worker.Cancel(id) {
-			current, getErr := d.Tasks.Get(r.Context(), id)
-			if getErr != nil {
-				d.internalError(w, r, "get cancelled task", getErr)
-				return
-			}
-			writeJSON(w, http.StatusAccepted, d.respond(current))
-			return
-		}
 		writeError(w, http.StatusConflict, codeConflict, "only a pending, waiting or running task can be cancelled (this one may already be finished)")
 	default:
 		d.internalError(w, r, "cancel task", err)

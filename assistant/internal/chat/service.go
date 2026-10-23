@@ -27,6 +27,12 @@ type Tasks interface {
 	Resume(ctx context.Context, id string, message json.RawMessage) (tasks.Task, error)
 }
 
+// Canceller ends a conversation's run: at once for a pending or waiting one,
+// by stopping it for a running one (tasks.CancelOrStop does both).
+type Canceller interface {
+	Cancel(ctx context.Context, taskID string) (tasks.Task, tasks.CancelOutcome, error)
+}
+
 // Catalog lists the workflows a conversation can run.
 type Catalog interface {
 	Catalog() []workflows.Info
@@ -49,11 +55,13 @@ type RejectionCounter interface{ A2UIRejected(source string) }
 // Service runs conversations: it turns the user's messages into workflow runs
 // and the runs' questions, results and failures into the assistant's messages.
 type Service struct {
-	Store   *Store
-	Tasks   Tasks
-	Catalog Catalog
-	Channel Channel
-	Errors  ErrorCounter
+	Store *Store
+	Tasks Tasks
+	// Canceller serves /end; nil means a run cannot be ended from here.
+	Canceller Canceller
+	Catalog   Catalog
+	Channel   Channel
+	Errors    ErrorCounter
 	// Rejections counts refused A2UI messages; may be nil.
 	Rejections RejectionCounter
 	// UI checks the interfaces workflows show and the events the page sends
@@ -103,7 +111,7 @@ func (s *Service) Start(ctx context.Context, userID, workflowID, title string) (
 	return s.Store.Create(ctx, userID, workflowID, title)
 }
 
-// Send handles what the user typed. A command (/help) is answered at once.
+// Send handles what the user typed. A command (/help, /end) is answered at once.
 // Otherwise the text goes to the run: as the answer to a question it is waiting
 // for, or as the first message of a new run. It returns the stored message.
 func (s *Service) Send(ctx context.Context, conversationID, text string) (Message, error) {
@@ -188,16 +196,60 @@ func (s *Service) command(ctx context.Context, v View, text string) (Message, er
 	switch name := strings.Fields(strings.TrimSpace(text))[0]; name {
 	case "/help":
 		s.post(ctx, v.Conversation, KindInfo, s.help(v), nil)
+	case "/end":
+		return msg, s.end(ctx, v)
 	default:
 		s.post(ctx, v.Conversation, KindInfo, fmt.Sprintf("I do not know the command %s. Try /help.", name), nil)
 	}
 	return msg, nil
 }
 
+// end cancels the conversation's current run and says what happened. The
+// conversation stays open and keeps its task: the next message starts a new run
+// because a cancelled one is no current run.
+func (s *Service) end(ctx context.Context, v View) error {
+	const nothing = "Nothing is running."
+	if s.Canceller == nil {
+		s.post(ctx, v.Conversation, KindInfo, "Ending a run is not available here.", nil)
+		return nil
+	}
+	if v.TaskID == nil {
+		s.post(ctx, v.Conversation, KindInfo, nothing, nil)
+		return nil
+	}
+	current, err := s.Tasks.Get(ctx, *v.TaskID)
+	switch {
+	case errors.Is(err, tasks.ErrNotFound):
+		s.post(ctx, v.Conversation, KindInfo, nothing, nil)
+		return nil
+	case err != nil:
+		return s.fail(ctx, v, fmt.Errorf("look up the conversation's run: %w", err))
+	}
+	switch current.Status {
+	case tasks.StatusPending, tasks.StatusWaiting, tasks.StatusRunning:
+	default:
+		s.post(ctx, v.Conversation, KindInfo, nothing, nil)
+		return nil
+	}
+	_, outcome, err := s.Canceller.Cancel(ctx, current.ID)
+	switch {
+	case err == nil && outcome == tasks.Stopping:
+		s.post(ctx, v.Conversation, KindInfo, "Stopping the current run; it ends in a moment. Send a message to start again.", nil)
+	case err == nil:
+		s.post(ctx, v.Conversation, KindInfo, "Ended the current run. Send a message to start again.", nil)
+	case errors.Is(err, tasks.ErrNotCancellable), errors.Is(err, tasks.ErrNotFound):
+		// It finished between the look-up and the cancel.
+		s.post(ctx, v.Conversation, KindInfo, nothing, nil)
+	default:
+		return s.fail(ctx, v, fmt.Errorf("could not end the run: %w", err))
+	}
+	return nil
+}
+
 // help describes the commands and the workflows.
 func (s *Service) help(v View) string {
 	var b strings.Builder
-	b.WriteString("Commands:\n/help: this message\n\n")
+	b.WriteString("Commands:\n/help: this message\n/end: end the current run\n\n")
 	fmt.Fprintf(&b, "This conversation runs the workflow %q. ", v.WorkflowID)
 	b.WriteString("Write a message to start it; when it asks you something, your next message is the answer. When a run has finished or failed, your next message starts a new one.\n\nWorkflows you can run:\n")
 	infos := s.Catalog.Catalog()

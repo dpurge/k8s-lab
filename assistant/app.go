@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"assistant/internal/a2ui"
+	"assistant/internal/bus"
 	"assistant/internal/callctx"
 	"assistant/internal/chat"
 	"assistant/internal/config"
@@ -30,6 +31,7 @@ import (
 	"assistant/internal/users"
 	"assistant/internal/workflow"
 	"assistant/internal/workflows"
+	sharedbus "k8s-lab/shared/bus"
 	"k8s-lab/shared/modelcfg"
 	"k8s-lab/shared/retention"
 	"k8s-lab/shared/router/anthropic"
@@ -91,6 +93,9 @@ type app struct {
 	pool    *pgxpool.Pool
 	metrics *metrics.Metrics
 	log     *slog.Logger
+	// bus calls other apps over NATS; nil when ASSISTANT_NATS_URL is not set
+	// or the connection failed. No workflow tool uses it yet.
+	bus *bus.Client
 }
 
 // modelSetup is the model configuration and the providers that serve it,
@@ -149,6 +154,16 @@ func callLogAttrs(ctx context.Context) []slog.Attr {
 	return attrs
 }
 
+// runCanceller ends a conversation's run with the routine the HTTP cancel uses.
+type runCanceller struct {
+	store  *tasks.Store
+	worker *tasks.Worker
+}
+
+func (c runCanceller) Cancel(ctx context.Context, taskID string) (tasks.Task, tasks.CancelOutcome, error) {
+	return tasks.CancelOrStop(ctx, c.store, c.worker, taskID)
+}
+
 // newApp wires the stores, the model router, the workflow engine, the worker
 // and the HTTP handler together. The clock is how the noop workflow waits;
 // tests pass a fake. wfs are the YAML workflows tasks can name.
@@ -187,6 +202,7 @@ func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup m
 	// A workflow that declares ui is taught the catalog, and an interface it
 	// writes is checked before its reply is accepted.
 	prompts.UIGuide = uiValidator.Guide()
+	prompts.UISchema = uiValidator.InterfaceSchema()
 	stepStore := tasksteps.NewStore(pool)
 	engine := &workflow.Engine{
 		LLM: router, Tools: toolRegistry, Prompts: prompts, UI: uiValidator,
@@ -201,6 +217,7 @@ func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup m
 		Channel: &chat.MockChannel{}, Errors: m, Rejections: m, UI: uiValidator, Log: log,
 	}
 	worker := &tasks.Worker{Queue: taskStore, Runner: runner, Observer: m, Notifier: conversations, Log: log}
+	conversations.Canceller = runCanceller{store: taskStore, worker: worker}
 
 	return &app{
 		handler: server.NewRouter(server.Deps{
@@ -212,6 +229,31 @@ func newApp(pool *pgxpool.Pool, log *slog.Logger, clock workflows.Clock, setup m
 		metrics: m,
 		log:     log,
 	}, nil
+}
+
+// connectBus connects to NATS when url is set and keeps the client in a.bus.
+// An empty url means no connection and no client. A failed connection must not
+// stop the assistant, which does not depend on the bus: it warns and goes on
+// without a client. The warning has a fixed text because the connection error
+// could carry the URL, which may hold credentials.
+func (a *app) connectBus(url string) {
+	if !sharedbus.Enabled(url) {
+		return
+	}
+	client, err := bus.Dial(url, a.log, bus.WithObserver(a.metrics))
+	if err != nil {
+		a.log.Warn("could not connect to NATS; continuing without calls to other apps (check ASSISTANT_NATS_URL and that the server is reachable)")
+		return
+	}
+	a.bus = client
+	a.log.Info("connected to NATS")
+}
+
+// closeBus drains the NATS connection, if there is one.
+func (a *app) closeBus() {
+	if err := a.bus.Close(); err != nil {
+		a.log.Warn("closing the NATS connection", "error", err)
+	}
 }
 
 // newPurger returns the loop that deletes model calls older than keep days
@@ -280,6 +322,9 @@ func serve() int {
 		log.Error("startup", "error", err)
 		return 1
 	}
+
+	a.connectBus(cfg.NATSURL)
+	defer a.closeBus()
 
 	var workerDone sync.WaitGroup
 	workerDone.Add(1)

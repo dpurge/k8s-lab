@@ -1,7 +1,7 @@
 ---
-version: 24
+version: 26
 status: approved
-updated: 2026-10-22
+updated: 2026-10-24
 ---
 
 ## Languages & runtimes
@@ -15,6 +15,10 @@ updated: 2026-10-22
 - **Crypto** (`golang.org/x/crypto v0.57.0`) — password hashing and bearer token generation
 - **Shared LLM client** (`shared/llm`) — abstraction layer for Ollama and OpenAI-compatible endpoints, consumed directly by phraseforge, and by assistant and knowledge through the router's Ollama provider; it has an additive `Headers` field for custom request headers
 - **Shared Postgres helpers** (`shared/postgres`) — database initialization and DSN utilities
+- **NATS client** (`github.com/nats-io/nats.go v1.54.0`, released 2026-09-18, Apache-2.0) — consumed through `shared/bus` by assistant, knowledge and phraseforge. v1.54.0 was chosen because the policy is a release at least two weeks old and v1.55.0 was dated 2026-10-23. Transitive modules: `nats-io/nkeys` and `nats-io/nuid` (Apache-2.0), `klauspost/compress` (the licence of the flate package linked in is UNVERIFIED), `golang.org/x/crypto` and `golang.org/x/sys` (BSD-3-Clause). `govulncheck` was not run (not installed).
+- **Shared message envelope** (`shared/message`) — the message apps send each other: JSON with snake_case keys, `schema_version` 1, types `request`, `response`, `event` and `error`, an `operation` and a `payload` kept as raw JSON; strict decoding (unknown fields rejected), an encoded size limit of 512 KiB, eight error codes, an embedded JSON Schema, and `Render` for a one-line log form
+- **Shared operation catalogue** (`shared/ops`) — the cross-app operations `documents_search`, `url_ingest` and `task_status`, with the Go types of their payloads, JSON Schemas and `Parse` functions; `task_status` never returns a task's payload or result
+- **Shared message bus** (`shared/bus`) — NATS core request/reply, no JetStream: each app listens on the subject `dp.<app>.request`; the `Responder` joins a queue group named after the app, runs at most 8 handlers at once and answers an internal failure with a fixed `internal` error text; the `Client` waits 30 s for an answer
 - **Prometheus client** (`prometheus/client_golang v1.25.0`) — `/metrics` endpoint, used by assistant, phraseforge and knowledge
 - **YAML and JSON Schema** (`go.yaml.in/yaml/v3`, `santhosh-tekuri/jsonschema/v6`) — assistant's workflow files and the schemas that validate them; `go.yaml.in/yaml/v3` is the maintained fork of the archived `gopkg.in/yaml.v3`
 
@@ -36,7 +40,7 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 - **PostgreSQL** (`pgvector/pgvector:0.8.7-pg18-trixie`) — Postgres 18 with the pgvector 0.8.7 extension (Debian), relational database with two schemas: `dictionary` and `phraseforge`; assistant uses its own database named `assistant`
 - **Qdrant** (`qdrant/qdrant:v1.19.0`) — vector database for semantic search in the knowledge application
 - **Garage** (`dxflrs/garage:v2.3.0`) — S3-compatible object storage with `replication_factor = 1`
-- **NATS** (`nats:2.14.6-alpine`) — message queue with JetStream enabled
+- **NATS** (`nats:2.14.6-alpine`) — message queue with JetStream enabled; in production NATS is the headless service `data/jdp-data-nats` in front of an external single server (nats-server 2.14.6, JetStream enabled, no authentication, 1 MiB max payload, read from its INFO handshake on 2026-10-23); the dev NATS also answers to that name (`k8s/35-nats.yaml`), so the URL `nats://jdp-data-nats.data.svc:4222` is the same in dev and prod
 - **Ollama** (optional, `host.docker.internal:11434`) — local LLM for embeddings and chat (knowledge's embeddings are routed too); a LAN Ollama (`gemma4:31b`) can be added to the assistant, phraseforge and knowledge in the dev cluster with `task llm-enable`
 - **OpenRouter/OpenAI-compatible** — providers and models are in each app's `models.yaml` (phraseforge, assistant, knowledge), with API keys from env vars (`OPENROUTER_API_KEY`, `OLLAMA_API_KEY`); in the dev cluster `task llm-enable` adds OpenRouter (`z-ai/glm-5.3-flash`) from the key in `.env`
 - **Vertex AI** (dev only) — added by `task llm-enable` (`gemini-2.5-flash-lite`); access token from gcloud, valid about an hour (`task llm-refresh-vertex-token`); not available in production
@@ -49,13 +53,20 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 **Build & CI/CD:**
 - **Task** (tested v3.53.1) — command orchestrator for k3d cluster management, image builds, and Kubernetes deployments via `Taskfile.yml`
 - **LLM dev tasks** — `task llm-status`, `llm-enable`, `llm-disable`, `llm-refresh-vertex-token` (Taskfile.yml) call the bash scripts in `scripts/` (`llm-env.sh`, `llm-status.sh`, `llm-generate.sh`, `llm-enable.sh`); `task test-llm-scripts` runs their tests (`llm-status_test.sh`, `llm-generate_test.sh`) against a fake Ollama and a fake `gcloud`
-- **Docker** — multi-stage builds (`golang:1.26-alpine` → `scratch`), with corporate CA trust via bind-mount; image size threshold of 50 MB enforced
-- **GitHub Actions** — per-application release workflows (dictionary, phraseforge, knowledge)
+- **Docker** — multi-stage builds (`golang:1.26-alpine` → `scratch`; for assistant, knowledge and phraseforge a `node:26-alpine` stage `ui` first builds `shared/ui`), with corporate CA trust via bind-mount; image size threshold of 50 MB enforced
+- **GitHub Actions** — per-application release workflows (`release-assistant`, `release-dictionary`, `release-knowledge`, `release-phraseforge`)
   - CalVer versioning: `YYYY.MM.micro`
-  - Cross-platform binaries (Linux/Windows amd64) and Docker image push to GHCR
+  - Cross-platform binaries (Linux/Windows amd64) and Docker image push to GHCR (assistant pushes the tag and the image only)
   - Path-triggered runs: only build when that app's directory changes
-  - Test step present in the knowledge app only; dictionary and phraseforge do not run tests in CI
-  - Draft releases with manual publish required
+  - Every workflow sets up Node 26 and runs `scripts/ci-test.sh <app>` (`go vet` and `go test -count=1` for the app; for assistant, knowledge and phraseforge `shared/ui` `npm ci && npm run build` first) before tagging
+  - Draft releases with manual publish required (dictionary, phraseforge, knowledge)
+
+**CI and release conventions:**
+- Releases run automatically on push to `main` from `.github/workflows/release-<app>.yml`; the CalVer tag `<app>-v<year>.<month>.<micro>` is computed from the existing tags.
+- `scripts/ci-test.sh <app>` is the single definition of what CI tests. `task ci-local` runs it too, on a clean copy of the tree (tracked and untracked files, minus gitignored ones); run it before pushing.
+- `scripts/release-stamp.sh <app> <version>` stamps `<app>/CHANGELOG.md` (`## [Unreleased]` becomes `## [version] - date`, through `scripts/stamp-changelog.mjs`) in one commit `Release <app>-v<version> [skip ci]`, tags that commit and pushes. Pushes made with `GITHUB_TOKEN` do not retrigger workflows; `main` has no branch protection or rulesets (as of 2026-10-23).
+- The path filters of each workflow must include every directory the app builds from: `shared/**` for assistant, knowledge and phraseforge (dictionary uses no shared module). `task check-ci` fails when one is missing.
+- A new feature that adds a build step, test command, environment variable or shared dependency updates `scripts/ci-test.sh` and the workflow in the same change.
 
 ### Artifacts
 
@@ -64,7 +75,7 @@ Both libraries are used in `knowledge/internal/server/static/index.html` only; d
 | `dictionary` | `dictionary` | `dictionary/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/dictionary/roadmap.md` |
 | `phraseforge` | `phraseforge` | `phraseforge/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/phraseforge/roadmap.md` |
 | `knowledge` | `knowledge` | `knowledge/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/knowledge/roadmap.md` |
-| `assistant` | `assistant` | `assistant/CHANGELOG.md` | none (release workflow added in a later feature) | `specs/artifacts/assistant/roadmap.md` |
+| `assistant` | `assistant` | `assistant/CHANGELOG.md` | independent (CalVer, per-app GitHub Actions release workflow) | `specs/artifacts/assistant/roadmap.md` |
 | `environment` | `.` | `CHANGELOG.md` | none | |
 
 Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an additive `Headers` field for custom request headers) is consumed directly by phraseforge (and by the router's Ollama provider, so by assistant and knowledge); `shared/modelcfg` (the models.yaml schema, loader, lint, and credential and header resolution, and the `embedding_space` and `dimension` model keys), `shared/yamlschema`, `shared/router` (the model router with its `ollama`, `openai`, `anthropic` and `vertex` providers, `Embed` for embedding models, and the `routertest` helpers) and `shared/retention` (batched, age-based purging) by phraseforge, assistant and knowledge; `shared/postgres` by phraseforge and knowledge; `shared/ui` (the Lit component library and its handler) by phraseforge, assistant and knowledge. A change under `shared/` needs entries in every artifact that consumes the changed package.
@@ -75,7 +86,7 @@ Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an addit
 - Components are Lit 3.3.3 custom elements with Shadow DOM, written in TypeScript under `shared/ui/src/` using `static properties` (no decorators), so the source is also valid for Node's built-in type stripping. Lit, TypeScript and esbuild are pinned npm dependencies of `shared/ui` with a committed lockfile.
 - Build: `task build-ui` bundles the source with esbuild (ESM, minified, code splitting) into `shared/ui/dist/`, which is gitignored and never committed. A small core entry holds Lit and the common components (`dp-shell`, `dp-button`, `dp-card`, `dp-field`, `dp-dialog`, `dp-status-bar`, `dp-pager`, `dp-tabs`); catalog components are separate chunks that a page loads on demand. Type checking is `tsc --noEmit`.
 - A2UI renderer (assistant chat): `@a2ui/web_core` 0.14.0 (Apache-2.0, pinned exactly, with its dependencies `@preact/signals-core` and `@lit/context`) and `zod` 3.25.76 (the same version web_core uses, declared because `defineCatalog` builds argument schemas with it) are dependencies of `shared/ui`. It provides the A2UI v1.0 message processor, data model, binding, function evaluation and the Lit base element; the `dp-a2ui-*` components that draw the catalog are our own, under `shared/ui/src/a2ui/`, light-DOM and styled only by the design tokens. It is built as separate on-demand entries (`dist/a2ui.js`, about 118 KB gzipped, and the development gallery `dist/a2ui-gallery.js`) that only pages drawing A2UI surfaces import; `dp-core.js` does not include it. Components never write a `style` attribute (the assistant's Content-Security-Policy forbids inline styles); they use classes or CSSOM. The reference examples and conformance cases the tests use are copied unchanged under `shared/ui/src/a2ui/fixtures/` with the upstream commit recorded. Icons are 59 Material Design paths in `src/a2ui/icons.ts`, generated once from `@material-design-icons/svg` 0.14.15 (Apache-2.0; not a dependency), because the page's policy allows no icon font. The assistant's `ASSISTANT_A2UI_MEDIA_HOSTS` (bare https hosts, validated because they are written into the Content-Security-Policy) is the only configuration that changes the policy. The JSON schemas the assistant's server validates against will be vendored under `assistant/schemas/a2ui/v1_0/` when the server side is built.
-- Theming: components read only CSS custom properties (the phraseforge palette in `shared/ui/tokens.css`, light and dark selected by `data-theme` on `<html>`), so apps share one palette without sharing page CSS.
+- Theming: components read only CSS custom properties (the phraseforge palette in `shared/ui/src/tokens.css`, copied to `dist/` by `shared/ui/build.mjs`, light and dark selected by `data-theme` on `<html>`), so apps share one palette without sharing page CSS.
 - Naming: `dp-<name>` custom element tags (`dp-button`, `dp-card`, `dp-field`, `dp-dialog`, `dp-status-bar`, `dp-pager`, `dp-tabs`, `dp-shell`). The per-app `as-*`, `kb-*` and `pf-*` components are deleted as each app converts; new components are added to `shared/ui`, not to an app.
 - Layout: `dp-shell` provides the phraseforge layout (top bar, collapsible sidebar with remembered state, theme toggle, footer status bar) for every app with a GUI.
 - File layout: one directory per component under `shared/ui/src/components/<tag-name>/` with `component.ts` (calls `customElements.define`) and `component.test.ts`.
@@ -96,6 +107,7 @@ Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an addit
 - Every `kubectl` or `helm` command against the dev cluster passes `--kubeconfig=<absolute path to this project>/.k3d/kubeconfig` explicitly. The `KUBECONFIG` environment variable and the current context are never relied on, because the default configuration can include other clusters, production among them. A bare `kubectl` or `helm` is forbidden, including a read-only "which context" check.
 - Prefer `task` targets: `KUBECTL` in `Taskfile.yml` already pins the flag.
 - If the dev cluster is unreachable, report it and never try another context. Any other cluster, production included, is changed only when the user explicitly asks.
+- A port-forward that a task starts is killed by its exact command line, never by a broad pattern, and the task then verifies that the local port is free (`task test-bus` does this).
 
 **Credentials & configuration:**
 - Generated, gitignored files only: `.k3d/postgres.env`, `.k3d/garage.toml`, `.k3d/garage.env`, and `.k3d/llm/` (models files and the list of enabled sources, written by `task llm-enable`; never holds a secret)
@@ -166,6 +178,11 @@ Built from: `shared/llm` (the Ollama and OpenAI-compatible client, with an addit
 
 **Tests never call a real LLM (assistant, knowledge):**
 - LLM access sits behind an interface and tests use a scripted fake that returns canned responses. The whole suite must pass with no LLM reachable. Knowledge: purposes and the embedder run against a scripted provider and fake HTTP servers; its database tests need `KNOWLEDGE_TEST_DSN` and are skipped without it.
+
+**Message bus (assistant, knowledge, phraseforge):**
+- Configuration: the key `nats.url` in knowledge's and phraseforge's `config.yaml`, overridden by the environment variables `KNOWLEDGE_NATS_URL` and `PHRASEFORGE_NATS_URL`; the assistant has only the environment variable `ASSISTANT_NATS_URL`. Empty means the app never connects.
+- Testing: tests that need a real NATS run only when `NATS_URL` is set. `task test-bus` runs them through a port-forward of `svc/jdp-data-nats` (local port 14222, variable `NATS_TEST_PORT`) and verifies the port is free afterwards. The shared module's tests run in CI through `scripts/ci-test.sh`.
+- Security: no authentication exists on NATS or on the message fields `from` and `to`. An app listens only when its NATS URL is configured. Authentication is tracked by the roadmap item `assistant-auth` (`specs/artifacts/assistant/roadmap.md`).
 
 **Structured logging:**
 - `log/slog`, JSON handler to stdout, configured once in `main.go`.

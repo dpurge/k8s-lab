@@ -440,3 +440,27 @@ func TestTheRunnerKnowsWhichTaskAndUserItRunsFor(t *testing.T) {
 		t.Errorf("the workflow's context carries %+v (ok=%v), want task %s and user %s", got, ok, task.ID, f.user.ID)
 	}
 }
+
+func TestLogsOfAFailedTaskSayWhyWithoutQuotingTheReply(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.create(t, "refused")
+	w, _, logs := newWorker(f, scriptedRunner{
+		"refused": func(context.Context, tasks.Task) (json.RawMessage, error) {
+			return nil, errors.New("retries_exhausted: model gave no valid reply in 3 attempts; last problem: reply is not a valid JSON object: invalid character '}' after array element (at byte 5). Around it: abc<<HERE>>REPLY-SECRET. Open at that point: reply > action. Send the whole reply again.")
+		},
+	})
+	w.RunOnce(ctx)
+
+	if strings.Contains(logs.String(), "REPLY-SECRET") {
+		t.Errorf("the reply leaked into the log:\n%s", logs)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	var finish map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &finish); err != nil {
+		t.Fatalf("log line is not JSON: %v", err)
+	}
+	if finish["msg"] != "task finished" || finish["failure_reason"] != "retries_exhausted" || !strings.Contains(finish["failure_message"].(string), "(at byte 5)") {
+		t.Errorf("finish = %v", finish)
+	}
+}

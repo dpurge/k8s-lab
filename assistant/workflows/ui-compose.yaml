@@ -20,12 +20,25 @@ ui:
 states:
   compose:
     instructions: >-
-      If the observation is a text, it is what the user wants to ask or collect:
-      record it in request and reply with the ask_user action, whose payload has a
-      short "question" and the interface under "ui" (see INTERFACES), with the
-      inputs the request needs and one Button. If the observation is an object
-      with "ui_action", the user pressed the button: record its context in
-      received and go to summarise.
+      The observation decides what you do. If it is a text, the user has just
+      said what to ask or collect and has entered nothing yet: record it in
+      request and reply with the ask_user action, whose payload has a short
+      "question" and the interface under "ui" (see INTERFACES), with the inputs
+      the request needs and one Button. Never use the goto action for a text
+      observation. Only if the observation is an object with "ui_action" has the
+      user pressed the button: record its context in received and go to
+      summarise.
+    next: [summarise]
+    on_error: plain
+  plain:
+    instructions: >-
+      The interface could not be built, so ask in plain words instead. If the
+      observation is an object with "error", the user's request is the text under
+      its "observation": record it in request if it is not recorded yet, and reply
+      with the ask_user action whose payload is only {"question": "<the request,
+      asked as one short plain question>"}, never with a "ui". If the observation
+      is a text, it is the user's answer: record it in received as {"answer":
+      "<the text>"} and go to summarise.
     next: [summarise]
   summarise:
     instructions: >-

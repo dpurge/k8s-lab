@@ -73,6 +73,7 @@ models:
 		t.Fatal(err)
 	}
 	prompts.UIGuide = validator.Guide()
+	prompts.UISchema = validator.InterfaceSchema()
 	reg, _ := workflow.NewRegistry()
 	recorder := &trialRecorder{t: t}
 	eng := &workflow.Engine{LLM: router, Tools: reg, Prompts: prompts, UI: validator, Recorder: recorder}

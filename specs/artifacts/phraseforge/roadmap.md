@@ -1,13 +1,14 @@
 ---
-version: 33
+version: 34
 status: approved
-updated: 2026-10-21
+updated: 2026-10-24
 ---
 
 ## Now
-- Shared Lit UI library and common shell — branch `main` — specs/features/shared-ui-lit-library.md
+
 
 ## Next
+- `phraseforge-bus-ingest` — Answer the url_ingest operation over the message bus: needs decisions on the owning user for texts created over the bus, where language and script come from (new optional fields in the shared request or configured defaults), what happens to tags, and whether a bus request may skip the per-language role check; reuse phraseforge's SSRF-protected URL fetch (now unexported in package server)
 
 ## Later
 - `phraseforge-grammar-from-knowledge` — Generate Grammar for a text sourced from knowledge's data, reusing the job-kind-registration pattern established by `phraseforge-job-queue`; cross-app data access (how phraseforge reads knowledge's content) is not yet decided

@@ -1,3 +1,14 @@
+# Build and release the knowledge app: Linux/Windows binaries attached to a GitHub
+# release, plus a Docker image pushed to GHCR. Runs when knowledge/ or the shared
+# module changed.
+#
+# The changelog is stamped at release time: scripts/release-stamp.sh (through
+# scripts/stamp-changelog.mjs) moves knowledge/CHANGELOG.md's [Unreleased]
+# entries under the new version, commits that with "[skip ci]" and tags that
+# commit. What CI tests lives in scripts/ci-test.sh, which `task ci-local` also
+# runs on a clean copy of the tree. shared/** is listed because knowledge builds
+# with the shared module (go.mod replace, Docker context shared=./shared), so a
+# change there must release it.
 name: release-knowledge
 
 on:
@@ -5,7 +16,11 @@ on:
     branches: [main]
     paths:
       - 'knowledge/**'
+      - 'shared/**'
       - '.github/workflows/release-knowledge.yml'
+      - 'scripts/ci-test.sh'
+      - 'scripts/release-stamp.sh'
+      - 'scripts/stamp-changelog.mjs'
   workflow_dispatch:
 
 concurrency:
@@ -51,15 +66,6 @@ jobs:
 
           echo "Releasing ${tag}"
 
-      - name: Create and push tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -74,12 +80,18 @@ jobs:
           cache: npm
           cache-dependency-path: shared/ui/package-lock.json
 
-      - name: Build shared UI
-        working-directory: shared/ui
-        run: npm ci && npm run build
-
+      # Builds shared/ui, then vets and tests; see scripts/ci-test.sh. Database tests skip
+      # without their env vars; none calls a model.
       - name: Test
-        run: go test ./...
+        working-directory: .
+        run: bash scripts/ci-test.sh knowledge
+
+      - name: Stamp changelog, commit, tag and push
+        working-directory: .
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/release-stamp.sh knowledge "$VERSION"
 
       - name: Build release binaries
         env:

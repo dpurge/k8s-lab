@@ -30,6 +30,7 @@ type Metrics struct {
 	llmRecordErrors prometheus.Counter
 	llmPurged       prometheus.Counter
 	jobsPurged      *prometheus.CounterVec
+	busRequests     *prometheus.CounterVec
 	availability    *availabilityCollector
 }
 
@@ -67,6 +68,10 @@ func New() *Metrics {
 			Name: "phraseforge_jobs_purged_total",
 			Help: "Finished jobs deleted by the retention purge, by rule (jobs_done, jobs_failed).",
 		}, []string{"rule"}),
+		busRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "phraseforge_bus_requests_total",
+			Help: "Requests answered over the message bus, by operation and outcome (ok or an error code).",
+		}, []string{"operation", "outcome"}),
 		availability: newAvailabilityCollector(),
 	}
 	// Both series exist from the start so that rate() and absent() work before
@@ -76,7 +81,7 @@ func New() *Metrics {
 	m.registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.jobsPurged, m.availability,
+		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.jobsPurged, m.busRequests, m.availability,
 	)
 	return m
 }
@@ -104,6 +109,13 @@ func (m *Metrics) ObserveLLM(provider, model, outcome string, inputTokens, outpu
 
 // RecordError counts a model call that could not be written to the database.
 func (m *Metrics) RecordError() { m.llmRecordErrors.Inc() }
+
+// ObserveBusRequest counts one request a handler answered over the message
+// bus. Both labels come from fixed sets: the operations the app answers and
+// ok or one of the envelope's error codes.
+func (m *Metrics) ObserveBusRequest(operation, outcome string) {
+	m.busRequests.WithLabelValues(operation, outcome).Inc()
+}
 
 // Retention rule names whose purges are counted; the rule label of
 // phraseforge_jobs_purged_total only ever takes the jobs ones.

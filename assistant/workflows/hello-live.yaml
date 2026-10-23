@@ -21,10 +21,20 @@ states:
       state patch. If asked is true, the observation is the user's answer: record
       it, as typed, in name and go to greet. Never ask twice.
     next: [greet]
+    on_error: fallback
   greet:
     instructions: >-
       Write one short sentence greeting the user by name and record it in
       greeting, then go to done.
+    next: [done]
+    on_error: fallback
+  fallback:
+    instructions: >-
+      The greeting could not be completed. The observation is an object with
+      "error" and what the failed step had been given under "observation". Record
+      in name the user's name if it is known from the run state or the
+      observation, otherwise "unknown". Record in greeting one plain sentence
+      saying that the full greeting could not be completed. Then go to done.
     next: [done]
   done:
     instructions: Finished.

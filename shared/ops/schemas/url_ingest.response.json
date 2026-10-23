@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.local/schemas/ops/url_ingest.response-1.json",
+  "title": "url_ingest response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "status"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "minLength": 1}
+  }
+}

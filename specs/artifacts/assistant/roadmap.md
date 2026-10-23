@@ -1,16 +1,19 @@
 ---
-version: 9
+version: 10
 status: approved
-updated: 2026-10-21
+updated: 2026-10-23
 ---
 
 ## Now
-- Shared Lit UI library and common shell — branch `main` — specs/features/shared-ui-lit-library.md
+
 
 ## Next
 
 - `assistant-response-review-loop` — structured response documents rendered from templates, with a reviewer model and a bounded fix loop before sending
 - `assistant-telegram` — Telegram as a task source and response channel, user tracking from Telegram identity, a Telegram-shaped mock endpoint and then the real channel (the mock chat page, several conversations per user and `/help` exist), a `/learn` command
+- `assistant-chat-port` — Make the assistant the only chat interface: port knowledge's chat retrieval (Qdrant search with tags), citations, history window and session auth gate to the assistant, then remove chat from knowledge
+- `assistant-chat-source` — A task source `chat` separate from `telegram`: each request says whether its channel supports A2UI, and the assistant turns an interface into plain text for channels that do not
+- `assistant-topic-conversation` — A workflow for a simple conversation about a topic that remembers the user's answers in the run state
 - `assistant-memory` — long-term memory on pgvector with bge-m3 embeddings through trpc-agent-go
 - `assistant-rag` — markdown knowledge documents with tags, import and export, search as a tool, plus web search
 - `assistant-nats` — tasks in and results out over NATS

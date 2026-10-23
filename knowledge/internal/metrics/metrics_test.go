@@ -76,3 +76,19 @@ func TestTheAvailabilityGaugeIsReadAtScrapeTime(t *testing.T) {
 		t.Error("the gauge must follow the state at every scrape")
 	}
 }
+
+func TestBusRequestsAreCountedByOperationAndOutcome(t *testing.T) {
+	m := New()
+	m.ObserveBusRequest("task_status", "ok")
+	m.ObserveBusRequest("task_status", "ok")
+	m.ObserveBusRequest("task_status", "not_found")
+	body := scrape(m)
+	for _, want := range []string{
+		`knowledge_bus_requests_total{operation="task_status",outcome="ok"} 2`,
+		`knowledge_bus_requests_total{operation="task_status",outcome="not_found"} 1`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}

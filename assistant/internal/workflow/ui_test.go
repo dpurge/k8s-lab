@@ -59,6 +59,7 @@ func uiHarness(t *testing.T, yaml string, steps ...string) *harness {
 	}
 	h.eng.UI = v
 	h.eng.Prompts.UIGuide = v.Guide()
+	h.eng.Prompts.UISchema = v.InterfaceSchema()
 	return h
 }
 
@@ -130,6 +131,26 @@ func TestAnInvalidInterfaceIsSentBackWithItsProblemsAndACorrectedOneIsAccepted(t
 	}
 	if !strings.Contains(in.Retry.Reply, "Hologram") {
 		t.Errorf("the retry shows the refused reply: %s", in.Retry.Reply)
+	}
+}
+
+// closedEarlyReply is a reply of a production run (gemma4-31b-gpu): valid JSON,
+// but createSurface ends after the components, so dataModel is its sibling.
+const closedEarlyReply = `{"state_patch":{"request":"show a button with text \"GO!\""},"action":{"type":"ask_user","payload":{"question":"Please click the button.","ui":[{"version":"v1.0","createSurface":{"surfaceId":"compose_ui","catalogId":"https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json","components":[{"id":"root","component":"Card","child":"btn"},{"id":"btn","component":"Button","child":"btn_label","action":{"event":{"name":"go","context":{}}}},{"id":"btn_label","component":"Text","text":"GO!"}]},"dataModel":{}}]}}}`
+
+func TestACreateSurfaceClosedTooEarlyIsSentBackWithAHintAndTheMessageKeys(t *testing.T) {
+	h := uiHarness(t, uiFlowYAML, closedEarlyReply, validReply)
+	_, res := h.start(workflow.Input{Message: "x"})
+	if res.Status != workflow.StatusWaiting {
+		t.Fatalf("status %v failure %+v", res.Status, res.Failure)
+	}
+	wantOutcomes(t, h, workflow.OutcomeRetry, workflow.OutcomeOK)
+	got := h.rec.Records()[0].Error
+	t.Log(got)
+	for _, want := range []string{"payload.ui is not valid A2UI", "(found createSurface, dataModel, version)", `"dataModel" is next to "createSurface" but must be inside it: createSurface was probably closed too early.`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the refusal lacks %q: %s", want, got)
+		}
 	}
 }
 

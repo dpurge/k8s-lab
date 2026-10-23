@@ -7,6 +7,14 @@
 # auto-increments within the current month from the existing git tags, the same
 # scheme as release-phraseforge.yml, namespaced with an "assistant-" tag prefix so
 # the components' version sequences cannot collide in this shared repo.
+#
+# The changelog is stamped at release time: scripts/release-stamp.sh (through
+# scripts/stamp-changelog.mjs) moves assistant/CHANGELOG.md's [Unreleased]
+# entries under the new version, commits that with "[skip ci]" and tags that
+# commit. What CI tests lives in scripts/ci-test.sh, which `task ci-local` also
+# runs on a clean copy of the tree. shared/** is listed because assistant builds
+# with the shared module (go.mod replace, Docker context shared=./shared), so a
+# change there must release it.
 name: release-assistant
 
 on:
@@ -16,6 +24,9 @@ on:
       - 'assistant/**'
       - 'shared/**'
       - '.github/workflows/release-assistant.yml'
+      - 'scripts/ci-test.sh'
+      - 'scripts/release-stamp.sh'
+      - 'scripts/stamp-changelog.mjs'
   workflow_dispatch:
 
 # Only one release run at a time; queue (do not cancel) concurrent merges so
@@ -72,24 +83,16 @@ jobs:
           cache: npm
           cache-dependency-path: shared/ui/package-lock.json
 
-      - name: Build shared UI
-        working-directory: shared/ui
-        run: npm ci && npm run build
-
-      # Tests that need no database or model run here; the database tests skip
-      # without ASSISTANT_TEST_DATABASE_URL, and no test calls a model.
+      # Builds shared/ui, then vets and tests; see scripts/ci-test.sh. Tests that
+      # need a database skip without ASSISTANT_TEST_DATABASE_URL; none calls a model.
       - name: Test
-        working-directory: assistant
-        run: go vet ./... && go test -count=1 ./...
+        run: bash scripts/ci-test.sh assistant
 
-      - name: Create and push tag
+      - name: Stamp changelog, commit, tag and push
         env:
           TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/release-stamp.sh assistant "$VERSION"
 
       # No corporate-CA step needed here: the Dockerfile's bind mount tolerates
       # .docker/corp-ca/ being empty, which is exactly its committed state.

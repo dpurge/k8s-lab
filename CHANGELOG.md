@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `task test-bus` runs the NATS tests through a port-forward; the dev NATS also answers to the production name `jdp-data-nats`; CI now runs the shared module's tests.
 - `task llm-status`, `llm-enable` and `llm-disable` cover knowledge as well (its chat, title, summary, translate and embeddings), and `llm-status` prints the id `lan-embed` when the LAN Ollama also has `bge-m3`, which adds a second copy of the embedding model in the same space.
 - `task llm-status`, `llm-enable`, `llm-disable` and `llm-refresh-vertex-token` add and remove a LAN Ollama, OpenRouter and Vertex AI for the assistant and phraseforge in the dev cluster; settings come from the git-ignored `.env` (copy `.env.example`), read by the new `scripts/` shell scripts, which `task test-llm-scripts` tests.
 

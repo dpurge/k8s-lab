@@ -696,3 +696,57 @@ func TestTheDefaultsAsAFileLoadUnderStrictDecoding(t *testing.T) {
 		t.Errorf("the defaults rejected: %v", err)
 	}
 }
+
+func TestNATSURLIsEmptyByDefault(t *testing.T) {
+	t.Setenv(EnvNATSURL, "")
+	cfg, err := loadFrom(t, "bindAddr: 0.0.0.0:1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NATSURL != "" {
+		t.Errorf("NATSURL = %q, want empty: the bus is off unless configured", cfg.NATSURL)
+	}
+}
+
+func TestNATSURLComesFromTheFileAndTheEnvironmentOverridesIt(t *testing.T) {
+	t.Setenv(EnvNATSURL, "")
+	cfg, err := loadFrom(t, "nats:\n  url: nats://from-file:4222\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NATSURL != "nats://from-file:4222" {
+		t.Errorf("NATSURL = %q, want the file's nats.url", cfg.NATSURL)
+	}
+	t.Setenv(EnvNATSURL, "nats://from-env:4222")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NATSURL != "nats://from-env:4222" {
+		t.Errorf("NATSURL = %q, want the %s value", cfg.NATSURL, EnvNATSURL)
+	}
+	if EnvNATSURL != "PHRASEFORGE_NATS_URL" {
+		t.Errorf("EnvNATSURL = %q", EnvNATSURL)
+	}
+}
+
+func TestTheConfigMapSetsNATSURLForTheDevCluster(t *testing.T) {
+	raw, err := os.ReadFile("../../k8s/configmap.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvNATSURL, "")
+	cfg, err := loadFrom(t, cm.Data["config.yaml"])
+	if err != nil {
+		t.Fatalf("the ConfigMap's config.yaml does not load: %v", err)
+	}
+	if cfg.NATSURL != "nats://jdp-data-nats.data.svc:4222" {
+		t.Errorf("NATSURL = %q, want the dev NATS service", cfg.NATSURL)
+	}
+}

@@ -3,13 +3,19 @@ package a2ui
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 // maxReportedProblems bounds how many problems an error shows a model: the
 // first few are the ones to fix, and a long list buries them.
 const maxReportedProblems = 8
+
+// maxSignaturesReported bounds how many components a refusal describes: each
+// signature is up to about 250 bytes, and two cover the usual mistake.
+const maxSignaturesReported = 2
 
 // CheckInterface validates the messages of an interface on their own, as a
 // model wrote them: each against the protocol and the catalog, in order, and the
@@ -19,7 +25,7 @@ func (v *Validator) CheckInterface(messages []json.RawMessage) error {
 	surfaces := NewSurfaces(v)
 	for i, raw := range messages {
 		if _, err := surfaces.Apply(raw); err != nil {
-			return prefixed(fmt.Sprintf("ui[%d]", i), err)
+			return v.withAcceptedProperties(raw, prefixed(fmt.Sprintf("ui[%d]", i), err))
 		}
 	}
 	return prefixed("ui", surfaces.Finish())
@@ -42,6 +48,116 @@ func prefixed(prefix string, err error) error {
 		out.Problems = append(out.Problems, Problem{Path: prefix + p.Path, Message: p.Message})
 	}
 	return out
+}
+
+// insideComponent matches the path of a problem about a component of a message:
+// "ui[1]/updateComponents/components/3" and what lies below it.
+var insideComponent = regexp.MustCompile(`^ui\[\d+\]/(\w+)/components/(\d+)(/.*)?$`)
+
+// withAcceptedProperties adds to the last problem about a component, once per
+// component, what that component accepts, so that a model can correct a wrong or
+// missing property in one try. raw is the message the problems are about. A
+// problem about the id says nothing the signature helps with; an unknown type has
+// no signature, and its problem already lists the types of the catalog.
+func (v *Validator) withAcceptedProperties(raw []byte, err error) error {
+	ve, ok := err.(*ValidationError)
+	if !ok {
+		return err
+	}
+	msg, decodeErr := decode(raw)
+	if decodeErr != nil {
+		return err
+	}
+	last := map[string]int{} // component name -> index of its last problem
+	var order []string
+	for i, p := range ve.Problems {
+		m := insideComponent.FindStringSubmatch(p.Path)
+		if m == nil || strings.HasSuffix(p.Path, "/id") {
+			continue
+		}
+		name := v.componentNameAt(msg, m[1], m[2])
+		if name == "" {
+			continue
+		}
+		if _, seen := last[name]; !seen {
+			order = append(order, name)
+		}
+		last[name] = i
+	}
+	for _, name := range order[:min(len(order), maxSignaturesReported)] {
+		p := &ve.Problems[last[name]]
+		if !strings.HasSuffix(p.Message, ".") {
+			p.Message += "."
+		}
+		p.Message += fmt.Sprintf(" Accepted for %s: %s.", name, v.signature(name))
+	}
+	return ve
+}
+
+// componentNameAt returns the catalog type of the component at index of the
+// message's components, or "" when there is none or the catalog lacks it.
+func (v *Validator) componentNameAt(msg map[string]any, kind, index string) string {
+	body, _ := msg[kind].(map[string]any)
+	list, _ := body["components"].([]any)
+	i, convErr := strconv.Atoi(index)
+	if convErr != nil || i >= len(list) {
+		return ""
+	}
+	component, _ := list[i].(map[string]any)
+	name, _ := component["component"].(string)
+	if _, known := v.components[name]; !known {
+		return ""
+	}
+	return name
+}
+
+// InterfaceSchema is the JSON Schema of the "ui" value of an ask_user payload:
+// one createSurface message with its components. A model's reply is decoded
+// under it, so the brackets of the interface come out right; what each component
+// may hold stays with CheckInterface, so a component only needs an id and a type
+// here.
+func (v *Validator) InterfaceSchema() map[string]any {
+	types := v.ComponentTypes()
+	names := make([]any, len(types))
+	for i, t := range types {
+		names[i] = t
+	}
+	component := map[string]any{
+		"type":                 "object",
+		"additionalProperties": true,
+		"required":             []any{"id", "component"},
+		"properties": map[string]any{
+			"id":        map[string]any{"type": "string"},
+			"component": map[string]any{"enum": names},
+		},
+	}
+	createSurface := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"surfaceId", "catalogId", "components"},
+		"properties": map[string]any{
+			"surfaceId":     map[string]any{"type": "string", "minLength": 1},
+			"catalogId":     map[string]any{"const": CatalogID},
+			"components":    map[string]any{"type": "array", "minItems": 1, "items": component},
+			"dataModel":     map[string]any{"type": "object"},
+			"sendDataModel": map[string]any{"type": "boolean"},
+			"metadata":      map[string]any{"type": "object"},
+		},
+	}
+	return map[string]any{
+		"type":     "array",
+		"minItems": 1,
+		"maxItems": 1,
+		"items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"version", "createSurface"},
+			"properties": map[string]any{
+				"version":       map[string]any{"const": "v1.0"},
+				"createSurface": createSurface,
+			},
+		},
+	}
 }
 
 // GuideExample is the complete reply the guide shows a model; a test keeps it

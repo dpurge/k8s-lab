@@ -103,3 +103,13 @@ func TestPurgedCountsEachRuleInItsOwnSeriesAndIgnoresUnknownOnes(t *testing.T) {
 		t.Errorf("an unknown rule became a label value:\n%s", body)
 	}
 }
+
+func TestBusRequestsAreCountedByOperationAndOutcome(t *testing.T) {
+	m := New()
+	m.ObserveBusRequest("task_status", "ok")
+	m.ObserveBusRequest("task_status", "ok")
+	m.ObserveBusRequest("task_status", "not_found")
+	body := scrape(t, m)
+	wantLine(t, body, `phraseforge_bus_requests_total{operation="task_status",outcome="ok"} 2`)
+	wantLine(t, body, `phraseforge_bus_requests_total{operation="task_status",outcome="not_found"} 1`)
+}

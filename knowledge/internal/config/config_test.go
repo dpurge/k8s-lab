@@ -293,3 +293,45 @@ func TestLLMCallsRetentionDefaultsOverridesAndLimits(t *testing.T) {
 		t.Error("an unknown camelCase key must be rejected")
 	}
 }
+
+func TestNATSURLDefaultsToDisabledAndTakesTheFileThenTheEnvironment(t *testing.T) {
+	t.Setenv("KNOWLEDGE_NATS_URL", "")
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing.yaml"))
+	if cfg, err := Load(); err != nil || cfg.NATSURL != "" {
+		t.Fatalf("default = %q, %v; want empty (the bus is off)", cfg.NATSURL, err)
+	}
+	writeConfig(t, "nats:\n  url: nats://from-file:4222\n")
+	if cfg, err := Load(); err != nil || cfg.NATSURL != "nats://from-file:4222" {
+		t.Errorf("file = %q, %v; want nats://from-file:4222", cfg.NATSURL, err)
+	}
+	t.Setenv("KNOWLEDGE_NATS_URL", "nats://from-env:4222")
+	if cfg, err := Load(); err != nil || cfg.NATSURL != "nats://from-env:4222" {
+		t.Errorf("env over file = %q, %v; want nats://from-env:4222", cfg.NATSURL, err)
+	}
+	writeConfig(t, "nats:\n  uRL: nats://x:4222\n")
+	if _, err := Load(); err == nil {
+		t.Error("an unknown key under nats must be rejected")
+	}
+}
+
+func TestConfigMapSetsTheDevNATSURL(t *testing.T) {
+	raw, err := os.ReadFile("../../k8s/configmap.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KNOWLEDGE_NATS_URL", "")
+	writeConfig(t, cm.Data["config.yaml"])
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NATSURL != "nats://jdp-data-nats.data.svc:4222" {
+		t.Errorf("NATSURL = %q, want the dev NATS service under its production name", cfg.NATSURL)
+	}
+}

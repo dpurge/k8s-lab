@@ -83,7 +83,11 @@ func buildRequest(p *Prompts, wf *Workflow, run *Run, tools ToolLookup, observat
 		return Request{}, fmt.Errorf("encode step input: %w", err)
 	}
 
-	schema, err := ReplySchema(wf, run.StateName, tools)
+	var uiSchema map[string]any
+	if wf.UI != nil {
+		uiSchema = p.UISchema
+	}
+	schema, err := ReplySchemaWithUI(wf, run.StateName, tools, uiSchema)
 	if err != nil {
 		return Request{}, err
 	}
@@ -166,6 +170,14 @@ type ToolLookup interface {
 // ask_user action. An end state is an error: a run finishes on entering one
 // and never asks the model anything there.
 func ReplySchema(wf *Workflow, stateName string, tools ToolLookup) (map[string]any, error) {
+	return ReplySchemaWithUI(wf, stateName, tools, nil)
+}
+
+// ReplySchemaWithUI is ReplySchema with the schema of the "ui" value of the
+// ask_user payload, so that a model writing an interface is held to its shape.
+// The payload still allows any other key, and "ui" stays optional. A nil
+// uiSchema, or a workflow that does not declare ui, gives the plain ReplySchema.
+func ReplySchemaWithUI(wf *Workflow, stateName string, tools ToolLookup, uiSchema map[string]any) (map[string]any, error) {
 	state, ok := wf.States[stateName]
 	if !ok {
 		return nil, fmt.Errorf("unknown state %q in workflow %q", stateName, wf.ID)
@@ -207,13 +219,17 @@ func ReplySchema(wf *Workflow, stateName string, tools ToolLookup) (map[string]a
 			},
 		})
 	}
+	payload := map[string]any{"type": "object"}
+	if wf.UI != nil && uiSchema != nil {
+		payload["properties"] = map[string]any{"ui": uiSchema}
+	}
 	actions = append(actions, map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []any{"type", "payload"},
 		"properties": map[string]any{
 			"type":    map[string]any{"const": "ask_user"},
-			"payload": map[string]any{"type": "object"},
+			"payload": payload,
 		},
 	})
 

@@ -40,6 +40,10 @@ type Config struct {
 	// LLMCallsRetentionDays is how long model call records are kept; 0 keeps
 	// them forever.
 	LLMCallsRetentionDays int
+
+	// NATSURL is the message bus server (nats.url, or KNOWLEDGE_NATS_URL, which
+	// wins). Empty, the default, means knowledge does not connect to the bus.
+	NATSURL string
 }
 
 // PurposeConfig is one LLM use: the tags a model must have (the router picks
@@ -127,6 +131,9 @@ type fileConfig struct {
 	LLMCalls          struct {
 		RetentionDays int `yaml:"retention_days"`
 	} `yaml:"llm_calls"`
+	NATS struct {
+		URL string `yaml:"url"`
+	} `yaml:"nats"`
 }
 
 type purposeFileConfig struct {
@@ -230,6 +237,8 @@ func Load() (Config, error) {
 		KnowledgeLanguage: fc.KnowledgeLanguage,
 
 		LLMCallsRetentionDays: fc.LLMCalls.RetentionDays,
+
+		NATSURL: env("KNOWLEDGE_NATS_URL", fc.NATS.URL),
 	}
 	if err := cfg.check(); err != nil {
 		return Config{}, fmt.Errorf("config file %s: %w", path, err)

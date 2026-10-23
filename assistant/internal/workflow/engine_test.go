@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -928,5 +929,53 @@ func TestWaitingRunCanBeStoredAndResumedByAnotherEngine(t *testing.T) {
 	contains(t, requestInput(t, second, 0), `"note":"saved"`, "state survived the move")
 	if restored.Language != "xaa" {
 		t.Errorf("language lost in the snapshot: %q", restored.Language)
+	}
+}
+
+// failedStepObservation parses the request sent at index i and returns its
+// "observation", which is nil when the request has none.
+func failedStepObservation(t *testing.T, h *harness, i int) map[string]any {
+	t.Helper()
+	var in map[string]any
+	if err := json.Unmarshal([]byte(requestInput(t, h, i)), &in); err != nil {
+		t.Fatalf("request %d is not JSON: %v", i, err)
+	}
+	obs, _ := in["observation"].(map[string]any)
+	return obs
+}
+
+func TestOnErrorStateSeesTheObservationTheFailedStepHad(t *testing.T) {
+	h := newHarness(t, flowYAML, replies(
+		"bad 1", "bad 2", // retries exhausted in start, which was given the user's text
+		gotoReply(`{"note":"recovered"}`, "done"),
+	)...)
+	run, res := h.start(workflow.Input{Message: "make a form that asks for my name"})
+
+	if res.Status != workflow.StatusSucceeded {
+		t.Fatalf("failure: %+v", run.Failure)
+	}
+	obs := failedStepObservation(t, h, 2)
+	if got := obs[workflow.FailedObservationKey]; got != "make a form that asks for my name" {
+		t.Errorf("observation under %q = %v", workflow.FailedObservationKey, got)
+	}
+	failure, _ := obs["error"].(map[string]any)
+	if failure["reason"] != "retries_exhausted" {
+		t.Errorf("error = %v", obs["error"])
+	}
+}
+
+func TestOnErrorStateHasNoObservationKeyWhenTheFailedStepHadNone(t *testing.T) {
+	h := newHarness(t, flowYAML, replies(
+		"bad 1", "bad 2",
+		gotoReply(`{"note":"recovered"}`, "done"),
+	)...)
+	h.start(workflow.Input{})
+
+	obs := failedStepObservation(t, h, 2)
+	if _, found := obs[workflow.FailedObservationKey]; found {
+		t.Errorf("the key %q must be omitted for a nil observation: %v", workflow.FailedObservationKey, obs)
+	}
+	if _, found := obs["error"]; !found {
+		t.Errorf("error missing: %v", obs)
 	}
 }

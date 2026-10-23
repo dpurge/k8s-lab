@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.local/schemas/ops/task_status.request-1.json",
+  "title": "task_status request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128}
+  }
+}

@@ -1,0 +1,1 @@
+{"schema_version":1,"id":"c2d4f6a8-1b3d-4e5f-9a7c-8e0b2d4f6a81","type":"error","correlation_id":"9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d","from":"knowledge","to":"assistant","created_at":"2026-10-23T09:20:00Z","operation":"task_status","error":{"code":"not_found","message":"No task has that id.","retryable":false}}

@@ -92,6 +92,26 @@ func TestEveryReferenceExampleIsAccepted(t *testing.T) {
 	}
 }
 
+func TestASiblingOfCreateSurfaceGetsAHintThatItBelongsInside(t *testing.T) {
+	v := newValidator(t)
+	const body = `"createSurface":{"surfaceId":"s","catalogId":"` + CatalogID + `","components":[{"id":"root","component":"Text","text":"x"}]}`
+	for name, tc := range map[string]struct{ raw, want string }{
+		"dataModel":  {`{"version":"v1.0",` + body + `,"dataModel":{}}`, `(found createSurface, dataModel, version) "dataModel" is next to "createSurface" but must be inside it: createSurface was probably closed too early.`},
+		"components": {`{"version":"v1.0",` + body + `,"components":[]}`, `(found components, createSurface, version) "components" is next to "createSurface" but must be inside it`},
+		"both":       {`{"version":"v1.0",` + body + `,"components":[],"dataModel":{}}`, `"components" and "dataModel" are next to "createSurface"`},
+	} {
+		_, err := v.Check([]byte(tc.raw))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %v\nwant it to contain %q", name, err, tc.want)
+		}
+	}
+	// Without createSurface the hint would mislead.
+	_, err := v.Check([]byte(`{"version":"v1.0","dataModel":{}}`))
+	if err == nil || strings.Contains(err.Error(), "closed too early") {
+		t.Errorf("a dataModel alone: error %v", err)
+	}
+}
+
 func TestMalformedEnvelopesAreRefused(t *testing.T) {
 	v := newValidator(t)
 	for name, raw := range map[string]string{
@@ -507,5 +527,126 @@ func TestCheckInterfaceNamesTheMessageAndLimitsWhatItReports(t *testing.T) {
 	}
 	if err := v.CheckInterface([]json.RawMessage{msg(t, create("s"))}); err == nil || !strings.Contains(err.Error(), `no component with the id "root"`) {
 		t.Errorf("an incomplete interface: %v", err)
+	}
+}
+
+// surfaceWith is a createSurface message that carries the components.
+func surfaceWith(components ...obj) json.RawMessage {
+	list := make([]any, len(components))
+	for i, c := range components {
+		list[i] = c
+	}
+	return mustJSON(obj{"version": "v1.0", "createSurface": obj{"surfaceId": "s", "catalogId": CatalogID, "components": list}})
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// wantAccepted checks that the refusal says what the component accepts, once,
+// in the words the guide uses for it.
+func wantAccepted(t *testing.T, v *Validator, err error, name string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	sentence := fmt.Sprintf(" Accepted for %s: %s.", name, v.signature(name))
+	if n := strings.Count(err.Error(), sentence); n != 1 {
+		t.Errorf("%d times %q in: %v", n, sentence, err)
+	}
+	if !strings.Contains(v.Guide(), fmt.Sprintf("\n- %s: %s\n", name, v.signature(name))) {
+		t.Errorf("the guide does not print the signature of %s", name)
+	}
+}
+
+func TestARefusedPropertyListsWhatItsComponentAccepts(t *testing.T) {
+	v := newValidator(t)
+	root := obj{"id": "root", "component": "Card", "child": "t"}
+	cases := []struct {
+		name      string
+		component obj
+		accepted  string
+		contains  string
+	}{
+		{"invented property", obj{"id": "t", "component": "Text", "text": "x", "colour": "red"}, "Text", `"colour" is not allowed here.`},
+		{"missing required property", obj{"id": "t", "component": "Button", "action": obj{"event": obj{"name": "go"}}}, "Button", "child"},
+		{"wrong kind of value", obj{"id": "t", "component": "Text", "text": 5}, "Text", ""},
+	}
+	for _, c := range cases {
+		err := v.CheckInterface([]json.RawMessage{surfaceWith(root, c.component)})
+		wantAccepted(t, v, err, c.accepted)
+		if !strings.Contains(err.Error(), c.contains) || !strings.Contains(err.Error(), "ui[0]/createSurface/components/1") {
+			t.Errorf("%s: the existing text or path is gone: %v", c.name, err)
+		}
+		t.Logf("%s: %v", c.name, err)
+	}
+}
+
+func TestAnUnknownComponentTypeKeepsItsListOfTheCatalogAndGetsNoSignature(t *testing.T) {
+	v := newValidator(t)
+	err := v.CheckInterface([]json.RawMessage{surfaceWith(obj{"id": "root", "component": "Hologram"})})
+	wantProblem(t, err, "ui[0]/createSurface/components/0/component", `unknown component type "Hologram"; the catalog has AudioPlayer, `)
+	if strings.Contains(err.Error(), "Accepted for") {
+		t.Errorf("a signature for a component that does not exist: %v", err)
+	}
+	t.Log(err)
+}
+
+func TestTwoProblemsInOneComponentGetOneSignatureAfterTheLast(t *testing.T) {
+	v := newValidator(t)
+	bad := obj{"id": "root", "component": "Text", "colour": "red", "size": 3}
+	err := v.CheckInterface([]json.RawMessage{surfaceWith(bad)})
+	wantAccepted(t, v, err, "Text")
+	ps := problems(t, err)
+	if len(ps) < 3 {
+		t.Fatalf("problems = %v, want a missing text and two invented properties", ps)
+	}
+	for _, p := range ps[:len(ps)-1] {
+		if strings.Contains(p.Message, "Accepted for") {
+			t.Errorf("a signature before the last problem: %v", p)
+		}
+	}
+	if !strings.Contains(ps[len(ps)-1].Message, "Accepted for Text") {
+		t.Errorf("no signature after the last problem: %v", ps)
+	}
+}
+
+func TestOnlyTheFirstComponentsOfARefusalAreDescribedAndItStaysShort(t *testing.T) {
+	v := newValidator(t)
+	var list []obj
+	// The three components with the longest signatures, each wrong in several ways.
+	for i, typ := range []string{"ChoicePicker", "Column", "Row", "Image"} {
+		list = append(list, obj{"id": fmt.Sprintf("c%d", i), "component": typ, "a": 1, "b": 2})
+	}
+	err := v.CheckInterface([]json.RawMessage{surfaceWith(list...)})
+	if got := strings.Count(err.Error(), "Accepted for"); got != maxSignaturesReported {
+		t.Errorf("%d signatures, want %d: %v", got, maxSignaturesReported, err)
+	}
+	if len(err.Error()) > 1500 {
+		t.Errorf("the refusal is %d bytes", len(err.Error()))
+	}
+	t.Logf("%d bytes", len(err.Error()))
+}
+
+func TestAProblemOutsideAComponentGetsNoSignature(t *testing.T) {
+	v := newValidator(t)
+	err := v.CheckInterface([]json.RawMessage{surfaceWith(text("a", "x"))})
+	if err == nil || !strings.Contains(err.Error(), `no component with the id "root"`) || strings.Contains(err.Error(), "Accepted for") {
+		t.Errorf("a missing root: %v", err)
+	}
+	err = v.CheckInterface([]json.RawMessage{surfaceWith(obj{"id": "bad-id", "component": "Text", "text": "x"})})
+	if err == nil || strings.Contains(err.Error(), "Accepted for") {
+		t.Errorf("a bad id: %v", err)
+	}
+}
+
+func TestAValidInterfaceHasNothingToExplain(t *testing.T) {
+	v := newValidator(t)
+	if err := v.CheckInterface([]json.RawMessage{surfaceWith(obj{"id": "root", "component": "Text", "text": "x"})}); err != nil {
+		t.Errorf("err = %v", err)
 	}
 }

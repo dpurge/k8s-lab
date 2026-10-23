@@ -37,12 +37,11 @@ knowledge/
 ├── internal/ingest/ingest.go          # URL/file → draft chunks pipeline, chained through internal/queue (chunk.go, html.go, drafts.go, source.go)
 ├── internal/jobs/jobs.go              # async job tracking (start/step/finish/current), polled by the UI
 ├── internal/server/server.go          # Chi router, REST handlers, session middleware, embedded GUI
-├── internal/server/static/index.html  # vanilla HTML/CSS/JS GUI (theme toggle, logout)
+├── internal/server/static/index.html  # GUI page on the shared `dp-shell` (theme toggle, logout), loaded from /ui/ (shared/ui)
 ├── internal/server/static/login.html  # login page
 ├── internal/server/static/signup.html # sign-up page
-├── internal/server/static/theme.js    # shared dark/light theme toggle + localStorage persistence
 ├── internal/server/static/vendor/     # vendored (no CDN) markdown-it + DOMPurify for chat rendering
-├── internal/server/static/components/ # kb-* Web Components (kb-button, kb-nav, kb-card, kb-field, kb-dialog, kb-status-bar, kb-message, kb-job-card); component.test.js per one, Node+jsdom
+├── internal/server/static/components/ # knowledge's own Web Components (kb-message, kb-job-card); component.test.js per one, Node+jsdom
 └── k8s/
     ├── configmap.yaml                 # mounted config.yaml (purposes, prompts, embedding space, thresholds)
     ├── deployment.yaml                # Deployment, Service, Ingress
@@ -992,6 +991,18 @@ operation is durable — it completes even if the original HTTP request that tri
 gone, so a slow reply is never silently lost. Every LLM call, ingest job start/finish, data
 import, and knowledge item create/update/delete is logged (structured, `log/slog` JSON to
 stdout) with duration and outcome, never content.
+
+## Message bus (NATS)
+
+Knowledge answers requests from other apps over NATS on `dp.knowledge.request`, with the message format of `shared/message`. It listens only when `nats.url` in `config.yaml` (or the env var `KNOWLEDGE_NATS_URL`) is set; empty, the default in code, means it never connects, and a failed connection is logged without stopping the app. The dev ConfigMap sets `nats://jdp-data-nats.data.svc:4222`.
+
+| Operation | Does |
+|---|---|
+| `documents_search` | Searches like `POST /api/v1/knowledge/search` (default `limit` 5) and returns `documents`. |
+| `url_ingest` | Starts a URL ingest like `POST /api/v1/ingest/url` (same URL check) and returns a task id; an ingest that is already running answers `unavailable`. |
+| `task_status` | Returns `id`, `kind`, `status`, `step`, `error` (cut to 1000 characters), `created_at` and `updated_at` of a job, never its source or payload. |
+
+Nothing authenticates a sender: any client that can reach NATS can ask. On SIGTERM or SIGINT knowledge drains the bus first, then stops HTTP (10 s limit). `knowledge_bus_requests_total{operation,outcome}` counts the requests.
 
 ## Validation and errors
 

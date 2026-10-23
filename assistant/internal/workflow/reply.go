@@ -66,9 +66,12 @@ func ParseReply(wf *Workflow, stateName string, tools ToolLookup, text string) (
 		return nil, fmt.Errorf("unknown state %q in workflow %q", stateName, wf.ID)
 	}
 
-	body, err := DecodeObject([]byte(stripCodeFence(text)))
+	// Offsets in a refusal refer to the text after the fence is removed, the text
+	// that was parsed.
+	text = stripCodeFence(text)
+	body, err := DecodeObject([]byte(text))
 	if err != nil {
-		return nil, refuse("reply is not a valid JSON object: %v", err)
+		return nil, refuse("%s", invalidJSONMessage(text, err))
 	}
 	if err := checkKeys(body, []string{"state_patch", "action"}, []string{"state_patch", "action"}, "reply"); err != nil {
 		return nil, err

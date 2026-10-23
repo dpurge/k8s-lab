@@ -64,6 +64,11 @@ type Config struct {
 	JobsRetentionDaysDone   int
 	JobsRetentionDaysFailed int
 
+	// NATSURL is the address of the NATS server (yaml nats.url, overridden by
+	// the environment variable EnvNATSURL). Empty means the app never connects
+	// and answers nothing over the message bus.
+	NATSURL string
+
 	// SessionKey signs the login session cookie. Must be set in production;
 	// a fixed dev default is used only so `go run` works with zero setup.
 	SessionKey string
@@ -118,6 +123,9 @@ type fileConfig struct {
 		RetentionDaysDone   int `yaml:"retention_days_done"`
 		RetentionDaysFailed int `yaml:"retention_days_failed"`
 	} `yaml:"jobs"`
+	NATS struct {
+		URL string `yaml:"url"`
+	} `yaml:"nats"`
 	Transcription       purposeFileConfig `yaml:"transcription"`
 	Translation         purposeFileConfig `yaml:"translation"`
 	Title               purposeFileConfig `yaml:"title"`
@@ -238,6 +246,9 @@ func defaultFileConfig() fileConfig {
 	return f
 }
 
+// EnvNATSURL names the environment variable that overrides nats.url.
+const EnvNATSURL = "PHRASEFORGE_NATS_URL"
+
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -317,6 +328,8 @@ func Load() (Config, error) {
 
 		JobsRetentionDaysDone:   fc.Jobs.RetentionDaysDone,
 		JobsRetentionDaysFailed: fc.Jobs.RetentionDaysFailed,
+
+		NATSURL: env(EnvNATSURL, fc.NATS.URL),
 
 		SessionKey: env("SESSION_KEY", "dev-only-insecure-key-change-me"),
 	}, nil

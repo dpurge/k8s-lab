@@ -23,8 +23,9 @@ and memory come in later slices (see
   `GET /tasks/{id}/llm-calls`, `GET /llm-calls?since=&limit=&offset=` (every attempt, a page at a time), `GET /usage?since=` (per user, provider and model), `GET /models`; also
   `/healthz` and `/metrics` (no login, shows model ids, provider ids, call counts, cost and Go/process info, never credentials or content; in production block it at the ingress or scrape the pod address directly; each scrape evaluates provider availability by reading credential and header files). Errors are always
   `{"error": {"code", "message"}}`. There is no authentication yet.
-- **Admin interface** at `/` (its files under `/static/`; the former `/admin/` redirects): a single-page app of native Web Components
-  (`as-*`, in `internal/server/static/`), embedded in the binary. It shows the
+- **Admin interface** at `/` (its files under `/static/`; the former `/admin/` redirects): a single-page app on the shared `dp-shell` and
+  `dp-*` components from `shared/ui` (served at `/ui/`), plus the assistant's own
+  Web Components (`as-*`, in `internal/server/static/`), embedded in the binary. It shows the
   queue with status filter and paging, counts waiting and running times up
   live, shows each task's model, tokens and cost, and on a task's page its
   payload, result, error and every model call it made. The top menu is Chat,
@@ -40,7 +41,9 @@ and memory come in later slices (see
   `assistant_task_queue_seconds`, `assistant_task_execution_seconds` and
   `assistant_http_requests_total` / `_duration_seconds` by route template.
 - **Logs** are JSON on stdout; a task's start and finish are one line each with
-  its id, workflow, outcome and duration, never its payload or result.
+  its id, workflow, outcome and duration, never its payload or result. A failed
+  task whose workflow gave a known reason adds `failure_reason` and
+  `failure_message` (the quoted model reply is left out).
 - **Troubleshooting LLM calls**: every model call leaves JSON log lines that
   share a `call_id` and carry `task_id` and `user_id`: `llm candidates` (debug),
   one `llm attempt` per model tried (model, provider, outcome, failure kind,
@@ -82,7 +85,10 @@ curl -H 'Host: assistant.localhost' localhost:8080/api/v1/tasks \
   failed or been cancelled the next message starts a new run; while it works a
   new message is refused (409). The assistant's side is the run speaking: its
   questions, its result, and its failures (in red). `/help` lists the commands
-  and the workflows; an unknown command says so. The channel is behind an
+  and the workflows; an unknown command says so. `/end` ends the conversation's
+  run (a pending or waiting one at once, a running one in a moment) and the
+  conversation stays open. Deleting a conversation cancels its run first and
+  keeps the task record. The channel is behind an
   interface (`internal/chat`), a mock now and Telegram later.
 - **Tidying**: cancel a pending or waiting task, or stop a running one
   (`POST /tasks/{id}/cancel`), retry a failed or cancelled one as a new task
@@ -342,6 +348,25 @@ re-read on every call).
   `ollama` models only; `overall_timeout_seconds` and `num_predict` apply to every
   type, `num_ctx` and `think` to `ollama` only.
 
+## Calling other apps (`internal/bus`)
+
+A small typed client for the operations the apps answer over NATS (the
+envelope is `shared/message`, the operations `shared/ops`, the transport
+`shared/bus`): `SearchDocuments` (knowledge), `IngestURL` and `TaskStatus`
+(knowledge or phraseforge). Each returns the typed result or a `*message.Error`
+with a fixed code; `bus.Retryable(err)` says whether to try again (`unavailable`
+and `timeout`). The task and user ids of the context (`internal/callctx`) go
+into the envelope's `context`. No workflow tool uses it yet (`rag_search` is
+still a stub; see `assistant-rag` and `assistant-chat-port` in the roadmap).
+
+| Setting | Meaning |
+|---|---|
+| `ASSISTANT_NATS_URL` | NATS server, such as `nats://jdp-data-nats.data.svc:4222` (set in the dev Deployment). Empty or unset (the default): no connection, no client. A connection that fails at startup is logged as a warning and the assistant runs without the client. The URL is never logged. |
+
+`assistant_bus_requests_total{app,operation,outcome}` and
+`assistant_bus_request_duration_seconds{app,operation}` count the requests
+(`outcome` is `ok` or the error code).
+
 ## Workflow engine (`internal/workflow`)
 
 - A workflow is a YAML file (`workflows/`, format in
@@ -354,6 +379,11 @@ re-read on every call).
   (`tool`, `goto` or `ask_user`). Invalid replies are retried with the reason.
 - `ask_user` suspends the run. A run is plain JSON (`Run`, `RestoreRun`), so
   it can be stored and resumed later, by another process.
+- A state may declare `on_error: <state>`: when its step fails for good
+  (retries exhausted, a failed model call, too many visits) the run moves there
+  once, with `{"error": {...}, "observation": <what the failed step was given>}`
+  as the observation. The shipped workflows use it to fall back to plain words,
+  and a test requires every shipped workflow to declare it unless allow-listed.
 - Prompts are a template with `{{language}}`, `{{output}}`, `{{languageRules}}`
   and `{{outputRules}}`; snippets live in `internal/workflow/prompts/lang/<code>/`
   and `internal/workflow/prompts/output/<kind>/`.

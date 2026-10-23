@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `ASSISTANT_NATS_URL` and a typed client for asking knowledge and phraseforge for documents, URL ingests and task status over NATS (not yet used by workflows); metrics `assistant_bus_requests_total` and `assistant_bus_request_duration_seconds`.
+- `/end` in a chat ends the conversation's current run and keeps the conversation open.
+- `on_error` fallbacks in `ui-compose`, `orchestrator`, `hello-live` and `ui-demo`: when the model cannot follow a step the run finishes in plain words instead of failing; the state an `on_error` edge leads to now also sees what the failed step had been given, under `observation`.
+- The "task finished" log line of a failed task carries `failure_reason` and `failure_message` when the workflow gave a known reason (the quoted model reply is left out of the log; the task keeps its full error).
 - `models.yaml` accepts `embedding_space` and `dimension` on an embedding model (both or neither; only an `ollama` or `openai` provider can carry one), and `assistant models validate` checks them.
 - Optional `OPENROUTER_API_KEY` environment variable in the dev Deployment, read from the Secret `assistant-llm-keys` (created by `task llm-enable` or by hand).
 - Admin: the Usage page can group by user, provider or model and shows a provider column; the Models page is separate; a new Attempts page lists every model call, newest first, failed ones included, with paging and a period filter; a side panel for the Usage section links the three pages.
@@ -47,6 +51,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The admin interface runs on the common `dp-shell` of the shared UI library: a top bar with the Chat, Tasks and Usage tabs and a theme button, a footer status bar, and full-width (fluid) pages. On the Chat page the conversation list and the new-conversation form are in a hideable sidebar (the choice is remembered), the conversation fills the height of the page, and on a screen under 760 px the sidebar is a slide-over drawer.
+- Deleting a conversation cancels its run first (the task record stays); the answer is 500 and nothing is deleted if the run cannot be cancelled.
+- A refused model reply now tells the model where its JSON broke (byte offset, a quoted excerpt, the open containers) and what to do; an A2UI message with `dataModel` or `components` beside `createSurface` gets a hint, and a refused component or property lists the properties its component accepts.
+- For a workflow that declares `ui`, the reply schema sent to Ollama as `format` types `payload.ui`.
+- `ui-compose` instructions say to ask with `ask_user` and never `goto` before the user pressed the button.
 - The Attempts table cuts a long provider id to one line, with the full id as its tooltip, like the model column (it takes effect at the next deploy).
 - The Vertex provider's error texts no longer name a dev `task` command: a missing credential gives the `api_key_from` error alone, and a 401/403 says to renew the credential that `api_key_from` points to.
 - The usage API (`GET /api/v1/usage`) groups by provider as well as user and model: rows carry `provider_id`.

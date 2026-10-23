@@ -100,6 +100,15 @@ const (
 	FailIncompleteState FailReason = "incomplete_state"
 )
 
+// Known reports whether r is one of the reasons above.
+func (r FailReason) Known() bool {
+	switch r {
+	case FailRetriesExhausted, FailMaxSteps, FailMaxTokens, FailMaxVisits, FailCancelled, FailLLM, FailIncompleteState:
+		return true
+	}
+	return false
+}
+
 // RestoreRun decodes a run snapshot written by json.Marshal, keeping numbers
 // exact. Use it instead of json.Unmarshal, which would turn integers in the
 // run state into floats.

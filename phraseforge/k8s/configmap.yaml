@@ -31,6 +31,10 @@ data:
       retention_days_done: 7
       # Jobs that finished with status failed or cancelled (kept longer so they can be inspected or retried):
       retention_days_failed: 30
+    nats:
+      # NATS server of the message bus (the app answers task_status on dp.phraseforge.request).
+      # Empty: the app never connects. PHRASEFORGE_NATS_URL overrides it.
+      url: nats://jdp-data-nats.data.svc:4222
     transcription:
       model_tags: [default]
       numCtx: 4096

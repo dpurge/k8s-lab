@@ -27,6 +27,9 @@ const (
 	// EnvA2UIMediaHosts lists, comma-separated, the hosts a chat interface may
 	// load images, video and audio from, besides this server and data: URLs.
 	EnvA2UIMediaHosts = "ASSISTANT_A2UI_MEDIA_HOSTS"
+	// EnvNATSURL is the NATS server the assistant uses to call other apps.
+	// Empty (the default) means no connection.
+	EnvNATSURL = "ASSISTANT_NATS_URL"
 )
 
 // DefaultLLMCallsRetentionDays is how long llm_calls rows are kept when
@@ -59,6 +62,10 @@ type Config struct {
 	// only this server and data: URLs. Each host is added to the page's
 	// Content-Security-Policy, so an entry is validated as a bare host name.
 	A2UIMediaHosts []string
+	// NATSURL is the NATS server to call other apps through, such as
+	// nats://host:4222. Empty by default: the assistant then connects to
+	// nothing. It may hold credentials, so it is never logged.
+	NATSURL string
 }
 
 // mediaHost is a host name with an optional port, nothing else: it is put into
@@ -133,6 +140,10 @@ func Load(lookup Lookup) (Config, error) {
 		} else {
 			cfg.A2UIMediaHosts = hosts
 		}
+	}
+
+	if v, ok := lookup(EnvNATSURL); ok {
+		cfg.NATSURL = strings.TrimSpace(v)
 	}
 
 	if len(problems) > 0 {

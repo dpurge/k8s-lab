@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"assistant/internal/callctx"
+	"assistant/internal/workflow"
 )
 
 // Queue is what the worker needs from the task store.
@@ -132,14 +135,62 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 
 	executed, _ := done.ExecutionTime(time.Now())
 	queued := done.QueueTime(time.Now())
-	// Only ids, names, the outcome and timings are logged: a payload or result
-	// can hold anything the user sent or a workflow produced.
-	w.Log.Info("task finished", "task_id", done.ID, "workflow", done.WorkflowID, "outcome", done.Status, "duration_ms", executed.Milliseconds())
+	// What is logged, and what is kept out of it, is finishedLogAttrs's concern.
+	w.Log.Info("task finished", finishedLogAttrs(done, executed)...)
 	if w.Observer != nil {
 		w.Observer.ObserveTask(done.Source, done.WorkflowID, done.Status, queued, executed)
 	}
 	w.notify(finishCtx, done)
 	return true, nil
+}
+
+// maxFailureLogBytes bounds the failure message in the log.
+const maxFailureLogBytes = 600
+
+// finishedLogAttrs are the attributes of the "task finished" line. Ids, names,
+// the outcome and timings are always logged: a payload or result can hold
+// anything the user sent or a workflow produced, so those never are. A task
+// that did not succeed also says why, so the log explains a failure without a
+// look at the task: failure_reason is the workflow's reason code and
+// failure_message its text, cut short. Only a failure that carries a known
+// reason code says why: its text comes from the workflow engine. Any other
+// error can quote whatever a payload or a result held, so it adds nothing. The
+// engine's text can quote the model's reply (see workflow.RedactExcerpt), so
+// that quote is removed first.
+func finishedLogAttrs(done Task, executed time.Duration) []any {
+	attrs := []any{"task_id", done.ID, "workflow", done.WorkflowID, "outcome", done.Status, "duration_ms", executed.Milliseconds()}
+	if done.Status == StatusSucceeded || done.Error == nil {
+		return attrs
+	}
+	reason, message := splitFailure(*done.Error)
+	if reason == "" {
+		return attrs
+	}
+	return append(attrs, "failure_reason", string(reason), "failure_message", truncateBytes(workflow.RedactExcerpt(message), maxFailureLogBytes))
+}
+
+// splitFailure separates the workflow's reason code from the message. The
+// workflow runner reaches the worker as an error whose text is "reason: message"
+// (internal/workflows), so the reason is read from the text, and only a known
+// reason code counts: any other error has no reason and keeps its whole text.
+func splitFailure(text string) (workflow.FailReason, string) {
+	code, message, found := strings.Cut(text, ": ")
+	if reason := workflow.FailReason(code); found && reason.Known() {
+		return reason, message
+	}
+	return "", text
+}
+
+// truncateBytes cuts text to at most max bytes without splitting a character.
+func truncateBytes(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // notify tells the notifier, if there is one, how the task stands.

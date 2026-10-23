@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"k8s-lab/shared/modelcfg"
@@ -28,6 +30,7 @@ import (
 
 	"phraseforge/internal/ai"
 	"phraseforge/internal/auth"
+	"phraseforge/internal/bus"
 	"phraseforge/internal/config"
 	"phraseforge/internal/db"
 	"phraseforge/internal/dialogs"
@@ -340,6 +343,36 @@ func runServe(ctx context.Context, cfg config.Config) {
 	srv.SetIngestMaxContentBytes(cfg.IngestMaxContentBytes)
 	srv.SetMetricsHandler(llmMetrics.Handler())
 
+	busService := startBus(cfg, jobsSvc, llmMetrics)
+
+	httpServer := &http.Server{Addr: cfg.BindAddr, Handler: srv.Router()}
+	signals, stopSignals := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	go func() {
+		<-signals.Done()
+		// The bus first: requests already taken are answered before the process ends.
+		busService.Stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shut down the http server: %v", err)
+		}
+	}()
+
 	log.Printf("phraseforge listening on %s, routing over %d model(s)", cfg.BindAddr, len(modelsConfig.Models))
-	log.Fatal(http.ListenAndServe(cfg.BindAddr, srv.Router()))
+	if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+// startBus starts answering requests over NATS when nats.url is set. A server
+// that cannot be reached is a warning, not a stop: the HTTP server must run
+// without the bus. The error text is not logged, to keep the warning fixed.
+func startBus(cfg config.Config, store bus.JobStore, observer bus.Observer) *bus.Service {
+	service, err := bus.Start(cfg.NATSURL, bus.App, store, observer, slog.Default())
+	if err != nil {
+		slog.Warn("the message bus is not started: phraseforge does not answer requests over NATS; check nats.url and that the NATS server is reachable")
+		return nil
+	}
+	return service
 }

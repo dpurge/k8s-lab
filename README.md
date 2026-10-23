@@ -41,6 +41,7 @@ task delete-k8s               # full teardown — cluster, registry, and local k
 | `task llm-enable` | Adds the available remote LLM sources to the assistant, phraseforge and knowledge in the dev cluster (models files, Secrets, ConfigMaps). A deployed app restarts only when its models file or key changed; running it twice changes nothing. |
 | `task llm-disable` | Removes everything `llm-enable` added and restores the committed local-Ollama default. |
 | `task llm-refresh-vertex-token` | Writes a fresh Vertex AI access token (valid about an hour) into the Vertex Secrets; Vertex must be enabled by `llm-enable`. |
+| `task test-bus` | Vets and tests `shared/bus` against the dev cluster's NATS, port-forwarded to local port `NATS_TEST_PORT` (14222) for the run and stopped after. |
 | `task test-llm-scripts` | Tests the `scripts/llm-*.sh` scripts against a fake Ollama and a fake `gcloud` (no real LLM, no cluster). |
 
 ## Kubeconfig isolation
@@ -336,6 +337,8 @@ Single node, persistent storage on its own PVC — no bootstrap step needed (unl
 JetStream accepts stream/consumer commands as soon as the pod is ready.
 
 No auth is configured — dev-only, matching Qdrant's posture in this cluster.
+
+The Service `jdp-data-nats` (headless, 4222) also selects this pod: it is the production name of NATS, so the URL `nats://jdp-data-nats.data.svc:4222` is the same in dev and prod.
 
 **Ingress host** (monitoring API only — `/healthz`, `/varz`, `/jsz`, ...; no auth):
 

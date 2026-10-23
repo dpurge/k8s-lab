@@ -76,6 +76,25 @@ spec:
       name: monitor
   type: ClusterIP
 ---
+# The production name of this service: in production NATS is `data/jdp-data-nats`,
+# a headless service on 4222 only (no monitoring port) in front of a plain
+# server (2.14.6, JetStream on, no authentication, 1 MiB max payload, one node).
+# Dev answers to the same name, so an app's NATS URL is the same in both:
+# nats://jdp-data-nats.data.svc:4222
+apiVersion: v1
+kind: Service
+metadata:
+  name: jdp-data-nats
+  namespace: data
+spec:
+  clusterIP: None
+  selector:
+    app: nats
+  ports:
+    - port: 4222
+      targetPort: 4222
+      name: client
+---
 # Monitoring HTTP API only (/healthz, /varz, /jsz, ...) — the client port (4222)
 # speaks the NATS wire protocol, not HTTP, so it isn't ingress-routable; reach
 # it via `kubectl port-forward` instead (see README).

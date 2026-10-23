@@ -1,9 +1,9 @@
 ---
 title: Shared Lit UI library and common shell
 kind: feature
-status: implementing
+status: done
 version: 6
-updated: 2026-10-21
+updated: 2026-10-23
 branch: main
 ---
 
@@ -255,12 +255,69 @@ Follow-ups raised by the user (2026-10-21), not part of this spec, in the order 
 
 ## Validation
 
-Not started.
+Run on 2026-10-23 against the dev cluster (context `k3d-k8s-lab`), on the tree as it stood after the previous work. Every suite had 0 skipped unless stated, and no `package.json` or lockfile changed.
+
+Frontend suites, through the project's tasks:
+
+| Command | Result |
+| --- | --- |
+| `task test-ui` | 345 of 345 pass; typecheck ok; its Go handler tests ok |
+| `task test-phraseforge-frontend` | 52 of 52 |
+| `task test-knowledge-frontend` | 33 of 33 |
+| `task test-assistant-frontend` | 335 of 335 |
+
+Go tests, `go test -count=1 -v ./...` in each module:
+
+| Module | Pass | Fail | Skip | Packages |
+| --- | --- | --- | --- | --- |
+| `shared` | 328 | 0 | 0 | 10 ok |
+| `phraseforge` | 636 | 0 | 1 | 16 ok |
+| `knowledge` | 126 | 0 | 0 | 10 ok |
+| `assistant` | 659 | 0 | 1 | (`task test-assistant` exits 0, with its database tests) |
+
+- Phraseforge ran with the dev Postgres through a port-forward (`PHRASEFORGE_TEST_DSN` and `PHRASEFORGE_TEST_DB` on database `phraseforge`). Its one skip is `TestAdminConfigExportImportRoundTripDB`, which wipes a database and needs `PHRASEFORGE_TEST_DB_REPLACE_ALL=1`; that variable was left unset on purpose.
+- Knowledge ran with `KNOWLEDGE_TEST_DSN` on database `knowledge`.
+- Assistant's one skip is a real-model trial, not run.
+- The port-forward was stopped and the port was free afterwards.
+
+Real browser checks on dev were recorded per step in Implementation Notes (assistant and knowledge at 1280, 1024 and 390 px, light and dark, no console errors). They were not repeated on 2026-10-23: the assistant image on dev was rebuilt on that day and carries the current shared bundle; the phraseforge and knowledge images on dev are from their last deploys and pick up the newest shared changes on their next deploy.
+
+Regressions against the earlier baseline: none recorded. Coverage gaps: those listed under "Not checked" in Implementation Notes (knowledge chat with a conversation, ingestion, import and export, a very long document list, Safari, Firefox).
 
 ## Documentation Review
 
-Not started.
+Checked on 2026-10-23 with the `doc` skill, against the code as it is now, for drift this feature caused (shell, `dp-*` components, `/ui/` mount, `build-ui` and `test-ui` tasks, the Node build stage, the deleted `pf-*`, `kb-*` and `as-*` components). Changelogs resolved with the Artifacts table in `specs/tech-stack.md` (`### Artifacts`, with its `Built from:` note: a change under `shared/ui` needs an entry in assistant, phraseforge and knowledge).
+
+Files checked: `assistant/README.md`, `assistant/CHANGELOG.md`, `knowledge/README.md`, `knowledge/CHANGELOG.md`, `phraseforge/README.md`, `phraseforge/CHANGELOG.md`, `README.md`, `CHANGELOG.md`, `specs/tech-stack.md`, `specs/mission.md`.
+
+Findings, correctness and consistency (fixed, README and CHANGELOG):
+1. Medium, `knowledge/README.md:40` called `index.html` a "vanilla HTML/CSS/JS GUI"; it is a `dp-shell` page (`knowledge/internal/server/static/index.html:22`, `dp-tabs` in the header slot). Fixed.
+2. Medium, `knowledge/README.md:43` listed `static/theme.js`; the file is deleted (`ls knowledge/internal/server/static` has no `theme.js`). Line removed.
+3. Medium, `knowledge/README.md:45` listed `kb-button, kb-nav, kb-card, kb-field, kb-dialog, kb-status-bar` as components; only `kb-message` and `kb-job-card` remain (`knowledge/internal/server/static/components/`). Fixed.
+4. Medium, `assistant/README.md:26` said the admin page is native Web Components `as-*`; it runs on the shared `dp-shell` and `dp-*` components from `/ui/`, and `as-*` are only the assistant's own widgets (`assistant/internal/server/static/components/` has no `as-nav`, `as-card`, `as-status-bar`, `as-pager`). Fixed.
+5. Medium, the three changelogs had no entry for the common shell and shared components. grep for `dp-shell`, shared UI library, hideable sidebar and fluid layout found only the earlier entries (assistant `CHANGELOG.md:65`, the theme toggle and `/` mount; the `shared/ui` table entries). Added one entry per app under `## [Unreleased]` / `### Changed`: `assistant/CHANGELOG.md:53`, `knowledge/CHANGELOG.md:72`, `phraseforge/CHANGELOG.md:73`.
+
+Findings, not changed:
+6. Low, `assistant/README.md:392` says "the as-* component tests"; the suite is still the assistant's own tests (`as-*` widgets, `router.test.js`, `api.test.js`), so it is still true. No change.
+7. Low, `phraseforge/README.md`: no mention of `pf-*` components or the layout internals; its sidebar and menu descriptions (lines 17 to 21) still match the shell. No drift found.
+8. Low, `README.md` (root) and `CHANGELOG.md` (root): no mention of `build-ui` or `test-ui`; the root `Taskfile.yml:758` and `:765` define them. The root README does not document app-level tasks, so no change; the root changelog has no entry for the two tasks. Proposed: if the user wants them logged, add one line under `## [Unreleased]` / `### Added` in `CHANGELOG.md`.
+9. Low, `specs/mission.md:13`: says each app exposes "browser GUIs"; still true. No drift.
+
+Drift in constitution files (reported, not edited):
+10. Medium, `specs/tech-stack.md:52`: "multi-stage builds (`golang:1.26-alpine` -> `scratch`)" omits the Node stage `FROM node:26-alpine AS ui` in the three app Dockerfiles (`assistant/Dockerfile:6`). Suggested fix: name the `node:26-alpine` UI stage before the Go stage.
+11. Low, `specs/tech-stack.md:78`: `shared/ui/tokens.css`; the source is `shared/ui/src/tokens.css` (`shared/ui/build.mjs:53` copies it to `dist/tokens.css`). Suggested fix: `shared/ui/src/tokens.css`.
+12. Medium, `specs/tech-stack.md:53`, `:57`: the GitHub Actions list names workflows for dictionary, phraseforge and knowledge only, and says the Test step is "present in the knowledge app only"; `.github/workflows/release-assistant.yml:81` has a `Test` step and the assistant has its own workflow. Also, `release-assistant.yml:69-77`, `release-phraseforge.yml:88-96` and `release-knowledge.yml:71-79` now set up Node 26 and run `npm ci && npm run build` for `shared/ui` before Go steps, which no line of the file mentions. Suggested fix: add the assistant workflow, the Test step and the Node 26 and `shared/ui` build step to these bullets. (The assistant's own workflow part predates this feature.)
+
+Release wiring (`doc` skill): not assessed beyond the finding above; the workflows were not edited.
 
 ## Documentation Updates
 
-Not started.
+Edited:
+- `assistant/CHANGELOG.md:53`: new `### Changed` entry for `dp-shell`, tabs, fluid pages, hideable sidebar on Chat and the narrow-screen drawer.
+- `knowledge/CHANGELOG.md:72`: new `### Changed` entry for the `dp-shell` GUI (login and sign-up like phraseforge, tabs Documents, Chat, Tasks and Models, hideable sidebar, drawer, 41 px buttons instead of 38).
+- `phraseforge/CHANGELOG.md:73`: new `### Changed` entry for `dp-shell` and the shared `dp-*` components, the drawer, the collapsed sidebar out of the tab order, the phone top bar, native confirm dialogs, and the Tasks page buttons that now disable.
+- `knowledge/README.md`: architecture tree (index, `theme.js` line removed, components line).
+- `assistant/README.md`: Admin interface bullet (shared `dp-shell` and `dp-*`, own `as-*`).
+- `specs/roadmap.md`, `specs/artifacts/assistant/roadmap.md`, `specs/artifacts/knowledge/roadmap.md`, `specs/artifacts/phraseforge/roadmap.md`: this feature's `## Now` line removed (per the roadmap rules). Items added by the user on 2026-10-23 are in the two roadmaps that changed.
+
+No constitution file was edited. Findings 10 to 12 (`specs/tech-stack.md`) are proposed for the user's approval.

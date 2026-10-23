@@ -34,6 +34,8 @@ type Metrics struct {
 	traceErrors     prometheus.Counter
 	chatErrors      prometheus.Counter
 	a2uiRejected    *prometheus.CounterVec
+	busRequests     *prometheus.CounterVec
+	busDuration     *prometheus.HistogramVec
 	availability    *availabilityCollector
 }
 
@@ -110,12 +112,21 @@ func New() *Metrics {
 	for _, source := range []string{"interface", "event"} {
 		m.a2uiRejected.WithLabelValues(source)
 	}
+	m.busRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "assistant_bus_requests_total",
+		Help: "Requests the assistant sent to other apps over NATS, by app, operation and outcome: ok or the error code.",
+	}, []string{"app", "operation", "outcome"})
+	m.busDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "assistant_bus_request_duration_seconds",
+		Help:    "Time from sending a request to another app to its answer, in seconds, by app and operation.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"app", "operation"})
 	m.availability = newAvailabilityCollector()
 	m.registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.httpRequests, m.httpDuration, m.tasks, m.queueSeconds, m.execSeconds,
-		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.traceErrors, m.chatErrors, m.a2uiRejected, m.availability,
+		m.llmCalls, m.llmTokens, m.llmCost, m.llmDuration, m.llmRecordErrors, m.llmPurged, m.traceErrors, m.chatErrors, m.a2uiRejected, m.busRequests, m.busDuration, m.availability,
 	)
 	return m
 }
@@ -173,6 +184,13 @@ func (m *Metrics) ChatNotifyError() { m.chatErrors.Inc() }
 // A2UIRejected counts an A2UI message that validation refused: source is
 // "interface" for one a workflow showed, "event" for one the page sent.
 func (m *Metrics) A2UIRejected(source string) { m.a2uiRejected.WithLabelValues(source).Inc() }
+
+// ObserveBus records one request to another app. outcome is "ok" or the code of
+// the error, so the label has a fixed, small set of values.
+func (m *Metrics) ObserveBus(app, operation, outcome string, elapsed time.Duration) {
+	m.busRequests.WithLabelValues(app, operation, outcome).Inc()
+	m.busDuration.WithLabelValues(app, operation).Observe(elapsed.Seconds())
+}
 
 // ModelAvailability is whether one model can take calls right now.
 type ModelAvailability struct {

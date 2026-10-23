@@ -3,7 +3,7 @@ title: Model router for knowledge
 kind: feature
 status: done
 version: 4
-updated: 2026-10-22
+updated: 2026-10-23
 branch: main
 ---
 
@@ -158,7 +158,23 @@ Step 6: not started.
 
 ## Validation
 
-Not started.
+Validation run of 2026-10-23 on the dev cluster, context `k3d-k8s-lab`, against the current working tree (the feature's code was committed in 7ac5cb0 "Model router for knowledge"):
+
+| Command | Result |
+| --- | --- |
+| `cd knowledge && go test -count=1 -v ./...` with the dev Postgres through a port-forward (`KNOWLEDGE_TEST_DSN`, database `knowledge`) | 126 pass, 0 fail, 0 skip, 10 packages ok |
+| `task test-knowledge-frontend` | 33 of 33 pass, 0 skipped |
+| `cd shared && go test -count=1 -v ./...` (includes the router) | 328 pass, 0 fail, 0 skip, 10 packages ok |
+| `task ci-local APP=knowledge` (the CI steps on a clean copy of the tree: `shared/ui` build, `go vet`, `go test -count=1`) | ok |
+
+Not validated in this run: no real model, real provider or production cluster was called. The project's tests use scripted fakes (a scripted provider and fake HTTP servers), so real-provider behaviour is untested here. By acceptance criterion:
+- AC 6 (fallback, breaker and cancellation over real models): no real call was made; only the scripted provider ran.
+- AC 12 and 13 (embeddings API; ollama `/api/embed` and openai-compatible `/embeddings`): no real call was made; only fake HTTP servers ran. The openai-compatible endpoint remains unverified against a real server, as the criterion says.
+- AC 17 (a wrong-length reply is a failed attempt): no real embedding reply was checked; only scripted replies.
+- AC 26 (`llm-enable` with LAN Ollama, OpenRouter and Vertex): no real source was used.
+- AC 27 (the final 1 to 3 real calls through the dev laptop's Ollama, one chat or title call and one `bge-m3` embedding call): no real call was made in this run.
+- AC 28 (each step deployed on the dev cluster with `task deploy-knowledge`, app works): no deploy and no login, search, chat or ingest was done in this run; the cluster was used only for the test Postgres.
+- Production: nothing was run against the production cluster, and the production Helm chart (AC 29, outside this repo) was not checked.
 
 ## Documentation Review
 

@@ -520,7 +520,7 @@ paths:
     delete:
       operationId: removeConversation
       summary: Delete a conversation and its messages
-      description: Its task is not touched.
+      description: Its run is cancelled first (a run that already finished needs no cancel); the task record and its trace stay. If the run cannot be cancelled the answer is 500 and the conversation is not deleted.
       parameters:
         - name: id
           in: path

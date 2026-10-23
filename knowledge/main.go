@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"k8s-lab/shared/retention"
@@ -23,6 +26,7 @@ import (
 	"knowledge/internal/modelrouter"
 	"knowledge/internal/qdrant"
 	"knowledge/internal/queue"
+	"knowledge/internal/responder"
 	"knowledge/internal/server"
 	"knowledge/internal/translate"
 )
@@ -153,5 +157,32 @@ func main() {
 	srv := server.New(kb, chatSvc, authSvc, generateSvc, jobsSvc, ingestSvc)
 	srv.SetMetricsHandler(llmMetrics.Handler())
 	srv.SetLLMAdmin(callStore, func() []modelrouter.ModelInfo { return modelrouter.Models(models, llmRouter) })
-	log.Fatal(http.ListenAndServe(cfg.BindAddr, srv.Router()))
+
+	// The bus answers other apps only when nats.url is set; if NATS is not
+	// reachable knowledge serves HTTP without it.
+	stopBus := responder.Run(cfg.NATSURL, responder.App,
+		responder.Services{Search: kb, Ingest: ingestSvc, Jobs: jobsSvc},
+		llmMetrics.ObserveBusRequest, slog.Default())
+
+	// On SIGTERM or SIGINT the bus drains first (requests in flight are answered),
+	// then HTTP stops taking connections.
+	httpSrv := &http.Server{Addr: cfg.BindAddr, Handler: srv.Router()}
+	shutdown := make(chan struct{})
+	go func() {
+		defer close(shutdown)
+		signals, stopSignals := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer stopSignals()
+		<-signals.Done()
+		stopBus()
+		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
+	}()
+	if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		stopBus()
+		log.Fatal(err)
+	}
+	<-shutdown
 }

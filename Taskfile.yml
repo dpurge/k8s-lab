@@ -11,6 +11,7 @@ vars:
   REGISTRY_PORT: "5000"
   INGRESS_PORT: "8080"
   ASSISTANT_TEST_DB_PORT: "15432"
+  NATS_TEST_PORT: "14222"
   KUBECONFIG_PATH: .k3d/kubeconfig
   # Every kubectl call below goes through this instead of bare `kubectl`, so
   # it always targets this project's cluster only — via kubectl's own
@@ -753,6 +754,49 @@ tasks:
       - npm install
       - npm test
 
+  # ── ci ───────────────────────────────────────────────────────────────────────
+
+  check-ci:
+    desc: Check the release workflows against the apps and ci-test.sh, and run the node tests of the CI scripts.
+    cmds:
+      - node scripts/check-ci.mjs
+      - node --test scripts/stamp-changelog.test.mjs scripts/check-ci.test.mjs
+
+  # Runs what CI runs (scripts/ci-test.sh) on a clean copy of the tree: tracked
+  # and untracked files, minus gitignored ones, so a build output that exists
+  # only on this machine (shared/ui/dist) cannot hide a CI failure. Needs no
+  # cluster and no database: tests skip without their env vars, as in CI.
+  # Usage: task ci-local, or task ci-local APP=dictionary for one app.
+  ci-local:
+    desc: Run CI's tests (scripts/ci-test.sh) on a clean copy of the tree, for all apps or one (APP=<app>).
+    vars:
+      CI_APPS: '{{if .APP}}{{.APP}}{{else}}assistant knowledge phraseforge dictionary{{end}}'
+    cmds:
+      - |
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        # A tracked file deleted in the working tree is still listed by git
+        # ls-files; rsync copies the rest and exits 23, which is tolerated.
+        # (macOS's openrsync has no --ignore-missing-args.)
+        copy_status=0
+        git ls-files -z -co --exclude-standard | rsync -a0 --files-from=- ./ "$tmp/" || copy_status=$?
+        if [ "$copy_status" -ne 0 ] && [ "$copy_status" -ne 23 ]; then
+            echo "copying the clean tree failed (rsync exit $copy_status)" >&2
+            exit "$copy_status"
+        fi
+        failed=0
+        for app in {{.CI_APPS}}; do
+            log="$tmp/ci-$app.log"
+            if (cd "$tmp" && bash scripts/ci-test.sh "$app") >"$log" 2>&1; then
+                echo "ok    $app"
+            else
+                failed=1
+                echo "FAIL  $app: $(grep '^+ ' "$log" | tail -n 1)"
+                tail -n 30 "$log" | sed 's/^/        /'
+            fi
+        done
+        exit "$failed"
+
   # ── shared ui ────────────────────────────────────────────────────────────────
 
   build-ui:
@@ -828,6 +872,58 @@ tasks:
         status=0
         (cd assistant && go vet ./... && go test -count=1 -race ./...) || status=$?
         cleanup
+        exit "$status"
+
+  test-bus:
+    desc: Vet and test shared/bus against the dev cluster's NATS (port-forwarded for the run, stopped after).
+    cmds:
+      - |
+        port="{{.NATS_TEST_PORT}}"
+        # The forward is identified by its own command line (this argument order);
+        # kubectl here is a kuberlr launcher that starts the real kubectl as a
+        # child, so killing the launcher's pid would leave the forward running.
+        forward="--kubeconfig={{.KUBECONFIG_PATH}} port-forward -n data svc/jdp-data-nats $port:4222"
+        listeners() { lsof -nP -iTCP:"$port" -sTCP:LISTEN | wc -l | tr -d ' '; }
+
+        if [ "$(listeners)" != "0" ]; then
+            echo "Error: local port $port is already in use; stop what listens there and run the task again." >&2
+            exit 1
+        fi
+        if ! {{.KUBECTL}} get svc/jdp-data-nats -n data >/dev/null 2>&1; then
+            echo "Error: the dev cluster's service data/jdp-data-nats is not reachable. Run 'task start-k8s' and 'task deploy-nats'." >&2
+            exit 1
+        fi
+
+        forward_started=""
+        cleanup() {
+            if [ -n "$forward_started" ]; then
+                pkill -f -- "$forward" 2>/dev/null || true
+                i=0
+                while [ "$i" -lt 10 ] && [ "$(listeners)" != "0" ]; do sleep 0.5; i=$((i + 1)); done
+            fi
+        }
+        trap cleanup EXIT
+
+        {{.KUBECTL}} port-forward -n data svc/jdp-data-nats "$port:4222" >/dev/null 2>&1 &
+        forward_started=1
+        i=0
+        while [ "$i" -lt 30 ] && ! nc -z 127.0.0.1 "$port" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+
+        # Not `set -e`-aborted by a failing test: the port-forward must be
+        # stopped either way, and the test's exit status still decides.
+        status=0
+        if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+            (cd shared && NATS_URL="nats://127.0.0.1:$port" go test -count=1 -v ./bus) || status=$?
+        else
+            echo "Error: the port-forward to data/jdp-data-nats did not open local port $port within 30 s." >&2
+            status=1
+        fi
+        cleanup
+        forward_started=""
+        if [ "$(listeners)" != "0" ]; then
+            echo "Error: local port $port is still in use after the port-forward was stopped." >&2
+            status=1
+        fi
         exit "$status"
 
   test-assistant-frontend:

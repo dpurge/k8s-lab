@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,5 +136,35 @@ func TestRetentionRulesFollowTheConfiguredDays(t *testing.T) {
 		if got[name] != retention {
 			t.Errorf("rule %s keeps %v, want %v", name, got[name], retention)
 		}
+	}
+}
+
+func TestStartBusIsOffWithoutAURL(t *testing.T) {
+	cfg := defaultConfig(t)
+	if cfg.NATSURL != "" {
+		t.Fatalf("NATSURL = %q by default, want empty", cfg.NATSURL)
+	}
+	if got := startBus(cfg, nil, nil); got != nil {
+		t.Errorf("startBus without nats.url = %v, want nil: the app never connects", got)
+	}
+}
+
+func TestStartBusWarnsAndContinuesWhenTheServerCannotBeReached(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	cfg := defaultConfig(t)
+	cfg.NATSURL = "nats://127.0.0.1:1"
+	if got := startBus(cfg, nil, nil); got != nil {
+		t.Errorf("startBus = %v, want nil when the connection fails", got)
+	}
+	want := "the message bus is not started: phraseforge does not answer requests over NATS; check nats.url and that the NATS server is reachable"
+	if !strings.Contains(logs.String(), want) || !strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("log = %q, want the fixed warning %q", logs.String(), want)
+	}
+	if strings.Contains(logs.String(), "127.0.0.1") {
+		t.Errorf("the warning names the address: %s", logs.String())
 	}
 }
