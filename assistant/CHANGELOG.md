@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2026.10.4] - 2026-10-23
+
 ### Added
 
 - `ASSISTANT_NATS_URL` and a typed client for asking knowledge and phraseforge for documents, URL ingests and task status over NATS (not yet used by workflows); metrics `assistant_bus_requests_total` and `assistant_bus_request_duration_seconds`.
