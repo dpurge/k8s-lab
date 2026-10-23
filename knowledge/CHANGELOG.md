@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2026.10.3] - 2026-10-23
+
 ### Added
 
 - Knowledge answers `documents_search`, `url_ingest` and `task_status` over NATS on `dp.knowledge.request` when `nats.url` (or `KNOWLEDGE_NATS_URL`) is set.
