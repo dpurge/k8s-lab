@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2026.10.13] - 2026-10-23
+
 ### Added
 
 - Phraseforge answers `task_status` over NATS on `dp.phraseforge.request` when `nats.url` (or `PHRASEFORGE_NATS_URL`) is set.
